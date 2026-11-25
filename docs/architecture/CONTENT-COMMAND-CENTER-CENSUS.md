@@ -24,6 +24,7 @@ Writers through an `.rpc()`, a trigger or a migration backfill are invisible to 
 | web | SEO / AI-searchable listing landing pages | `listing_landing_pages` (live · writer) | yes | `listing_landing_pages` |
 | web | Home-value web page (agent's published page) | `home_value_page_configs` (live · writer) | yes | `home_value_page_configs` |
 | web | Lead-magnet deliverables (guides, checklists, reports, books) | `lead_magnet_deliverables` (live · writer) | yes | `lead_magnet_deliverables` |
+| web | Calculators (published calculator artifacts — wave 156H) | `lead_capture_forms` (live · writer) | yes | `lead_capture_forms` |
 | web | Event invitations | `open_house_invitations` (live · writer) | yes | `open_house_invitations` |
 | qr | QR destinations | `qr_codes` (live · writer) | yes | `qr_codes` |
 | print | Images, carousels, graphics, mailer designs, generated media | `marketing_assets` (live · writer) | yes | `marketing_assets` |
@@ -52,7 +53,7 @@ Writers through an `.rpc()`, a trigger or a migration backfill are invisible to 
 | journey | Equity report / refinance opportunity | — none — | **no producer — not offered** | no — a manager SIGNAL (equity_milestone), not an artifact — shown as the next action on the linked item |
 | campaign | Zillow campaign | — none — | **no producer — not offered** | no |
 
-Catalog sources: 35. Formats: 44 (41 available, 3 without a producer).
+Catalog sources: 36. Formats: 45 (42 available, 3 without a producer).
 
 ## Artifacts (what is made) — the ONE vocabulary
 
@@ -82,7 +83,7 @@ Catalog sources: 35. Formats: 44 (41 available, 3 without a producer).
 | social_post | `social_posts`, `marketing_assets` |
 | qr_print_graphic | `marketing_assets`, `qr_codes` |
 | direct_mail_piece | `direct_mail_campaigns`, `marketing_assets` |
-| landing_page | `listing_landing_pages` |
+| landing_page | `listing_landing_pages`, `lead_capture_forms` |
 | home_value_page | `home_value_page_configs` |
 | event_invitation | `open_house_invitations` |
 | market_report | `lead_magnet_deliverables`, `neighborhood_reports` |
@@ -103,5 +104,6 @@ Catalog sources: 35. Formats: 44 (41 available, 3 without a producer).
 | journey_touchpoint | `lifetime_customer_touchpoints` |
 | lead_magnet | `lead_magnet_deliverables` |
 | secured_document | `generated_documents` |
+| calculator | `lead_capture_forms` |
 
 Channels (how it reaches a person — video is never one): email, sms, voice_call, portal, website, social, print_mail, push, in_app_task, podcast_feed, paid_ads.

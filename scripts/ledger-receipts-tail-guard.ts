@@ -81,8 +81,7 @@ const OPEN: Record<string, string> = {
   [`${A}listing-landing.ts#trackCtaClick`]: "anonymous visitor analytics (no session actor)",
   [`${A}privacy/data-subject-requests.ts#submitDataSubjectRequestAction`]: "anonymous public DSAR intake (no session actor)",
   [`${A}public/tos-acceptance.ts#recordTosAcceptanceAction`]: "pre-account signup consent (no session, no tenant)",
-  [`${A}calculators.ts#calculateAffordability`]: "anonymous calculator telemetry (trackToolUsage)",
-  [`${A}calculators.ts#calculateRentVsBuy`]: "anonymous calculator telemetry (trackToolUsage)",
+  [`${A}calculators.ts#runCalculatorTool`]: "anonymous calculator telemetry (trackToolUsage) — 156H survivor of calculateAffordability / calculateRentVsBuy",
   // platform staff, no tenant to record against
   [`${A}superadmin/platform-brand.ts#addTopicAction`]: "no tenant to record against (platform_content_topics)",
   [`${A}superadmin/platform-brand.ts#dismissTopicAction`]: "no tenant to record against (platform_content_topics)",
@@ -124,7 +123,7 @@ const OPEN: Record<string, string> = {
   [`${A}voice-assistant.ts#getVoiceConfig`]: `${RO}: a settings view with a lazy default-row insert on first view`,
   ["app/dashboard/sphere/actions.ts#loadSphereResonance"]: `${RO}: selects only`,
 }
-const ROW_COUNT = 72
+const ROW_COUNT = 71 // 156H: calculateAffordability + calculateRentVsBuy (2 rows) retired onto ONE survivor, runCalculatorTool
 
 const NAME_RE = /^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/
 function spanOf(text: string, name: string): string | null {

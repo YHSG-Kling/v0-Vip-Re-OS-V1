@@ -180,9 +180,11 @@ async function main(): Promise<void> {
   const calc = blankStrings(blankComments(read("app/actions/calculators.ts")))
   for (const fn of ["calculateSellerNet", "compareMortgageScenarios", "compareNeighborhoods", "analyzeInvestmentProperty"]) {
     const sp = spanOf(calc, fn) ?? ""
-    check(`FIX ${fn}: the session gate runs before the model door`, /calcSessionActor\s*\(/.test(sp) && sp.search(/calcSessionActor\s*\(/) < sp.search(/generateAIJSON\s*\(/))
+    // Wave 156 (156H): calculateSellerNet no longer has a model door at all (the appreciation guesses were removed) — the rule
+    // is "no model call before the session gate", which a door with no model call keeps; the gate itself must still be there.
+    check(`FIX ${fn}: the session gate runs before the model door`, /calcSessionActor\s*\(/.test(sp) && (sp.search(/generateAIJSON\s*\(/) < 0 ? fn === "calculateSellerNet" : sp.search(/calcSessionActor\s*\(/) < sp.search(/generateAIJSON\s*\(/)))
   }
-  check("FIX calculateSellerNet: the claimed tenant goes through decideClaimedTenant and the SESSION's tenant prices the sheet", /decideClaimedTenant\s*\(/.test(spanOf(calc, "calculateSellerNet") ?? "") && /getDefaultCommissionStructure\s*\(\s*tenant\.brokerageId\s*\)/.test(spanOf(calc, "calculateSellerNet") ?? ""))
+  check("FIX calculateSellerNet: the claimed tenant goes through decideClaimedTenant and the SESSION's tenant prices the sheet", /decideClaimedTenant\s*\(/.test(spanOf(calc, "calculateSellerNet") ?? "") && (/getDefaultCommissionStructure\s*\(\s*tenant\.brokerageId\s*\)/.test(spanOf(calc, "calculateSellerNet") ?? "") || /computeInternalSellerNet\s*\([\s\S]*brokerageId:\s*tenant\.brokerageId/.test(spanOf(calc, "calculateSellerNet") ?? "")))
   const tier = blankStrings(blankComments(read("lib/listings/tier-assigner.ts")))
   check("FIX assignTierToListing: no hand-written tenant comparison; decideClaimedTenant decides", !handRolledTenantCompare(spanOf(tier, "assignTierToListing") ?? "x !== brokerageId") && /decideClaimedTenant\s*\(/.test(spanOf(tier, "assignTierToListing") ?? ""))
 

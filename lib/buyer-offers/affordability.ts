@@ -1,97 +1,17 @@
 // lib/buyer-offers/affordability.ts
 // ─────────────────────────────────────────────────────────────────────────────
-// BUYER SELF-SERVE AFFORDABILITY — the math behind the portal tool a buyer uses to answer
-// "can I afford this home, and what would it cost me a month?" on a property they like. PURE,
-// exact mortgage math; every assumption (rate, tax %, insurance, HOA) is a CLEARLY-LABELED,
-// buyer-editable default — we never fabricate a precise market rate. The price + pre-approval
-// are real (the listing + buyer_financial_profiles); the buyer tunes the rest. Using the tool
-// signals the agent (buyer-as-actor → Shopping Agent), so self-qualification convenes the team.
-
-/** Clearly-labeled ESTIMATE defaults the buyer can override in the UI — not a quoted rate. */
-export const AFFORDABILITY_DEFAULTS = {
-  annualInterestRatePct: 6.5, // a round, recent-era placeholder the buyer adjusts to their quote
-  downPaymentPercent: 20,
-  loanTermYears: 30,
-  propertyTaxRatePct: 1.1, // annual, % of price — varies widely by state/county; buyer-tunable
-  annualInsuranceRatePct: 0.35, // annual homeowners insurance, % of price
-  pmiAnnualRatePct: 0.5, // PMI when down payment < 20%, % of loan/yr
-  hoaMonthly: 0,
-} as const
-
-export interface MonthlyPaymentInput {
-  price: number
-  downPaymentPercent?: number
-  annualInterestRatePct?: number
-  loanTermYears?: number
-  propertyTaxRatePct?: number
-  annualInsuranceRatePct?: number
-  pmiAnnualRatePct?: number
-  hoaMonthly?: number
-  /** Lane 82A — the property's own ANNUAL tax bill (public record, from the rail's
-   *  `public_facts` purpose). When present it REPLACES the rate estimate: the owner's ruling is
-   *  that the calculators compute "the correct property taxes" for a property page, not a flat %. */
-  annualPropertyTax?: number | null
-}
-
-/** Where the tax line came from — a county bill, or the labelled rate default. */
-export type PropertyTaxBasis = "county_tax_bill" | "rate_estimate"
-
-export interface MonthlyPaymentBreakdown {
-  loanAmount: number
-  downPayment: number
-  principalInterest: number
-  propertyTax: number
-  insurance: number
-  pmi: number
-  hoa: number
-  total: number
-  taxBasis: PropertyTaxBasis
-}
+// BUYER SELF-SERVE AFFORDABILITY — the honest READS a buyer's numbers get in the portal (pre-approval status, the fit verdict,
+// the them-first framing). PURE.
+//
+// TOMBSTONE (wave 156, lane 156H, round 2) — `AFFORDABILITY_DEFAULTS` (a 6.5% rate, 20% down, 30 years, a 1.1% tax rate, 0.35%
+// insurance and 0.5% PMI applied whenever the buyer left a figure blank) and `estimateMonthlyPayment` (the PITI math over those
+// defaults) stood here. A default rate shown as the buyer's payment is a figure nobody gave us. SURVIVOR:
+// lib/calculators/engine.ts:527 (runCalculator "buyer_payment"), reached through lib/calculators/buyer-payment.ts:28 buyerPaymentFor — every rate, tax and insurance figure
+// is the buyer's own (or the property's county bill, labelled as such), a blank one answers "Enter a value", and every result
+// carries its assumptions. Callers moved with it: lib/buyer-offers/home-comparison.ts, the portal's BuyerOfferToolsCard and
+// AnalyzeAnyHomeCard, app/actions/calculators.ts calculatePropertyPayment (the public listing payment card).
 
 const round2 = (n: number) => Math.round(n * 100) / 100
-
-/**
- * estimateMonthlyPayment — PURE. Standard amortized PITI + HOA + PMI. The principal+interest uses
- * the exact amortization formula M = P·r(1+r)^n / ((1+r)^n − 1); a 0% rate degrades to P/n. PMI
- * applies only when the down payment is under 20%. All inputs default to the labeled estimates.
- */
-export function estimateMonthlyPayment(input: MonthlyPaymentInput): MonthlyPaymentBreakdown {
-  const d = AFFORDABILITY_DEFAULTS
-  const price = Math.max(0, input.price || 0)
-  const downPct = input.downPaymentPercent ?? d.downPaymentPercent
-  const ratePct = input.annualInterestRatePct ?? d.annualInterestRatePct
-  const termYears = input.loanTermYears ?? d.loanTermYears
-  const taxPct = input.propertyTaxRatePct ?? d.propertyTaxRatePct
-  const insPct = input.annualInsuranceRatePct ?? d.annualInsuranceRatePct
-  const pmiPct = input.pmiAnnualRatePct ?? d.pmiAnnualRatePct
-  const hoa = Math.max(0, input.hoaMonthly ?? d.hoaMonthly)
-
-  const downPayment = price * (downPct / 100)
-  const loanAmount = Math.max(0, price - downPayment)
-  const n = Math.max(1, Math.round(termYears * 12))
-  const r = ratePct / 100 / 12
-
-  const principalInterest =
-    loanAmount === 0 ? 0 : r === 0 ? loanAmount / n : (loanAmount * (r * Math.pow(1 + r, n))) / (Math.pow(1 + r, n) - 1)
-
-  const billedTax = typeof input.annualPropertyTax === "number" && input.annualPropertyTax > 0 ? input.annualPropertyTax : null
-  const propertyTax = billedTax != null ? billedTax / 12 : (price * (taxPct / 100)) / 12
-  const insurance = (price * (insPct / 100)) / 12
-  const pmi = downPct < 20 ? (loanAmount * (pmiPct / 100)) / 12 : 0
-
-  const total = principalInterest + propertyTax + insurance + pmi + hoa
-  return {
-    loanAmount: round2(loanAmount),
-    downPayment: round2(downPayment),
-    principalInterest: round2(principalInterest),
-    propertyTax: round2(propertyTax),
-    insurance: round2(insurance),
-    pmi: round2(pmi),
-    hoa: round2(hoa),
-    total: round2(total),
-    taxBasis: billedTax != null ? "county_tax_bill" : "rate_estimate",
-  }
-}
 
 export type PreApprovalState = "none" | "active" | "expiring" | "expired"
 
@@ -136,6 +56,9 @@ export interface AffordabilityReadInput {
   preApprovalAmount?: number | null
   /** The buyer's comfortable monthly housing budget, if they enter one. */
   maxMonthlyBudget?: number | null
+  /** The most the buyer says they could STRETCH to each month (their own figure). "stretch" is read only against it — the
+   *  invented 10% band this used to apply (`maxMonthlyBudget * 1.1`) is gone (wave 156H). */
+  stretchMonthlyBudget?: number | null
 }
 
 export interface AffordabilityRead {
@@ -169,8 +92,8 @@ export function affordabilityRead(input: AffordabilityReadInput): AffordabilityR
   if (typeof input.maxMonthlyBudget === "number" && input.maxMonthlyBudget > 0) {
     if (input.monthlyTotal <= input.maxMonthlyBudget)
       return { withinPreApproval, headroomToPreApproval, verdict: "within_budget", reason: "within your monthly budget" }
-    if (input.monthlyTotal <= input.maxMonthlyBudget * 1.1)
-      return { withinPreApproval, headroomToPreApproval, verdict: "stretch", reason: "slightly above your monthly budget" }
+    if (typeof input.stretchMonthlyBudget === "number" && input.stretchMonthlyBudget > input.maxMonthlyBudget && input.monthlyTotal <= input.stretchMonthlyBudget)
+      return { withinPreApproval, headroomToPreApproval, verdict: "stretch", reason: "above your monthly budget, within the most you said you could stretch to" }
     return { withinPreApproval, headroomToPreApproval, verdict: "over_budget", reason: "above your monthly budget" }
   }
   if (withinPreApproval === true)

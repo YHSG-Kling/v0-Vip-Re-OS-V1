@@ -425,6 +425,7 @@ export default function PersonaPropertiesDashboard({
     monthlyExpenses: "",
     downPaymentPercent: "",
     interestRate: "",
+    termYears: "",
   })
   const [dealMetrics, setDealMetrics] = useState<any>(null)
   const [dealAnalysis, setDealAnalysis] = useState<any>(null)
@@ -702,13 +703,14 @@ export default function PersonaPropertiesDashboard({
     const monthlyExpenses = Number(dealForm.monthlyExpenses.replace(/[^0-9.]/g, ""))
     const downPaymentPercent = Number(dealForm.downPaymentPercent)
     const interestRate = Number(dealForm.interestRate)
+    const loanTermYears = Number(dealForm.termYears)
 
     if (!(purchasePrice > 0) || !(monthlyRent > 0) || !(monthlyExpenses >= 0)) {
       setDealError("Enter a purchase price, gross monthly rent, and monthly expenses.")
       return
     }
-    if (!(downPaymentPercent > 0) || !(interestRate > 0)) {
-      setDealError("Enter your down payment percentage and interest rate — both drive the return.")
+    if (!(downPaymentPercent > 0) || !(interestRate > 0) || !(loanTermYears > 0)) {
+      setDealError("Enter your down payment percentage, interest rate and loan term — all three drive the return.")
       return
     }
 
@@ -729,6 +731,7 @@ export default function PersonaPropertiesDashboard({
         hoaFees: monthlyExpenses,
         maintenanceReserve: 0,
         vacancyRate: 0,
+        loanTermYears,
       })
       if (!result.success || !result.financial_metrics) {
         setDealError("The analysis could not be completed. Please try again.")
@@ -819,31 +822,12 @@ export default function PersonaPropertiesDashboard({
     })
   }
 
-  // Calculate investment metrics for a property
-  const calculateInvestmentMetrics = (property: any) => {
-    const price = property.price || property.list_price || 500000
-    const estimatedRent = price * 0.007 // 0.7% rule of thumb
-    const annualRent = estimatedRent * 12
-    const expenses = annualRent * 0.4 // 40% expense ratio
-    const noi = annualRent - expenses
-    const capRate = (noi / price) * 100
-    
-    // Cash-on-cash with 25% down
-    const downPayment = price * 0.25
-    const loanAmount = price * 0.75
-    const monthlyMortgage = (loanAmount * 0.065 / 12) / (1 - Math.pow(1 + 0.065/12, -360)) // 6.5% rate
-    const annualDebtService = monthlyMortgage * 12
-    const cashFlow = noi - annualDebtService
-    const cashOnCash = (cashFlow / downPayment) * 100
-    
-    return {
-      estimatedRent: Math.round(estimatedRent),
-      capRate: capRate.toFixed(2),
-      cashOnCash: cashOnCash.toFixed(2),
-      monthlyCashFlow: Math.round(cashFlow / 12),
-      meetsTarget: capRate >= targetCapRate
-    }
-  }
+  // TOMBSTONE (wave 156, lane 156H, round 2) — `calculateInvestmentMetrics` stood here: every listing card showed a cap rate,
+  // cash-on-cash and cash flow computed from an invented rent (0.7% of price), a 40% expense ratio, 25% down, a 6.5% rate and —
+  // when the listing had no price — a $500,000 price. None of it was the investor's or the property's. SURVIVOR: the deal analyzer
+  // on this page (analyzeInvestmentProperty, the investor's own rent / expenses / rate / term) and the engine's
+  // "investor_cash_flow" (lib/calculators/engine.ts). A card shows no investment figure it cannot source.
+  const calculateInvestmentMetrics = (_property: unknown): { estimatedRent: number; capRate: string; cashOnCash: string; monthlyCashFlow: number; meetsTarget: boolean } | null => null
 
   // Get persona-specific quick search suggestions
   const getSearchSuggestions = () => {
@@ -1704,9 +1688,18 @@ export default function PersonaPropertiesDashboard({
                     <Input
                       type="number"
                       step="0.01"
-                      placeholder="6.5"
+                      placeholder="your lender's quote"
                       value={dealForm.interestRate}
                       onChange={(e) => setDealForm((f) => ({ ...f, interestRate: e.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Loan Term (years)</Label>
+                    <Input
+                      type="number"
+                      placeholder="years"
+                      value={dealForm.termYears}
+                      onChange={(e) => setDealForm((f) => ({ ...f, termYears: e.target.value }))}
                     />
                   </div>
                   <div className="p-4 bg-blue-50 rounded-lg">

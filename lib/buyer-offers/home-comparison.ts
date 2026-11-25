@@ -9,7 +9,8 @@
 // Framing stays them-first (clientAffordabilityFraming doctrine): we highlight strengths ("best
 // value", "most space"), never rank a home as "worst" — the agent has the nuanced conversation.
 
-import { estimateMonthlyPayment } from "./affordability"
+// Wave 156 (156H round 2): the payment is the ONE engine's (lib/calculators/buyer-payment.ts) over the buyer's OWN figures.
+import { buyerPaymentFor, calculatorNeeds, type LoanAssumptionInputs } from "@/lib/calculators/buyer-payment"
 
 export interface ComparisonHomeInput {
   id: string
@@ -22,10 +23,8 @@ export interface ComparisonHomeInput {
   matchScore?: number | null
 }
 
-export interface ComparisonAssumptions {
-  downPaymentPercent?: number
-  annualInterestRatePct?: number
-}
+/** The buyer's own loan figures, applied to every home alike (apples to apples). Blank figures are asked for, never defaulted. */
+export type ComparisonAssumptions = LoanAssumptionInputs
 
 export interface ComparedHome {
   id: string
@@ -35,8 +34,8 @@ export interface ComparedHome {
   bathrooms: number | null
   sqft: number | null
   matchScore: number | null
-  /** Estimated monthly payment (PITI) under the shared assumptions. */
-  monthlyPayment: number
+  /** Estimated monthly payment under the buyer's shared assumptions — null until they have entered them. */
+  monthlyPayment: number | null
   /** Price per sqft (null when sqft unknown — honest, no fabrication). */
   pricePerSqft: number | null
   /** Strength badges this home WINS in the set (them-first: we name strengths, never "worst"). */
@@ -45,6 +44,8 @@ export interface ComparedHome {
 
 export interface HomeComparison {
   homes: ComparedHome[]
+  /** What the buyer still needs to enter before payments can be compared ("Enter a value: …"); [] when payments are shown. */
+  paymentNeeds: string[]
   /** Count of homes compared (2–4 is the sweet spot). */
   count: number
 }
@@ -54,19 +55,16 @@ const round = (n: number) => Math.round(n)
 /**
  * compareHomes — PURE. Line up 2–4 homes by the numbers and flag the BEST in each dimension
  * (lowest payment, lowest $/sqft, most space, best match) as strength highlights. Monthly payment
- * reuses estimateMonthlyPayment under shared assumptions so the comparison is apples-to-apples.
+ * is the engine's (buyerPaymentFor) under the buyer's shared assumptions so the comparison is apples-to-apples.
  * A dimension with no usable data simply isn't flagged — never fabricated.
  */
 export function compareHomes(homes: ComparisonHomeInput[], assumptions: ComparisonAssumptions = {}): HomeComparison {
+  let needs: string[] = []
   const usable = (homes ?? []).filter((h) => h && h.id && typeof h.price === "number" && h.price > 0).slice(0, 4)
   const computed: ComparedHome[] = usable.map((h) => {
-    const monthlyPayment = round(
-      estimateMonthlyPayment({
-        price: h.price,
-        downPaymentPercent: assumptions.downPaymentPercent,
-        annualInterestRatePct: assumptions.annualInterestRatePct,
-      }).total,
-    )
+    const pay = buyerPaymentFor(h.price, assumptions)
+    if (!pay.ok) needs = calculatorNeeds(pay)
+    const monthlyPayment = pay.ok ? round(Number(pay.outputs.monthlyTotal)) : null
     const pricePerSqft = typeof h.sqft === "number" && h.sqft > 0 ? round(h.price / h.sqft) : null
     return {
       id: h.id, address: h.address, price: h.price,
@@ -78,8 +76,10 @@ export function compareHomes(homes: ComparisonHomeInput[], assumptions: Comparis
 
   if (computed.length >= 2) {
     // Lowest monthly payment.
-    const minPay = Math.min(...computed.map((c) => c.monthlyPayment))
-    flagUniqueWinner(computed, (c) => c.monthlyPayment === minPay, "Lowest payment")
+    if (computed.every((c) => c.monthlyPayment != null)) {
+      const minPay = Math.min(...computed.map((c) => c.monthlyPayment as number))
+      flagUniqueWinner(computed, (c) => c.monthlyPayment === minPay, "Lowest payment")
+    }
     // Lowest $/sqft (best value) — only among those with sqft.
     const withPpsf = computed.filter((c) => c.pricePerSqft != null)
     if (withPpsf.length >= 2) {
@@ -100,7 +100,7 @@ export function compareHomes(homes: ComparisonHomeInput[], assumptions: Comparis
     }
   }
 
-  return { homes: computed, count: computed.length }
+  return { homes: computed, count: computed.length, paymentNeeds: needs }
 }
 
 /** Flag the winner ONLY when it's unique (a tie names no winner — don't crown arbitrarily). */

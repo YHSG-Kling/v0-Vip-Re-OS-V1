@@ -74,6 +74,7 @@ const FORMAT_CENSUS: FormatEntry[] = [
   { group: "web", format: "SEO / AI-searchable listing landing pages", tables: ["listing_landing_pages"], catalog: ["listing_landing_pages"] },
   { group: "web", format: "Home-value web page (agent's published page)", tables: ["home_value_page_configs"], catalog: ["home_value_page_configs"] },
   { group: "web", format: "Lead-magnet deliverables (guides, checklists, reports, books)", tables: ["lead_magnet_deliverables"], catalog: ["lead_magnet_deliverables"] },
+  { group: "web", format: "Calculators (published calculator artifacts — wave 156H)", tables: ["lead_capture_forms"], catalog: ["lead_capture_forms"] },
   { group: "web", format: "Event invitations", tables: ["open_house_invitations"], catalog: ["open_house_invitations"] },
   { group: "qr", format: "QR destinations", tables: ["qr_codes"], catalog: ["qr_codes"] },
   { group: "print", format: "Images, carousels, graphics, mailer designs, generated media", tables: ["marketing_assets"], catalog: ["marketing_assets"] },

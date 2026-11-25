@@ -38,7 +38,8 @@ const code = (p: string) => blankStrings(stripped(p))
 
 const rail = await import("../lib/ai-isa/property-lookup-rail")
 const { normalizeRentcastPropertyRecord } = await import("../lib/property/rentcast")
-const { estimateMonthlyPayment } = await import("../lib/buyer-offers/affordability")
+// Wave 156 (156H round 2): the payment survivor is the ONE engine (lib/calculators/buyer-payment.ts buyerPaymentFor); estimateMonthlyPayment is a tombstone.
+const { buyerPaymentFor } = await import("../lib/calculators/buyer-payment")
 type Facts = import("../lib/ai-isa/property-lookup-rail").PropertyLookupFacts
 type Rungs = import("../lib/ai-isa/property-lookup-rail").PropertyLookupRungs
 type Policy = import("../lib/ai-isa/property-lookup-rail").PropertyLookupPolicy
@@ -129,13 +130,17 @@ check("the assessed value leaves ONLY under its labelled tax-basis name", projec
 
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n[Layer 4 · the payment survivor computes tax from the property's own bill]")
-const withBill = estimateMonthlyPayment({ price: 425000, annualPropertyTax: 6120, hoaMonthly: 60 })
-const withRate = estimateMonthlyPayment({ price: 425000, propertyTaxRatePct: 1.1 })
-check("with a county bill: tax line = bill / 12 ($510.00), basis county_tax_bill, HOA carried",
-  withBill.propertyTax === 510 && withBill.taxBasis === "county_tax_bill" && withBill.hoa === 60, JSON.stringify(withBill))
-check("without a bill: the labelled rate (1.1% of $425k / 12 = $389.58), basis rate_estimate",
-  withRate.propertyTax === 389.58 && withRate.taxBasis === "rate_estimate", JSON.stringify(withRate))
-check("a zero / negative bill is not a bill (falls back to the rate)", estimateMonthlyPayment({ price: 425000, annualPropertyTax: 0 }).taxBasis === "rate_estimate")
+const LOAN = { downPaymentPct: 20, ratePct: 6.5, termYears: 30, annualInsurance: 1500 }
+const ln = (o: any, k: string) => o?.lines?.find((l: any) => l.key === k)?.amount
+const basisOf = (o: any, k: string) => o?.assumptions?.find((a: any) => a.key === k)?.basis
+const withBill: any = buyerPaymentFor(425000, LOAN, { annualPropertyTax: 6120, recordHoaMonthly: 60 })
+const withRate: any = buyerPaymentFor(425000, { ...LOAN, propertyTaxRatePct: 1.1 })
+const withBillHoa: any = buyerPaymentFor(425000, { ...LOAN, hoaMonthly: 60 }, { annualPropertyTax: 6120, recordHoaMonthly: 60 })
+check("with a county bill: tax line = bill / 12 ($510.00), labelled the property's record; HOA from the record carried and labelled",
+  ln(withBillHoa, "propertyTax") === 510 && basisOf(withBillHoa, "annualPropertyTax") === "property_record" && ln(withBillHoa, "hoa") === 60 && basisOf(withBillHoa, "hoaMonthly") === "property_record", JSON.stringify(withBillHoa?.assumptions))
+check("without a bill: the rate the VISITOR entered (1.1% of $425k / 12 = $389.58), labelled as theirs",
+  ln(withRate, "propertyTax") === 389.58 && basisOf(withRate, "propertyTaxRatePct") === "you_entered", JSON.stringify(withRate?.assumptions))
+check("a zero / negative bill is not a bill — and with no rate entered either, the visitor is ASKED (no default rate)", buyerPaymentFor(425000, LOAN, { annualPropertyTax: 0 }).ok === false && withBill.ok === true)
 
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n[Layer 5 · wiring (stripped source)]")
@@ -156,8 +161,8 @@ check("the tenant resolver is file-local (not a public endpoint) and reads listi
   && !/brokerageId: input\.brokerageId/.test(calc))
 check("a listing-opened lookup uses the LISTING's address (tenant.listing?.address first), so a visitor cannot aim a metered read under a tenant's name",
   /const street = tenant\.listing\?\.address \?\?/.test(calc))
-check("calculatePropertyPayment feeds the property's own bill + HOA into estimateMonthlyPayment",
-  /estimateMonthlyPayment\(\{[\s\S]{0,300}annualPropertyTax: facts\?\.annualPropertyTax[\s\S]{0,80}hoaMonthly: facts\?\.hoaMonthly/.test(calcStr))
+check("calculatePropertyPayment feeds the property's own bill + HOA into the engine (buyerPaymentFor), labelled as the record",
+  /buyerPaymentFor\(price,[\s\S]{0,300}annualPropertyTax: facts\?\.annualPropertyTax[\s\S]{0,200}recordHoaMonthly: recordHoa/.test(calcStr) && /facts\.hoaMonthly/.test(calcStr))
 check("the listing landing page mounts the payment card with the listing id (click-to-run, no spend on render)",
   /<PropertyPaymentCard listingSlug=\{listing\.id\} \/>/.test(stripped("app/listing/[slug]/page.tsx"))
   && /onClick=\{run\}/.test(stripped("app/components/listing-landing/PropertyPaymentCard.tsx")))

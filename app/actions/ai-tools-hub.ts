@@ -693,9 +693,9 @@ Be concise, objective, and helpful.
 // =====================================================
 //
 // This case used to run a SECOND, weaker affordability model defined right here.
-// app/actions/calculators.ts calculateAffordability is the survivor — it is
-// strictly more capable and it matches the fields this tool's own form already
-// collects. The local copy is deleted. What it got wrong:
+// The survivor was app/actions/calculators.ts calculateAffordability; since wave 156
+// (156H) it is lib/calculators/engine.ts "affordability_range" on the agent's OWN
+// figures (no default rate or ratio). The local copy is deleted. What it got wrong:
 //
 //   · It took (income, downPayment, location) while the form collects income,
 //     debt, downPayment and RATE. The buyer's monthly debt and the real interest
@@ -710,8 +710,8 @@ Be concise, objective, and helpful.
 //   · Its single 43% DTI ignored property tax, insurance, PMI and HOA when
 //     solving for max price, so the number it did aim at was too high anyway.
 //
-// The survivor applies front-end 28% AND back-end 36% DTI against real debts,
-// and solves for max price carrying tax + insurance + PMI + HOA. The AI narrative
+// The engine applies the housing AND total-debt limits the agent ENTERS against real
+// debts, and solves for price carrying tax + insurance + HOA. The AI narrative
 // stays — it is this tool's value-add — but it now explains REAL figures instead
 // of generating them.
 
@@ -731,14 +731,28 @@ async function runAffordabilityTool(
     debt?: unknown
     downPayment?: unknown
     rate?: unknown
+    termYears?: unknown
+    propertyTax?: unknown
+    insurance?: unknown
+    housingRatio?: unknown
+    debtRatio?: unknown
   },
   tenant: HubTenant,
 ): Promise<ToolRun> {
+  // WAVE 156 (lane 156H, round 2): the figures come from the ONE engine (lib/calculators/engine.ts "affordability_range") on the
+  // agent's OWN inputs. app/actions/calculators.ts calculateAffordability (tombstone there) filled the tax rate, the 28/36 limits,
+  // insurance, PMI and closing costs with defaults nobody entered; the term, the yearly tax and insurance and the two income
+  // limits are now asked for, and a blank one refuses (no model call) instead of being assumed.
   const { parseMoney } = await import("@/lib/offers/closing-cost-accuracy")
 
   const annualIncome = parseMoney(params.income)
   const downPayment = parseMoney(params.downPayment)
   const interestRate = parseRatePercent(params.rate)
+  const termYears = parseRatePercent(params.termYears)
+  const annualPropertyTax = parseMoney(params.propertyTax)
+  const annualInsurance = parseMoney(params.insurance)
+  const housingRatioPct = parseRatePercent(params.housingRatio)
+  const totalDebtRatioPct = parseRatePercent(params.debtRatio)
   // Debt is the one genuinely optional field — blank means no monthly debts,
   // which is a real answer. An UNREADABLE value is not the same thing and is
   // refused below rather than silently treated as zero.
@@ -750,49 +764,48 @@ async function runAffordabilityTool(
   if (downPayment == null) missing.push("down payment")
   if (interestRate == null) missing.push("interest rate")
   if (monthlyDebts == null) missing.push("monthly debt")
+  if (termYears == null) missing.push("loan term (years)")
+  if (annualPropertyTax == null) missing.push("annual property tax")
+  if (annualInsurance == null) missing.push("annual insurance")
+  if (housingRatioPct == null) missing.push("housing-payment limit (% of income — the lender's)")
+  if (totalDebtRatioPct == null) missing.push("total-debt limit (% of income — the lender's)")
 
   if (missing.length > 0) {
-    // No figure at all beats a figure built on NaN. A REFUSAL, so it ledgers as
+    // No figure at all beats a figure built on a guess. A REFUSAL, so it ledgers as
     // success=false with zero tokens rather than as a run that produced advice.
     return refuse(
-      `I could not read ${missing.join(", ")}. Enter ${missing.length === 1 ? "it" : "them"} as a plain amount — for example 120000 or $120,000 for income, and 6.5 or 6.5% for the rate — and run it again.`,
-      `unreadable input: ${missing.join(", ")}`,
+      `Enter ${missing.join(", ")} — as a plain amount (120000 or $120,000) or a percent (6.5 or 6.5%) — and run it again. Nothing is assumed for a blank figure.`,
+      `missing or unreadable input: ${missing.join(", ")}`,
     )
   }
 
-  const { calculateAffordability } = await import("@/app/actions/calculators")
-  const affordability = await calculateAffordability({
-    annualIncome: annualIncome!,
-    monthlyDebts: monthlyDebts!,
-    downPayment: downPayment!,
-    interestRate: interestRate!,
-  })
+  const { runCalculator } = await import("@/lib/calculators/engine")
+  const outcome = runCalculator("affordability_range", {
+    grossMonthlyIncome: annualIncome! / 12, monthlyDebts: monthlyDebts!, downPayment: downPayment!, ratePct: interestRate!, termYears: termYears!,
+    annualPropertyTax: annualPropertyTax!, annualInsurance: annualInsurance!, housingRatioPct: housingRatioPct!, totalDebtRatioPct: totalDebtRatioPct!,
+  }, { audience: "internal" })
+  if (!outcome.ok) {
+    const why = [...outcome.missing.map((m) => m.message), ...outcome.refused.map((r) => `${r.label}: ${r.reason}`)].join("; ")
+    return refuse(`The calculator could not run on these figures: ${why}.`, `engine refused: ${why}`)
+  }
 
-  const b = affordability.monthlyBreakdown
-  const h = affordability.hiddenCosts
-  const money = (n: number) => `$${Math.round(n).toLocaleString()}`
+  const money = (n: unknown) => `$${Math.round(Number(n)).toLocaleString()}`
+  const o = outcome.outputs
+  const figures = `Price where both of the limits you entered hold: ${money(o.rangeLow)}
+Price at the looser limit only: ${money(o.rangeHigh)}
+Monthly housing budget at the housing-payment limit: ${money(o.housingBudgetMonthly)}
+Monthly budget at the total-debt limit (after current debts): ${money(o.totalDebtBudgetMonthly)}
 
-  const figures = `Maximum home price: ${money(affordability.maxHomePrice)}
-Down payment: ${money(affordability.downPayment)}
-Loan amount: ${money(affordability.loanAmount)}
+Assumptions (${outcome.period}):
+${outcome.assumptions.map((a) => `  ${a.label}: ${a.display}`).join("\n")}
 
-Estimated monthly payment: ${money(b.total)}
-  Principal & interest: ${money(b.principal_interest)}
-  Property tax: ${money(b.property_tax)}
-  Insurance: ${money(b.insurance)}
-  PMI: ${money(b.pmi)}
-  HOA: ${money(b.hoa)}
-
-Costs beyond the payment:
-  Estimated closing costs: ${money(h.closing_costs)}
-  Monthly maintenance budget: ${money(h.maintenance_budget)}
-  Estimated utilities: ${money(h.utilities_estimate)}`
+${outcome.disclaimers.join("\n")}`
 
   // The narrative EXPLAINS the numbers above; it does not produce them.
   const prompt = `You are advising a homebuyer. These figures were already
 calculated from their real inputs — annual income ${money(annualIncome!)}, monthly
 debts ${money(monthlyDebts!)}, down payment ${money(downPayment!)}, interest rate
-${interestRate}%:
+${interestRate}%, a ${termYears}-year term, the lender limits they entered:
 
 ${figures}
 
@@ -813,9 +826,7 @@ provided.`
     agentId: tenant.agentId ?? undefined,
   })
 
-  const notes = affordability.recommendations?.length
-    ? `\n\nWhat to watch:\n${affordability.recommendations.map((r) => `• ${r}`).join("\n")}`
-    : ""
+  const notes = outcome.notes.length ? `\n\nWhat to watch:\n${outcome.notes.map((r) => `• ${r}`).join("\n")}` : ""
 
   return {
     output: `${figures}\n\n${text}${notes}`,

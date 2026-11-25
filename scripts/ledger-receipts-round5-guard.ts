@@ -107,8 +107,9 @@ const STATIC_ROWS: StaticRow[] = [
   { file: "app/api/track/dwell/route.ts", fn: "POST", kind: "public" },
   { file: `${A}collaborative-search.ts`, fn: "submitFamilyOpinionAction", kind: "public", door: "collaboratorDoor" },
   { file: "app/api/seed/users/route.ts", fn: "POST", kind: "platform" },
-  { file: `${A}calculators.ts`, fn: "calculateAffordability", kind: "session" },
-  { file: `${A}calculators.ts`, fn: "calculateRentVsBuy", kind: "session" },
+  // Wave 156 (156H round 2): calculateAffordability / calculateRentVsBuy retired onto the engine — their usage row + receipt
+  // live in their survivor runCalculatorTool (app/actions/calculators.ts), the same session rule.
+  { file: `${A}calculators.ts`, fn: "runCalculatorTool", kind: "session" },
   { file: `${A}demo-auth.ts`, fn: "demoSignIn", kind: "session", via: "provisionDemoProfile" },
   { file: `${A}tenant-safety-actions.ts`, fn: "resolveTenantSafetyFindingAction", kind: "platform" },
   { file: `${A}voice-assistant.ts`, fn: "getVoiceConfig", kind: "session" },

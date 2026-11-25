@@ -52,7 +52,7 @@ export const CATALOG_ARTIFACTS = [
   "image", "property_card", "flyer", "brochure", "carousel", "guide", "checklist", "book", "blog", "podcast", "audio_clip", "newsletter", "email_campaign",
   "social_post", "qr_print_graphic", "direct_mail_piece", "landing_page", "home_value_page", "event_invitation", "market_report", "cma_report",
   "seller_report", "script", "topic", "idea", "text_draft", "reply_draft", "personal_message", "ad_creative", "listing_copy", "template",
-  "campaign_bundle", "dispatch_receipt", "variant", "journey_touchpoint", "lead_magnet", "secured_document",
+  "campaign_bundle", "dispatch_receipt", "variant", "journey_touchpoint", "lead_magnet", "secured_document", "calculator",
 ] as const
 export type CatalogArtifact = (typeof CATALOG_ARTIFACTS)[number]
 
@@ -464,6 +464,19 @@ export const CONTENT_CATALOG_SOURCES: readonly CatalogSource[] = [
       : { title: `${s(r.document_type) ?? "Document"}`.replace(/_/g, " "), artifactType: `secured_document:${s(r.document_type) ?? "document"}`, artifact: "secured_document", channels: [], rawStatus: null, status: "ready",
           creatorAgentId: s(r.agent_id), transactionId: s(r.transaction_id), listingId: s(r.listing_id), secured: true,
           link: s(r.transaction_id) ? `/dashboard/transactions/${r.transaction_id}` : s(r.listing_id) ? `/dashboard/listings/${r.listing_id}` : null } },
+  // WAVE 156 (lane 156H): the CALCULATOR artifact — a lead_capture_forms row with magnet_type "calculator" (settings.calculator,
+  // lib/calculators/artifact.ts), published through the lead-magnet publish door. Other magnet types are indexed by their
+  // deliverable (lead_magnet_deliverables above); this source lists only the calculators, by the row's own magnet_type.
+  { table: "lead_capture_forms", family: "web", owner: { column: "agent_id", kind: "agent" }, orderColumn: "created_at", artifacts: ["calculator", "landing_page"],
+    columns: ["id", "agent_id", "name", "slug", "magnet_type", "is_active", "settings", "submission_count", "created_at"],
+    map: (r) => {
+      const calc = r.magnet_type === "calculator"
+      const lifecycle = (r.settings && typeof r.settings === "object" ? (r.settings as Row).lifecycle : null) as Row | null
+      return { title: s(r.name) ?? (calc ? "Calculator" : "Landing page"), artifactType: calc ? `calculator:${s(((r.settings as Row | null)?.calculator as Row | undefined)?.kind) ?? "unknown"}` : `landing_page:${s(r.magnet_type) ?? "form"}`,
+        artifact: calc ? "calculator" : "landing_page", channels: ["web"], rawStatus: s(lifecycle?.state) ?? (r.is_active === true ? "active" : "inactive"),
+        status: r.is_active === true ? "posted" : lifecycle?.state === "published" ? "cancelled" : "draft",
+        creatorAgentId: s(r.agent_id), destinationUrls: s(r.slug) ? [`/lm/${r.slug}`] : [], engagement: metrics({ submissions: r.submission_count }), link: "/dashboard/marketing/studio?tab=command" }
+    } },
 ]
 
 /** content_topic_uses.asset_type (its live CHECK) → the table that asset id lives in; null = no catalog table (stated, not guessed). */

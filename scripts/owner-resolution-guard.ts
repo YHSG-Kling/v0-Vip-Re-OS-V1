@@ -250,6 +250,10 @@ async function main(): Promise<void> {
     "server_action:app/actions/channel-presets.ts#upsertChannelPreset": { via: "per-call", owner: undefined }, // CHANNEL_TABLE[channel]: each preset table has its own steward
     "server_action:app/actions/podcast-generation.ts#generatePodcastScriptDraft": { via: "domain", owner: "campaign_orchestrator" }, // podcast_episodes' steward
     "server_action:app/actions/social/generate-social-post.ts#generateContextualDraft": { via: "domain", owner: "campaign_orchestrator" }, // social_posts' steward
+    // WAVE 156 (lane 156H): the seller net sheet now prices through lib/calculators/artifact.ts computeInternalSellerNet (the
+    // brokerage's agreed commission — commission_structures, read in the engine's caller, not in this span), so its own span
+    // writes only the ledger carrier: a log-only row whose subject is the commission structure → its steward.
+    "server_action:app/actions/calculators.ts#calculateSellerNet": { via: "domain", owner: "finance_manager" },
   }
   // A RETIRED door stays retired: it is no longer a census row, and its file no longer exports it as a public endpoint.
   const retired = Object.entries(G09).filter(([, d]) => d.via.startsWith("retired:"))

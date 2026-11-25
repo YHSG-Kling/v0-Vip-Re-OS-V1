@@ -133,7 +133,7 @@ import { PredictionWidget, type PredictionData } from "@/app/components/predicti
 import dynamic from "next/dynamic"
 const ContentLab = dynamic(() => import("@/app/content-studio/content-studio-client"), { ssr: false })
 const CONTENT_LAB_SECTIONS = ["link-to-video", "ideas", "keywords", "repurpose", "video"] as const
-const ContentCommandCenter = dynamic(() => import("./components/content-command-center"), { ssr: false })
+const ContentCommandCenter = dynamic(() => import("./components/content-command-center"), { ssr: false }); const CalculatorStudio = dynamic(() => import("@/app/components/calculators/CalculatorStudio"), { ssr: false }) // wave 156H: calculator artifacts
 import {
   CampaignLauncherPanel,
   CompetitorWatchPanel,
@@ -2048,7 +2048,7 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
           {/* Content and Channel Command Center (wave 154, lane 154G2 — G7): one scoped index of every canonical content
               record, with each action calling its existing writer. Loaded on demand so the studio entry stays light. */}
           <TabsContent value="command" className="space-y-6">
-            {activeTab === "command" && <ContentCommandCenter />}
+            {activeTab === "command" && <ContentCommandCenter />}{activeTab === "command" && <CalculatorStudio />}
           </TabsContent>
 
           {/* Content Lab — the legacy content-studio body, mounted (lane 85E). */}

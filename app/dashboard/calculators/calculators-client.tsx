@@ -17,7 +17,6 @@ import { Loader2, Save, Plus, Trash2 } from "lucide-react"
 import {
   calculateSellerNet,
   compareMortgageScenarios,
-  calculateRentVsBuy,
   saveCalculation,
   getSavedCalculations,
   emailCalculationResults,
@@ -32,7 +31,9 @@ import { getOrCreateVisitorId, isVisitorIdPersistent } from "@/lib/tools/visitor
 
 type SellerNetResult = Awaited<ReturnType<typeof calculateSellerNet>>
 type MortgageResult = Awaited<ReturnType<typeof compareMortgageScenarios>>
-type RentVsBuyResult = Awaited<ReturnType<typeof calculateRentVsBuy>>
+// wave 156H: calculateRentVsBuy retired — the Rent vs Buy tab renders EngineCalculatorPanel (the ONE engine)
+import { EngineCalculatorPanel } from "@/app/components/calculators/EngineCalculatorPanel"
+import type { CalculatorOutcome } from "@/lib/calculators/engine"
 
 interface MortgageScenario {
   name: string
@@ -91,6 +92,10 @@ function SellerNetTab({ brokerageId }: { brokerageId: string }) {
   const [repairsConcessions, setRepairsConcessions] = useState("")
   const [stagingCost, setStagingCost] = useState("")
   const [movingCost, setMovingCost] = useState("")
+  // Wave 156 (156H): the figures the sheet used to invent (title 0.7%, escrow 1.5%, a 0.1% transfer tax) are now the seller's.
+  const [titleEscrowFees, setTitleEscrowFees] = useState("")
+  const [transferTaxAmount, setTransferTaxAmount] = useState("")
+  const [buyerBrokerCompPct, setBuyerBrokerCompPct] = useState("")
 
   const US_STATES = [
     "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA",
@@ -117,6 +122,9 @@ function SellerNetTab({ brokerageId }: { brokerageId: string }) {
         stagingCost: stagingCost ? parseFloat(stagingCost) : undefined,
         movingCost: movingCost ? parseFloat(movingCost) : undefined,
         brokerageId,
+        titleEscrowFees: titleEscrowFees ? parseFloat(titleEscrowFees) : undefined,
+        transferTaxAmount: transferTaxAmount ? parseFloat(transferTaxAmount) : undefined,
+        buyerBrokerCompPct: buyerBrokerCompPct ? parseFloat(buyerBrokerCompPct) : undefined,
       })
       setResult(res)
       setSaveMsg(null)
@@ -136,7 +144,7 @@ function SellerNetTab({ brokerageId }: { brokerageId: string }) {
     })
   }
 
-  const canCalculate = !!homeValue && !!location && !!state
+  const canCalculate = !!homeValue && !!location && !!state && titleEscrowFees !== ""
 
   return (
     <div className="space-y-6">
@@ -189,6 +197,21 @@ function SellerNetTab({ brokerageId }: { brokerageId: string }) {
             </div>
           </div>
 
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="space-y-1.5">
+              <Label>Title, escrow &amp; settlement ($ — from a quote)</Label>
+              <Input type="number" placeholder="required" value={titleEscrowFees} onChange={(e) => setTitleEscrowFees(e.target.value)} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Transfer tax ($ — blank uses the cited statute for FL, CA or NY; enter 0 if none)</Label>
+              <Input type="number" placeholder="cited statute" value={transferTaxAmount} onChange={(e) => setTransferTaxAmount(e.target.value)} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Buyer-broker compensation the seller pays (%, optional)</Label>
+              <Input type="number" placeholder="not included" value={buyerBrokerCompPct} onChange={(e) => setBuyerBrokerCompPct(e.target.value)} />
+            </div>
+          </div>
+
           <div className="border-t pt-4">
             <p className="text-sm text-muted-foreground mb-3">Optional adjustments</p>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -205,7 +228,7 @@ function SellerNetTab({ brokerageId }: { brokerageId: string }) {
                 <Label>Repairs / Concessions ($)</Label>
                 <Input
                   type="number"
-                  placeholder="auto"
+                  placeholder="0"
                   value={repairsConcessions}
                   onChange={(e) => setRepairsConcessions(e.target.value)}
                 />
@@ -223,7 +246,7 @@ function SellerNetTab({ brokerageId }: { brokerageId: string }) {
                 <Label>Moving Cost ($)</Label>
                 <Input
                   type="number"
-                  placeholder="2000"
+                  placeholder="0"
                   value={movingCost}
                   onChange={(e) => setMovingCost(e.target.value)}
                 />
@@ -236,6 +259,10 @@ function SellerNetTab({ brokerageId }: { brokerageId: string }) {
           </Button>
         </CardContent>
       </Card>
+
+      {result && !result.success && (
+        <p role="alert" className="text-sm text-destructive">{result.error}</p>
+      )}
 
       {result && result.success && (
         <>
@@ -290,6 +317,18 @@ function SellerNetTab({ brokerageId }: { brokerageId: string }) {
             </CardContent>
           </Card>
 
+          {"assumptions" in result && Array.isArray(result.assumptions) && (
+            <Card>
+              <CardHeader><CardTitle className="text-base">Assumptions · {result.period}</CardTitle></CardHeader>
+              <CardContent className="space-y-1 text-sm">
+                {result.assumptions.map((a) => (
+                  <p key={a.key}><span className="font-medium">{a.label}:</span> {a.display} <span className="text-xs text-muted-foreground">({a.basis.replace(/_/g, " ")}{a.source ? ` — ${a.source.citation}, read ${a.source.retrievedOn}` : ""})</span></p>
+                ))}
+                {result.disclaimers.map((d) => <p key={d} className="text-xs text-muted-foreground">{d}</p>)}
+              </CardContent>
+            </Card>
+          )}
+
           {/* AI Scenarios */}
           {result.scenarios && result.scenarios.length > 0 && (
             <Card>
@@ -340,9 +379,10 @@ function SellerNetTab({ brokerageId }: { brokerageId: string }) {
 // ─── Mortgage Comparison Tab ──────────────────────────────────────────────────
 
 const DEFAULT_SCENARIOS: MortgageScenario[] = [
-  { name: "30-Year Fixed", term: 30, interestRate: 7.0, downPayment: 60000, loanType: "fixed" },
-  { name: "15-Year Fixed", term: 15, interestRate: 6.5, downPayment: 60000, loanType: "fixed" },
-  { name: "5/1 ARM", term: 30, interestRate: 6.25, downPayment: 60000, loanType: "arm" },
+  // Wave 156 (156H round 2): no prefilled rate or down payment — each scenario's rate is the lender's quote the person enters.
+  { name: "30-Year Fixed", term: 30, interestRate: 0, downPayment: 0, loanType: "fixed" },
+  { name: "15-Year Fixed", term: 15, interestRate: 0, downPayment: 0, loanType: "fixed" },
+  { name: "5/1 ARM", term: 30, interestRate: 0, downPayment: 0, loanType: "arm" },
 ]
 
 function MortgageTab({ brokerageId: _brokerageId }: { brokerageId: string }) {
@@ -377,7 +417,7 @@ function MortgageTab({ brokerageId: _brokerageId }: { brokerageId: string }) {
     if (scenarios.length >= 3) return
     setScenarios((prev) => [
       ...prev,
-      { name: `Scenario ${prev.length + 1}`, term: 30, interestRate: 7.0, downPayment: 0, loanType: "fixed" },
+      { name: `Scenario ${prev.length + 1}`, term: 30, interestRate: 0, downPayment: 0, loanType: "fixed" },
     ])
   }
 
@@ -388,6 +428,7 @@ function MortgageTab({ brokerageId: _brokerageId }: { brokerageId: string }) {
   function handleCalculate() {
     const la = parseFloat(loanAmount)
     if (!la || scenarios.length === 0) return
+    if (scenarios.some((sc) => !(sc.interestRate > 0))) { setResult({ success: false, error: "Enter each scenario's interest rate (your lender's quote) — none is assumed." } as MortgageResult); return }
 
     startTransition(async () => {
       const res = await compareMortgageScenarios({ loanAmount: la, scenarios })
@@ -618,78 +659,23 @@ function MortgageTab({ brokerageId: _brokerageId }: { brokerageId: string }) {
 
 // ─── Rent vs Buy Tab ──────────────────────────────────────────────────────────
 
-function RentVsBuyTab({ brokerageId }: { brokerageId: string }) {
+function RentVsBuyTab({ brokerageId: _brokerageId }: { brokerageId: string }) {
+  // Wave 156 (156H round 2): the ONE engine's "buy_vs_rent" on the person's own figures — rent growth, appreciation, selling
+  // cost, tax, insurance and maintenance are asked for (calculateRentVsBuy filled them with 3% / 1.25% / 1% / $150 defaults and
+  // a 7% "opportunity" return and 25% bracket nobody entered — tombstone in app/actions/calculators.ts).
   const [visitorId] = useState(getOrCreateVisitorId)
-  const [isPending, startTransition] = useTransition()
   const [isSaving, startSaveTransition] = useTransition()
-  const [result, setResult] = useState<RentVsBuyResult | null>(null)
+  const [result, setResult] = useState<CalculatorOutcome | null>(null)
   const [saveMsg, setSaveMsg] = useState<string | null>(null)
-  // The address a copy is emailed to. saveCalculation has always ACCEPTED an
-  // email and its success message has always promised "we'll email you a copy",
-  // but no caller ever supplied one and nothing ever sent it. The address is
-  // recorded ON THE ROW here because emailCalculationResults refuses to send
-  // anywhere else — the destination is never the caller's to choose.
   const [saveEmail, setSaveEmail] = useState("")
 
-  const [rentAmount, setRentAmount] = useState("")
-  const [homePrice, setHomePrice] = useState("")
-  const [downPayment, setDownPayment] = useState("")
-  const [interestRate, setInterestRate] = useState("")
-  const [yearsToStay, setYearsToStay] = useState("")
-  const [annualAppreciation, setAnnualAppreciation] = useState("")
-  const [city, setCity] = useState("")
-
-  function handleCalculate() {
-    const fields = { rentAmount, homePrice, downPayment, interestRate, yearsToStay }
-    if (Object.values(fields).some((v) => !v)) return
-
-    startTransition(async () => {
-      const res = await calculateRentVsBuy({
-        rentAmount: parseFloat(rentAmount),
-        homePrice: parseFloat(homePrice),
-        downPayment: parseFloat(downPayment),
-        interestRate: parseFloat(interestRate),
-        yearsToStay: parseFloat(yearsToStay),
-        annualAppreciation: annualAppreciation ? parseFloat(annualAppreciation) / 100 : undefined,
-        city: city || undefined,
-        brokerageId,
-      })
-      setResult(res)
-      setSaveMsg(null)
-    })
-  }
-
-  /**
-   * Save only. The Share button that sat beside this was REMOVED on the owner's
-   * ruling: "not sure why we would need to share a calculator, sharing property
-   * listings yes". Listing sharing already exists at
-   * /dashboard/listings/[id]/share — that is the capability that was wanted.
-   *
-   * It was also broken and unsafe in three ways, which is why nothing is lost:
-   *   · the URL it produced, /tools/shared/{token}, had NO ROUTE — every link an
-   *     agent copied and sent to a client 404'd.
-   *   · tool_shares RLS requires brokerage membership, so even with a route the
-   *     recipient (a client, by definition not a member) could never read it.
-   *   · the token was `Date.now()` plus ~24 bits of Math.random() — guessable —
-   *     and the shared payload carried the saver's email address.
-   */
   function handleSave() {
-    if (!result) return
+    if (!result || !result.ok) return
     startSaveTransition(async () => {
-      const res = await saveCalculation({
-        toolName: "rent_vs_buy",
-        calculationData: result,
-        visitorId,
-        email: saveEmail.trim() || undefined,
-      })
+      const res = await saveCalculation({ toolName: "rent_vs_buy", calculationData: result, visitorId, email: saveEmail.trim() || undefined })
       setSaveMsg(res.success ? saveMessageWithRetrievalCaveat(res.message ?? "Saved.") : "Save failed.")
     })
   }
-
-  const canCalculate =
-    !!rentAmount && !!homePrice && !!downPayment && !!interestRate && !!yearsToStay
-
-  const isBuyBetter = result?.recommendation?.startsWith("BUYING")
 
   return (
     <div className="space-y-6">
@@ -697,182 +683,19 @@ function RentVsBuyTab({ brokerageId }: { brokerageId: string }) {
         <CardHeader>
           <CardTitle className="text-lg">Rent vs. Buy Calculator</CardTitle>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="space-y-1.5">
-              <Label>Monthly Rent ($)</Label>
-              <Input
-                type="number"
-                placeholder="2500"
-                value={rentAmount}
-                onChange={(e) => setRentAmount(e.target.value)}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label>Home Price ($)</Label>
-              <Input
-                type="number"
-                placeholder="500000"
-                value={homePrice}
-                onChange={(e) => setHomePrice(e.target.value)}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label>Down Payment ($)</Label>
-              <Input
-                type="number"
-                placeholder="100000"
-                value={downPayment}
-                onChange={(e) => setDownPayment(e.target.value)}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label>Interest Rate (%)</Label>
-              <Input
-                type="number"
-                step="0.01"
-                placeholder="7.0"
-                value={interestRate}
-                onChange={(e) => setInterestRate(e.target.value)}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label>Years Planning to Stay</Label>
-              <Input
-                type="number"
-                placeholder="5"
-                value={yearsToStay}
-                onChange={(e) => setYearsToStay(e.target.value)}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label>Annual Appreciation (% — optional)</Label>
-              <Input
-                type="number"
-                step="0.1"
-                placeholder="3"
-                value={annualAppreciation}
-                onChange={(e) => setAnnualAppreciation(e.target.value)}
-              />
-            </div>
-            <div className="space-y-1.5 sm:col-span-2">
-              <Label>City (optional)</Label>
-              <Input
-                placeholder="Austin"
-                value={city}
-                onChange={(e) => setCity(e.target.value)}
-              />
-            </div>
-          </div>
-
-          <Button onClick={handleCalculate} disabled={!canCalculate || isPending} className="w-full sm:w-auto">
-            {isPending ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Calculating…</> : "Calculate"}
-          </Button>
+        <CardContent>
+          <EngineCalculatorPanel kind="buy_vs_rent" visitorId={visitorId} onResult={(o) => { setResult(o); setSaveMsg(null) }} />
         </CardContent>
       </Card>
-
-      {result && result.success && (
-        <>
-          {/* Recommendation Banner */}
-          <Card className={`border-2 ${isBuyBetter ? "border-green-500 bg-green-50 dark:bg-green-950/20" : "border-blue-500 bg-blue-50 dark:bg-blue-950/20"}`}>
-            <CardContent className="p-4">
-              <p className={`font-semibold ${isBuyBetter ? "text-green-700 dark:text-green-400" : "text-blue-700 dark:text-blue-400"}`}>
-                {result.recommendation}
-              </p>
-              <p className="text-sm text-muted-foreground mt-1">
-                Break-even at: <strong>{result.breakEvenYears} years</strong>
-              </p>
-            </CardContent>
-          </Card>
-
-          {/* Scenario comparison */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Renting</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Monthly Rent</span>
-                  <span className="font-medium">{fmt(result.rentScenario.monthlyPayment)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Total Cost ({yearsToStay} yrs)</span>
-                  <span className="font-medium">{fmt(result.rentScenario.totalCost)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Equity Built</span>
-                  <span className="font-medium">$0</span>
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Buying</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Monthly Payment</span>
-                  <span className="font-medium">{fmt(result.buyScenario.monthlyPayment)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Total Cost ({yearsToStay} yrs)</span>
-                  <span className="font-medium">{fmt(result.buyScenario.totalCost)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Equity Built</span>
-                  <span className="font-medium text-green-700">{fmt(result.buyScenario.equityBuilt)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Home Value</span>
-                  <span className="font-medium">{fmt(result.buyScenario.homeValueAfterYears)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Net If Sold</span>
-                  <span className="font-medium">{fmt(result.buyScenario.netProceedsIfSold)}</span>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* Analysis */}
-          {result.analysis && (
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Analysis</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2 text-sm">
-                {Object.entries(result.analysis).map(([key, val]) => (
-                  <div key={key} className="flex flex-col sm:flex-row sm:gap-3">
-                    <span className="text-muted-foreground capitalize min-w-40 shrink-0">
-                      {key.replace(/([A-Z])/g, " $1").trim()}
-                    </span>
-                    <span>{String(val)}</span>
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Save. Sharing a CALCULATION was removed — see the note on
-              handleSave below. Sharing a property LISTING is the wanted
-              capability and lives at /dashboard/listings/[id]/share. */}
-          <div className="flex flex-wrap items-center gap-3">
-            <Input
-              type="email"
-              className="max-w-64"
-              placeholder="Email a copy to (optional)"
-              value={saveEmail}
-              onChange={(e) => setSaveEmail(e.target.value)}
-            />
-            <Button variant="outline" onClick={handleSave} disabled={isSaving}>
-              {isSaving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Save className="h-4 w-4 mr-2" />}
-              Save
-            </Button>
-            {saveMsg && <p className="text-sm text-muted-foreground">{saveMsg}</p>}
-          </div>
-        </>
+      {result && result.ok && (
+        <div className="flex flex-wrap items-center gap-3">
+          <Input type="email" className="max-w-64" placeholder="Email a copy to (optional)" value={saveEmail} onChange={(e) => setSaveEmail(e.target.value)} />
+          <Button variant="outline" onClick={handleSave} disabled={isSaving}>
+            {isSaving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Save className="h-4 w-4 mr-2" />}
+            Save
+          </Button>
+          {saveMsg && <p className="text-sm text-muted-foreground">{saveMsg}</p>}
+        </div>
       )}
     </div>
   )

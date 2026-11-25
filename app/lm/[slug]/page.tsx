@@ -4,6 +4,7 @@ import { HomeValueForm } from "@/app/components/lead-magnet-forms/HomeValueForm"
 import { GenericCaptureForm } from "@/app/components/lead-magnet-forms/GenericCaptureForm"
 import { parseLeadMagnetAttribution } from "@/lib/lead-magnets/attribution"
 import { LandingVideo } from "@/app/components/public-site/LandingVideo"
+import { CalculatorArtifact } from "@/app/components/calculators/CalculatorArtifact"
 import type { Metadata } from "next"
 
 type SearchParams = Record<string, string | string[] | undefined>
@@ -201,6 +202,11 @@ export default async function LeadMagnetLandingPage({ params, searchParams }: Pa
   // lib/lead-magnets/magnet-funnel.ts FunnelConsentSpec, `wording: "rendered_by_c15"`) and never authors words; the ONE
   // component renders them. The declared channels become the boxes offered — direct mail only where the form asks for an
   // address (a mail box with nothing to mail to would promise a channel the door cannot use).
+  // WAVE 156 (lane 156H): a CALCULATOR artifact (settings.calculator — lib/calculators/artifact.ts) renders the one public
+  // calculator in place of the capture form; the tenant's brand is resolved here, so it is on the first render.
+  const { calculatorArtifactOf, loadCalculatorBrand } = await import("@/lib/calculators/artifact")
+  const calculatorConfig = calculatorArtifactOf((form as { settings?: unknown }).settings)
+  const calculator = calculatorConfig ? { config: calculatorConfig, brand: await loadCalculatorBrand(createServiceClient(), form.brokerage_id, calculatorConfig) } : null
   const funnelConsent = ((form as { settings?: { funnel?: { consent?: { contract?: string; wording?: string; channels?: unknown } } } | null }).settings?.funnel?.consent) ?? null
   const funnelChannels = funnelConsent?.contract === "C15" && funnelConsent.wording === "rendered_by_c15" && Array.isArray(funnelConsent.channels)
     ? (funnelConsent.channels as string[]).filter((c): c is "email" | "sms" | "voice" | "direct_mail" =>
@@ -249,7 +255,20 @@ export default async function LeadMagnetLandingPage({ params, searchParams }: Pa
 
         {/* Card shell */}
         <div className="bg-card border rounded-2xl shadow-sm p-8">
-          {magnetType === "home_valuation" ? (
+          {calculator ? (
+            <CalculatorArtifact
+              formId={form.id}
+              kind={calculator.config.kind}
+              jurisdiction={calculator.config.jurisdiction}
+              hiddenFields={calculator.config.hiddenFields}
+              brand={calculator.brand}
+              explainer={calculator.config.explainer}
+              cta={calculator.config.cta}
+              consentBrandName={consentBrandName}
+              attribution={attribution}
+              preview={isDraftPreview}
+            />
+          ) : magnetType === "home_valuation" ? (
             <HomeValueForm
               formId={form.id}
               brokerageId={form.brokerage_id}

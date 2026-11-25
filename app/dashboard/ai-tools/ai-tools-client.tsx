@@ -56,7 +56,7 @@ import { checkThemFirstCompliance } from "@/app/actions/ai-chat"
 import {
   compareNeighborhoods,
   analyzeInvestmentProperty,
-  calculateRentVsBuy,
+  runCalculatorTool,
   calculateHomeValue,
 } from "@/app/actions/calculators"
 
@@ -96,7 +96,12 @@ const TOOLS = [
       { name: "income", type: "text", label: "Annual income", placeholder: "$120,000" },
       { name: "debt", type: "text", label: "Monthly debt", placeholder: "$500" },
       { name: "downPayment", type: "text", label: "Down payment", placeholder: "$50,000" },
-      { name: "rate", type: "text", label: "Interest rate", placeholder: "6.5%" },
+      { name: "rate", type: "text", label: "Interest rate (%) — the lender's quote", placeholder: "rate %" },
+      { name: "termYears", type: "text", label: "Loan term (years)", placeholder: "years" },
+      { name: "propertyTax", type: "text", label: "Property tax per year ($)", placeholder: "from the county" },
+      { name: "insurance", type: "text", label: "Insurance per year ($)", placeholder: "from a quote" },
+      { name: "housingRatio", type: "text", label: "Housing-payment limit (% of income — the lender's)", placeholder: "%" },
+      { name: "debtRatio", type: "text", label: "Total-debt limit (% of income — the lender's)", placeholder: "%" },
     ],
   },
   {
@@ -312,10 +317,13 @@ const TOOLS = [
     inputs: [
       { name: "purchasePrice", type: "text", label: "Purchase price ($)", placeholder: "450000" },
       { name: "downPaymentPercent", type: "text", label: "Down payment (%)", placeholder: "25" },
-      { name: "interestRate", type: "text", label: "Interest rate (%)", placeholder: "7.0" },
+      { name: "interestRate", type: "text", label: "Interest rate (%)", placeholder: "rate %" },
       { name: "estimatedRent", type: "text", label: "Monthly rent ($)", placeholder: "2800" },
       { name: "propertyTaxes", type: "text", label: "Annual property taxes ($)", placeholder: "6000" },
       { name: "insurance", type: "text", label: "Annual insurance ($)", placeholder: "1800" },
+      { name: "loanTermYears", type: "text", label: "Loan term (years)", placeholder: "years" },
+      { name: "vacancyRate", type: "text", label: "Vacancy (% of the year)", placeholder: "%" },
+      { name: "maintenanceReserve", type: "text", label: "Maintenance reserve (% of rent)", placeholder: "%" },
     ],
   },
   {
@@ -327,11 +335,19 @@ const TOOLS = [
     icon: Calculator,
     directAction: true,
     inputs: [
-      { name: "rentAmount", type: "text", label: "Monthly rent ($)", placeholder: "2500" },
+      { name: "monthlyRent", type: "text", label: "Monthly rent ($)", placeholder: "2500" },
       { name: "homePrice", type: "text", label: "Home price ($)", placeholder: "500000" },
       { name: "downPayment", type: "text", label: "Down payment ($)", placeholder: "100000" },
-      { name: "interestRate", type: "text", label: "Interest rate (%)", placeholder: "7.0" },
-      { name: "yearsToStay", type: "text", label: "Years planning to stay", placeholder: "5" },
+      { name: "ratePct", type: "text", label: "Interest rate (%)", placeholder: "rate %" },
+      { name: "termYears", type: "text", label: "Loan term (years)", placeholder: "years" },
+      { name: "years", type: "text", label: "Years planning to stay", placeholder: "5" },
+      { name: "rentIncreasePct", type: "text", label: "Yearly rent increase (%)", placeholder: "%" },
+      { name: "appreciationPct", type: "text", label: "Yearly home-value change (%)", placeholder: "%" },
+      { name: "sellingCostPct", type: "text", label: "Cost to sell at the end (%)", placeholder: "%" },
+      { name: "annualPropertyTax", type: "text", label: "Property tax per year ($)", placeholder: "$" },
+      { name: "annualInsurance", type: "text", label: "Insurance per year ($)", placeholder: "$" },
+      { name: "annualMaintenance", type: "text", label: "Maintenance per year ($)", placeholder: "$" },
+      { name: "buyingClosingCosts", type: "text", label: "Closing costs to buy ($)", placeholder: "$" },
     ],
   },
 ]
@@ -422,8 +438,10 @@ export function AIToolsClient({ agentId, userId, userRole }: AIToolsClientProps)
             propertyTaxes: parseFloat(inputs.propertyTaxes),
             insurance: parseFloat(inputs.insurance),
             hoaFees: 0,
-            maintenanceReserve: 5,
-            vacancyRate: 5,
+            // Wave 156 (156H round 2): the investor's own vacancy, maintenance and term — the 5% / 5% / 30 years this used were invented.
+            maintenanceReserve: parseFloat(inputs.maintenanceReserve),
+            vacancyRate: parseFloat(inputs.vacancyRate),
+            loanTermYears: parseFloat(inputs.loanTermYears),
           })
         } else if (tool.id === "home_value") {
           // Optional facts stay UNKNOWN when the agent leaves them blank — null,
@@ -442,14 +460,9 @@ export function AIToolsClient({ agentId, userId, userRole }: AIToolsClientProps)
             squareFeet: num(inputs.squareFeet),
           })
         } else if (tool.id === "rent_vs_buy") {
-          result = await calculateRentVsBuy({
-            rentAmount: parseFloat(inputs.rentAmount),
-            homePrice: parseFloat(inputs.homePrice),
-            downPayment: parseFloat(inputs.downPayment),
-            interestRate: parseFloat(inputs.interestRate),
-            yearsToStay: parseFloat(inputs.yearsToStay),
-            brokerageId: "",
-          })
+          // Wave 156 (156H round 2): the ONE engine (runCalculatorTool → "buy_vs_rent") on the agent's own figures; calculateRentVsBuy is retired.
+          const r = await runCalculatorTool({ kind: "buy_vs_rent", inputs })
+          result = !r.success ? r.error : r.outcome.ok ? r.outcome : `Enter a value — ${[...r.outcome.missing.map((m) => m.message), ...r.outcome.refused.map((x) => `${x.label}: ${x.reason}`)].join("; ")}`
         }
         if (result) {
           const formatted = typeof result === "string" ? result : JSON.stringify(result, null, 2)
