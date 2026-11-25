@@ -142,11 +142,11 @@ export async function applyGoverningTermsDecisions(db: Db, input: {
   if (accept.length === 0 && dismiss.length === 0) return { ok: true, applied: [], dismissed: [], skipped, source: p.source }
 
   const patch: Record<string, unknown> = {}
-  const milestones: Array<{ transaction_id: string; brokerage_id: string; milestone_name: string; status: string; due_date: string }> = []
+  const milestones: Array<{ transaction_id: string; brokerage_id: string; milestone_name: string; status: string; target_date: string }> = []
   for (const f of accept) {
     const spec = GOVERNING_TERM_FIELDS[f], v = p.fields[f]
     if (spec.deal) patch[spec.deal] = v
-    if (spec.milestone) milestones.push({ transaction_id: input.transactionId, brokerage_id: input.brokerageId, milestone_name: spec.milestone, status: "pending", due_date: String(v) })
+    if (spec.milestone) milestones.push({ transaction_id: input.transactionId, brokerage_id: input.brokerageId, milestone_name: spec.milestone, status: "pending", target_date: String(v) })
   }
   if (Object.keys(patch).length > 0) {
     const { data: upd, error } = await db.from("transactions").update(patch).eq("id", input.transactionId).eq("brokerage_id", input.brokerageId).select("id")
