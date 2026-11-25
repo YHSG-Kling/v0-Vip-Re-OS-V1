@@ -3769,7 +3769,7 @@ export async function recordClosingParty(input: {
   const draft = cp.decideClosingPartyDraft({ partyRole: input.party_role, represents: input.represents ?? null, name: input.name, vendorId: input.vendor_id ?? null })
   if (!draft.ok) return { success: false as const, error: draft.error }
   const db = gate.db
-  let factSource: "vendor_seat" | "agent_entered" = "agent_entered"
+  let factSource: Exclude<import("@/lib/transactions/closing-parties").ClosingFactSource, "party_confirmed"> = "agent_entered" // a confirmation is recorded only by confirmClosingPartyFact
   if (input.vendor_id) {
     // THE VENDOR RAIL (CLAUDE.md §4): this tenant's vendor, a category that fits the role, already assigned to THIS deal. Never created here.
     const { data: v, error: vErr } = await db.from("vendors").select("id, category, brokerage_id").eq("id", input.vendor_id).eq("brokerage_id", gate.brokerageId).maybeSingle()
@@ -3830,7 +3830,7 @@ export async function confirmClosingPartyFact(participantId: string, input: { ev
   const { data: p, error: pErr } = await db.from("transaction_participants").select("id, party_role, represents").eq("id", participantId).eq("transaction_id", gate.transactionId).maybeSingle()
   if (pErr) return { success: false as const, error: isMissingColumn(pErr) ? CLOSING_SCHEMA_PENDING : `Could not read the party: ${pErr.message}` }
   if (!p) return { success: false as const, error: "Participant not found on this deal." }
-  const patch: Record<string, unknown> = { fact_source: "party_confirmed", fact_confirmed_at: new Date().toISOString(), fact_confirmed_by: gate.actorUserId, fact_evidence: evidence.slice(0, 1000) }
+  const patch: Record<string, unknown> = { fact_source: ("party_confirmed" satisfies import("@/lib/transactions/closing-parties").ClosingFactSource), fact_confirmed_at: new Date().toISOString(), fact_confirmed_by: gate.actorUserId, fact_evidence: evidence.slice(0, 1000) }
   if (input?.represents != null && input.represents !== "") {
     const d = cp.decideClosingPartyDraft({ partyRole: (p as { party_role?: string | null }).party_role, represents: input.represents, name: "confirmed" })
     if (!d.ok) return { success: false as const, error: d.error }
