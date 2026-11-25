@@ -12,7 +12,7 @@ In one paragraph: seventeen lanes built or corrected the things the owner named 
 |---|---|
 | Repository / branch | `YHSG-Kling/v0-Vip-Re-OS-V1` · `claude/settings-consolidation-ui-0cd7lo` · pull request #49 |
 | Starting commit | `e79a13b8` — local and remote were the same commit when the wave began |
-| Integration commit this report was written against | `2ad676aa` (234 commits after the start; 499 files changed, 33,423 insertions, 4,771 deletions) |
+| Integration commit this report was written against | `db08717e` (237 commits after the start; 499 files changed, 33,441 insertions, 4,771 deletions) |
 | Pushes | first push `4af0af99` (231 commits) after the chain's exit line read 0 on it. CI's production build then failed on that head (see "What CI found"). This revision of the report rides the fix; the pull request records each pushed head and its CI runs |
 | Worktrees | one integration worktree and eighteen lane worktrees, all local to the build container; every lane branch is merged; nothing else holds unmerged work |
 | Unpushed commits | only the commits after `4af0af99` (the build fix, the new rule and this revision), pushed by the same rule: after the chain's own exit line reads 0 on the head |
@@ -76,6 +76,7 @@ The local chain does not run the production build (it needs more memory than the
 
 - **Fix.** The checksum uses the Web Crypto API, which exists in both the server and the browser. It was checked against `node:crypto` for an empty input, text, 100 KB and a sub-array view: identical digests.
 - **The class, not the instance.** Webpack names one import path per offending module, so other paths could have been hiding behind it. `test:wave156-l` now walks the graph of every client component (1,294 modules, stopping at server actions) and fails on any reachable `node:` import, Node built-in or `server-only` module. On the pushed head it found exactly this one module, reached from five client entry points; on the fixed tree it finds none; on the control tree it is red.
+- **The guard workflow failed as well**, 48 minutes in, at one check of the recruiting guard: it compared a file with a copy in a control tree that exists only in the build container. Two more checks had the same flaw in another form — the arbiter guard read a baseline from an earlier commit by hash, which CI's shallow checkout does not hold, and one canary derived "modules the wave added" from git history, which in CI returns nothing and passed without checking anything. These were defects in the guards, not in the product. Comparisons against the starting commit now run only where that tree or commit is present and print "not checked here" where it is not; the tier check became a rule that needs no history (the tiers in code are exactly the tiers the live database admits). All 18 wave guards and CI's second guard step were then run in a depth-1 clone with no control trees: all pass.
 - **What this says about the verdict.** A chain that exits 0 is necessary and was not sufficient. The verdict in section 8 holds only for a head whose CI build is also green; the pull request is where that is recorded.
 
 ## 2. Owner corrections report
