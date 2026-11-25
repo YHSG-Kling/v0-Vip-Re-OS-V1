@@ -6,7 +6,7 @@ Owner ruling 18 (2026-10-29): *"All capabilities at all levels … Validate each
 
 **Verdicts.** BUILT — the screen reaches a data path. PARTIAL — it reaches one and says honestly that a part is not available / not configured. UNWIRED — interactive controls, no data path. STATIC — informational, no controls, no data (not a defect). REDIRECT — an alias that lands elsewhere. MISSING — no page serves the href. Dead CONTROLS inside a BUILT screen are `test:ui-wiring-census`'s (hard zero on every journey); page role gates are `test:page-role-gate-roster`'s; colour contrast is `test:ui-palette-contrast`'s.
 
-**Totals:** 836 role-surfaces — BUILT 750 · PARTIAL 71 · UNWIRED 0 · STATIC 14 · REDIRECT 1 · MISSING 0. Public pages: 39; contact-portal pages: 31. Expected-coverage gaps: 0.
+**Totals:** 838 role-surfaces — BUILT 752 · PARTIAL 71 · UNWIRED 0 · STATIC 14 · REDIRECT 1 · MISSING 0. Public pages: 39; contact-portal pages: 31. Expected-coverage gaps: 0.
 
 ## Role × domain (B = BUILT, P = PARTIAL, U = UNWIRED, S = STATIC, R = REDIRECT, M = MISSING; **GAP** = ruling 18 expects this level here and no surface exists; · = not expected, none)
 

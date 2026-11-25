@@ -1388,16 +1388,18 @@ function StandupAudioButton() {
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
   const [text, setText] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
+  const [canRegenerate, setCanRegenerate] = useState(false)
 
-  async function play() {
+  async function play(regenerate = false) {
     setErr(null)
+    setCanRegenerate(false)
     setLoading(true)
     try {
-      const res = await generateStandupAudio()
+      const res = await generateStandupAudio(regenerate ? { regenerate: true } : {})
       if (!res.success) { setErr(res.error ?? "Could not generate the standup."); return }
       setText(res.text ?? null)
       if (res.audioDataUrl) setAudioUrl(res.audioDataUrl)
-      else setErr(res.error ?? "Audio unavailable — showing the brief.")
+      else { setErr(res.error ?? "Audio unavailable — showing the brief."); setCanRegenerate(res.canRegenerate === true) }
     } catch {
       setErr("Could not generate the standup.")
     } finally {
@@ -1407,12 +1409,17 @@ function StandupAudioButton() {
 
   return (
     <div className="flex flex-col items-end gap-1">
-      <Button size="sm" variant="outline" disabled={loading} onClick={play} title="Hear your AI team's standup read aloud">
+      <Button size="sm" variant="outline" disabled={loading} onClick={() => play()} title="Hear your AI team's standup read aloud">
         {loading ? "…" : "▶ Hear the standup"}
       </Button>
       {audioUrl && <audio src={audioUrl} controls autoPlay className="h-8" />}
       {text && <p className="max-w-md text-right text-[11px] text-muted-foreground">{text}</p>}
       {err && <p className="text-[11px] text-destructive">{err}</p>}
+      {canRegenerate && (
+        <Button size="sm" variant="ghost" disabled={loading} onClick={() => play(true)} title="Generates new audio — a new, charged request">
+          Generate the audio again
+        </Button>
+      )}
     </div>
   )
 }

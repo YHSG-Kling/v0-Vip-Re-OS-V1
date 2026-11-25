@@ -31,7 +31,7 @@ export async function POST(request: NextRequest) {
     if (!auth.ok) return auth.response
 
     const body = await request.json()
-    const { text, voice_id, model_id = DEFAULT_MODEL, upload_to_storage = false } = body
+    const { text, voice_id, model_id = DEFAULT_MODEL, upload_to_storage = false, idempotency_key } = body
 
     if (!text || !voice_id) {
       return NextResponse.json({ error: "Missing required fields: text, voice_id" }, { status: 400 })
@@ -62,6 +62,9 @@ export async function POST(request: NextRequest) {
       voiceId: voice_id,
       modelId: model_id,
       brokerageId: auth.brokerageId ?? undefined,
+      // Wave 156 (156S round 4): a caller's unit of "once" (the D-ID route's render attempt) — PREFIXED with the SESSION
+      // tenant, so a body-supplied key can never reach another tenant's receipt; a repeat returns the same audio, uncharged.
+      idempotencyKey: typeof idempotency_key === "string" && idempotency_key.trim() ? `tts_route:${auth.brokerageId}:${idempotency_key.trim().slice(0, 200)}` : null,
     })
 
     if (!tts.success || !tts.audioBuffer) {

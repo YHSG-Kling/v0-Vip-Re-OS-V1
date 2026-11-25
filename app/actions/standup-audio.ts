@@ -24,9 +24,13 @@ export interface StandupAudioResult {
   audioDataUrl?: string
   voiceUsed?: "agent_clone" | "agent_generic_choice" | "platform_fallback"
   error?: string
+  /** true when the same audio was already generated (and paid for) today and was served again — no new charge. */
+  replayed?: boolean
+  /** true when the first audio could not be served again: the broker may ask for a NEW (budget-checked, receipted) one. */
+  canRegenerate?: boolean
 }
 
-export async function generateStandupAudio(): Promise<StandupAudioResult> {
+export async function generateStandupAudio(opts: { regenerate?: boolean } = {}): Promise<StandupAudioResult> {
   const ctx = await resolveWriteContextForTenant()
   if (!ctx.ok || !ctx.userId || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
@@ -42,7 +46,10 @@ export async function generateStandupAudio(): Promise<StandupAudioResult> {
   const lines = await generateManagerStandup(brokerageId)
   const script = composeStandupScript(lines, { hour: new Date().getHours() })
   const { createHash } = await import("node:crypto")
-  const scriptKey = `standup_audio:${brokerageId}:${userId}:${new Date().toISOString().slice(0, 10)}:${createHash("sha256").update(script).digest("hex").slice(0, 24)}`
+  // A REPEAT returns the SAME audio (the voice door serves its stored copy — no provider call, no charge). Only when that copy
+  // cannot be served does the broker get a plain message and the option to regenerate: a NEW key, so it is a new,
+  // budget-checked, receipted call — never an unbilled second call, never a billed duplicate of the first.
+  const scriptKey = `standup_audio:${brokerageId}:${userId}:${new Date().toISOString().slice(0, 10)}:${createHash("sha256").update(script).digest("hex").slice(0, 24)}${opts.regenerate ? `:regenerate:${Date.now()}` : ""}`
 
   // Resolve the broker's chosen voice (clone vs generic), same as the morning brief.
   const resolved = await resolveSelfVoice(userId)
@@ -58,6 +65,9 @@ export async function generateStandupAudio(): Promise<StandupAudioResult> {
     idempotencyKey: scriptKey,
   })
 
+  if (result.errorCode === "replay_unavailable") {
+    return { success: true, text: script, error: result.error, canRegenerate: true }
+  }
   // TTS unavailable (no key / quota) → still hand back the text so the UI shows the brief.
   if (!result.success || !result.audioBuffer) {
     return { success: true, text: script, error: result.error ?? "TTS unavailable" }
@@ -68,6 +78,7 @@ export async function generateStandupAudio(): Promise<StandupAudioResult> {
     text: script,
     audioDataUrl: audioBufferToDataUrl(result.audioBuffer),
     voiceUsed: resolved.source,
+    ...(result.replayed ? { replayed: true } : {}),
   }
   }) as Promise<StandupAudioResult>
 }

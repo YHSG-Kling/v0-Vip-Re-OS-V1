@@ -66,7 +66,7 @@ const code = (f: string): string => stripComments(raw(f))
 const G = globalThis as any
 G.__S = {
   mem: memSupabase({}) as MemClient,
-  calls: { elevenlabs: 0, did: 0, image: 0, fetch: 0, search: 0, imageBooked: 0, stt: 0, simli: 0, sends: 0 }, hosted: [] as Array<{ bucket: string; path: string }>, auth: null as any,
+  calls: { elevenlabs: 0, did: 0, image: 0, fetch: 0, search: 0, imageBooked: 0, stt: 0, simli: 0, sends: 0 }, hosted: [] as Array<{ bucket: string; path: string }>, auth: null as any, blobs: {} as Record<string, Buffer>,
   fail: false,
 }
 const OVERRIDE: Record<string, string> = {
@@ -83,7 +83,7 @@ const OVERRIDE: Record<string, string> = {
   "lib/ai/cost-tracking.ts": "export async function logAIImageUsage(){ globalThis.__S.calls.imageBooked++; return { booked: true, duplicate: false } }",
   // The host is bucket-aware here: a private (personal-videos) object comes back as a stored reference, a public one as a
   // public URL — exactly the two shapes issueBucketObjectUrl returns. Every hosting is recorded with its bucket.
-  "lib/remotion/media-host.ts": "export async function hostRenderedMedia(_svc, path, _b, _ct, bucket = 'video-assets'){ globalThis.__S.hosted.push({ bucket, path }); return bucket === 'personal-videos' ? 'docref://personal-videos/' + path : 'https://public.example.test/' + bucket + '/' + path }",
+  "lib/remotion/media-host.ts": "export async function hostRenderedMedia(_svc, path, bytes, _ct, bucket = 'video-assets'){ globalThis.__S.hosted.push({ bucket, path }); globalThis.__S.blobs[bucket + '/' + path] = Buffer.from(bytes); return bucket === 'documents' ? 'docref://documents/' + path : bucket === 'personal-videos' ? 'docref://personal-videos/' + path : 'https://public.example.test/' + bucket + '/' + path }",
   "lib/supabase/server.ts": "export async function createClient(){ return globalThis.__S.mem }; export async function createServerClient(){ return globalThis.__S.mem }",
   "lib/did/consent.ts": "export async function resolveConsentIdForAvatar(){ return 'consent-fixture' }; export async function findVerifiedConsent(){ return { id: 'consent-fixture' } }",
   "lib/kernel/providers.ts": "export async function resolveProvider(){ return { providerKey: 'did' } }",
@@ -410,13 +410,15 @@ async function main() {
   const OVER = "b-over", UNDER = "b-under"
   const budgetOf = (tier: string) => Number(evalMod.vendorBudgetForTier?.(tier) ?? 50)
   function spendWorld(): MemClient {
-    return memSupabase({
+    const w = memSupabase({
       brokerages: [{ id: OVER, plan_tier: "solo_agent" }, { id: UNDER, plan_tier: "brokerage" }],
       vendor_usage_tracking: [{ id: "spent-1", brokerage_id: OVER, vendor_name: "did", total_cost: budgetOf("solo_agent") + 1, request_metadata: {}, created_at: new Date().toISOString() }],
       agent_action_ledger: [], users: [], agents: [], ai_tool_usage: [], automation_errors: [],
     }, { unique: { agent_action_ledger: [["idempotency_key"]] }, uuidIds: true, stampCreatedAt: true })
+    ;(w as any).storage = { from: (bucket: string) => ({ download: async (path: string) => { const b = G.__S.blobs[`${bucket}/${path}`]; return b ? { data: new Blob([b]), error: null } : { data: null, error: { message: "object not found" } } } }) }
+    return w
   }
-  const reset = (fail: boolean | string = false) => { const db = spendWorld(); G.__S.mem = db; G.__S.calls = { elevenlabs: 0, did: 0, image: 0, fetch: 0, search: 0, imageBooked: 0, stt: 0, simli: 0, sends: 0 }; G.__S.hosted = []; G.__S.fail = fail; return db }
+  const reset = (fail: boolean | string = false) => { const db = spendWorld(); G.__S.mem = db; G.__S.calls = { elevenlabs: 0, did: 0, image: 0, fetch: 0, search: 0, imageBooked: 0, stt: 0, simli: 0, sends: 0 }; G.__S.hosted = []; G.__S.blobs = {}; G.__S.fail = fail; return db }
   const spendRows = (db: MemClient, b: string) => db.tables.vendor_usage_tracking.filter((r) => r.brokerage_id === b && r.id !== "spent-1")
   const receipts = (db: MemClient, b: string) => (db.tables.agent_action_ledger ?? []).filter((r) => r.brokerage_id === b)
   check("the ONE paid-egress composition exists (paid-egress.ts runPaidEgress)", typeof gate.runPaidEgress === "function")
@@ -510,7 +512,7 @@ async function main() {
     return new Response(new Uint8Array([1, 2, 3, 4]), { status: 200, headers: { "content-type": "image/jpeg" } })
   }) as typeof fetch
   const post = (body: Record<string, unknown>) => new Request("https://app.example.test/api/x", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
-  type DoorSpec = { name: string; call: (b: string, db: MemClient) => Promise<any>; count: () => number; books: "vendor" | "unknown_unit"; replay?: (db: MemClient) => void; inlineGate?: string; spendVendor?: string }
+  type DoorSpec = { name: string; call: (b: string, db: MemClient) => Promise<any>; count: () => number; books: "vendor" | "unknown_unit"; replay?: (db: MemClient) => void; inlineGate?: string; spendVendor?: string; same?: (first: any, second: any) => boolean }
   // The spend rows the door under test booked (a door that also crosses another paid door — dispatch's TTS leg — is judged
   // on its OWN vendor's rows; the other door books its own, proven in §D).
   let spendVendorUnderTest: string | null = null
@@ -532,22 +534,27 @@ async function main() {
     check(`${d.name}: a failed provider call books NOTHING and leaves a failed receipt`, spendFor(db, UNDER).length === 0 && rc(db, UNDER)[0]?.status === "failed", { threw: bad.threw, receipts: receipts(db, UNDER).map((x) => [x.status, x.outcome]) })
     if (d.replay) {
       db = reset(); seedCommon(db, UNDER)
-      await drive(() => d.call(UNDER, db))
+      const first = await drive(() => d.call(UNDER, db))
       d.replay(db)
-      await drive(() => d.call(UNDER, db))
+      const second = await drive(() => d.call(UNDER, db))
       check(`${d.name}: a replay under the same key → still 1 provider call, still 1 charge`, d.count() === 1 && spendFor(db, UNDER).length === 1, { calls: d.count(), spend: spendFor(db, UNDER).length })
+      if (d.same) {
+        const a = first.r instanceof Response ? await first.r.clone().json().catch(() => null) : first.r
+        const b = second.r instanceof Response ? await second.r.clone().json().catch(() => null) : second.r
+        check(`${d.name}: …and the replay RETURNS THE FIRST RUN'S RESULT (not an empty one)`, d.same(a, b), { first: JSON.stringify(a)?.slice(0, 160), second: JSON.stringify(b)?.slice(0, 160), threw: second.threw })
+      }
     }
     spendVendorUnderTest = null
   }
   const genRoute = await load("app/api/did/generate-video/route.ts")
   await proveDoor({
-    name: "D-ID generate-video route", count: () => G.__S.calls.did, books: "vendor",
+    name: "D-ID generate-video route", count: () => G.__S.calls.did, books: "vendor", same: (a, b) => !!a?.did_talk_id && a.did_talk_id === b?.did_talk_id,
     call: async () => genRoute.POST(post({ video_project_id: "vp-1", script: "Hello from the fixture.", elevenlabs_voice_id: "v1", agent_photo_url: "https://bucket.example.test/agent.jpg" })),
     replay: (db) => { db.tables.ai_video_projects[0].status = "failed" },
   })
   const cloneRoute = await load("app/api/elevenlabs/voice-clone/route.ts")
   await proveDoor({
-    name: "ElevenLabs voice-clone route", count: () => G.__S.calls.elevenlabs, books: "unknown_unit",
+    name: "ElevenLabs voice-clone route", count: () => G.__S.calls.elevenlabs, books: "unknown_unit", same: (a, b) => !!a?.elevenlabs_voice_id && a.elevenlabs_voice_id === b?.elevenlabs_voice_id,
     call: async () => cloneRoute.POST(post({ name: "Ada", sample_audio_urls: ["https://bucket.example.test/s.mp3"], isa_default: true, profile_id: "p-1", training_id: "train-1" })),
     replay: () => {},
   })
@@ -555,7 +562,7 @@ async function main() {
   for (const provider of ["elevenlabs", "whisper"] as const) {
     if (provider === "whisper") process.env.AI_GATEWAY_API_KEY = "fixture-gw"
     await proveDoor({
-      name: `speech-to-text (${provider === "elevenlabs" ? "ElevenLabs Scribe" : "gateway Whisper"})`, count: () => G.__S.calls.stt, books: "vendor",
+      name: `speech-to-text (${provider === "elevenlabs" ? "ElevenLabs Scribe" : "gateway Whisper"})`, count: () => G.__S.calls.stt, books: "vendor", same: (a, b) => !!a?.transcript && a.transcript === b?.transcript,
       call: async (b) => stt.transcribeMediaUrl("https://bucket.example.test/call.mp3", { brokerageId: b, provider, systemSource: "fixture_stt", idempotencyKey: "stt:call-1" }),
       replay: () => {}, inlineGate: "test:transcription-source T5-T7",
     })
@@ -563,14 +570,14 @@ async function main() {
   }
   const avatarRoute = await load("app/api/did/create-avatar/route.ts")
   await proveDoor({
-    name: "D-ID create-avatar route", count: () => G.__S.calls.did, books: "unknown_unit",
+    name: "D-ID create-avatar route", count: () => G.__S.calls.did, books: "unknown_unit", same: (a, b) => !!a && !a.error && !b?.error && JSON.stringify(a) === JSON.stringify(b),
     call: async () => avatarRoute.POST(post({ source_url: "https://bucket.example.test/agent.jpg", source_type: "photo", twin_id: "twin-1" })),
     replay: () => {}, inlineGate: "test:did-integration §13",
   })
   process.env.SIMLI_API_KEY = "fixture-simli"
   const faces = await load("lib/providers/simli/faces.ts")
   await proveDoor({
-    name: "Simli face creation", count: () => G.__S.calls.simli, books: "unknown_unit",
+    name: "Simli face creation", count: () => G.__S.calls.simli, books: "unknown_unit", same: (a, b) => !!a?.faceId && a.faceId === b?.faceId,
     call: async (_b, db) => faces.ensureSimliFaceForAgent(AGENT, db),
     replay: (db) => { db.tables.agent_avatar_assets[0].simli_face_id = null },
   })
@@ -584,24 +591,33 @@ async function main() {
     // its own): its own session receipt + THE paid voice door, keyed per (broker, day, exact script).
     const standup = await load("app/actions/standup-audio.ts")
     await proveDoor({
-      name: "standup audio (generateStandupAudio)", count: () => G.__S.calls.elevenlabs, books: "vendor", spendVendor: "elevenlabs",
+      name: "standup audio (generateStandupAudio)", count: () => G.__S.calls.elevenlabs, books: "vendor", spendVendor: "elevenlabs", same: (a, b) => !!a?.audioDataUrl && a.audioDataUrl === b?.audioDataUrl && b?.replayed === true,
       call: async () => standup.generateStandupAudio?.(), replay: () => {},
     })
     {
       const db = reset(); seedCommon(db, UNDER)
       await drive(() => standup.generateStandupAudio?.())
       check("standup audio leaves a receipt of its OWN (standup.audio.generate) beside the voice door's", receipts(db, UNDER).some((r) => r.action === "standup.audio.generate") && receipts(db, UNDER).some((r) => r.action === "voice.tts.synthesize"), receipts(db, UNDER).map((r) => r.action))
+      // The first audio's stored copy is GONE (a purged object): the repeat says so plainly, charges nothing, and offers a
+      // regenerate — which, when asked, is a NEW key: a new, budget-checked, receipted, booked call.
+      G.__S.blobs = {}
+      const gone = await drive(() => standup.generateStandupAudio?.())
+      check("standup audio: first audio unavailable → a plain message, the text, NO audio, NO new provider call, NO new charge, and canRegenerate", gone.r?.success === true && !gone.r?.audioDataUrl && /cannot be served again/.test(String(gone.r?.error)) && gone.r?.canRegenerate === true && G.__S.calls.elevenlabs === 1 && spendRows(db, UNDER).length === 1, { r: gone.r, calls: G.__S.calls.elevenlabs })
+      const again = await drive(() => standup.generateStandupAudio?.({ regenerate: true }))
+      const ttsReceipts = receipts(db, UNDER).filter((r) => r.action === "voice.tts.synthesize")
+      check("standup audio: asked to regenerate → a NEW call (2nd provider call), booked (2nd row), with its own executed receipt, and the audio returned", !!again.r?.audioDataUrl && G.__S.calls.elevenlabs === 2 && spendRows(db, UNDER).length === 2 && ttsReceipts.filter((r) => r.status === "executed").length === 2, { r: again.r?.success, calls: G.__S.calls.elevenlabs, spend: spendRows(db, UNDER).length, receipts: ttsReceipts.map((r) => r.status) })
     }
     // ROUND 3 — lib/providers/dispatch.ts dispatchVideoViaDID (the outreach avatar video), through the REAL dispatchVideo:
     // its narration leg is the paid voice door (synthesizeSpeech), its D-ID submit runPaidEgress under the send's key.
     const dispatch = await load("lib/providers/dispatch.ts")
     const seedVoice = (db: MemClient) => {
       db.tables.agent_voice_profiles = [{ agent_id: AGENT, elevenlabs_voice_id: "v-1", did_photo_url: "https://bucket.example.test/agent.jpg", did_video_url: null, did_avatar_id: null, default_expression: "happy", expression_intensity: 0.7 }]
-      ;(db as any).storage = { from: () => ({ upload: async () => ({ error: null }), getPublicUrl: (p: string) => ({ data: { publicUrl: `https://public.example.test/media/${p}` } }) }) }
+      const prev = (db as any).storage
+      ;(db as any).storage = { from: (bucket: string) => ({ ...(prev?.from?.(bucket) ?? {}), upload: async () => ({ error: null }), getPublicUrl: (p: string) => ({ data: { publicUrl: `https://public.example.test/media/${p}` } }) }) }
     }
     const sendVideo = (b: string, db: MemClient) => { seedVoice(db); return dispatch.dispatchVideo?.({ brokerageId: b, agentId: AGENT, userId: USER, humanApproved: true, systemSource: "manual", templateId: "Hello {{name}}, here is a quick note.", scriptVars: { name: "Casey" }, recipientEmail: "casey@example.test", ledger: { idempotencyKey: "send-1" } }) }
     await proveDoor({
-      name: "dispatch avatar video (dispatchVideoViaDID)", count: () => G.__S.calls.did, books: "vendor", spendVendor: "did",
+      name: "dispatch avatar video (dispatchVideoViaDID)", count: () => G.__S.calls.did, books: "vendor", spendVendor: "did", same: (a, b) => a?.success === true && !!a.messageId && a.messageId === b?.messageId && b?.success === true,
       call: async (b, db) => sendVideo(b, db), replay: () => {},
     })
     {
@@ -611,6 +627,8 @@ async function main() {
       const db2 = reset(); seedCommon(db2, UNDER)
       await drive(() => sendVideo(UNDER, db2))
       const tts = spendRows(db2, UNDER).filter((r) => r.vendor_name === "elevenlabs"), didRows = spendRows(db2, UNDER).filter((r) => r.vendor_name === "did")
+      await drive(() => sendVideo(UNDER, db2))
+      check("dispatch avatar video: a REPLAYED send re-synthesizes nothing — the narration is served from its copy (1 ElevenLabs call, 1 D-ID call in total)", G.__S.calls.elevenlabs === 1 && G.__S.calls.did === 1, G.__S.calls)
       check("dispatch avatar video: the narration books its characters ONCE and the D-ID submit books its own row (two vendors, two rows — the voice is no longer folded into the D-ID estimate)", tts.length === 1 && didRows.length === 1 && Number(didRows[0].total_cost) > 0 && Number(tts[0].total_cost) > 0, { tts: tts.map((r) => r.total_cost), did: didRows.map((r) => r.total_cost) })
     }
   }
