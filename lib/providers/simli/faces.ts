@@ -66,6 +66,8 @@ export interface EnsureSimliFaceResult {
    *  (see the ASYNC CONSEQUENCE note in the file header) — not yet usable for
    *  a session token. false = cached, generated earlier. */
   created: boolean
+  /** Wave 156 (156S): the agent's tenant — the budget / receipt scope of this face AND of the session token minted on it. */
+  brokerageId?: string | null
 }
 
 export interface EnsureSimliFaceRefusal {
@@ -73,7 +75,7 @@ export interface EnsureSimliFaceRefusal {
   /** Typed so a caller (the session-route fail-over branch, the proof
    *  script) can tell "not configured" from "no consent" from "no image yet"
    *  from a genuine provider error, instead of one opaque string. */
-  kind: "NotConfigured" | "ConsentRequired" | "NoTwinImage" | "ProviderError"
+  kind: "NotConfigured" | "ConsentRequired" | "NoTwinImage" | "ProviderError" | "BudgetExceeded"
   error: string
 }
 
@@ -113,9 +115,14 @@ export async function ensureSimliFaceForAgent(
     .eq("is_default", true)
     .maybeSingle()
 
+  // The agent's tenant, read once (agents.id → brokerage_id) — the scope of the paid door below and of the token minted on
+  // this face. A refused read leaves it null: the door then books platform spend rather than skipping the receipt.
+  const { data: agentTenant } = await svc.from("agents").select("brokerage_id").eq("id", agentId).maybeSingle()
+  const brokerageId = ((agentTenant as { brokerage_id?: string | null } | null)?.brokerage_id ?? null)
+
   // ── Cache hit ──────────────────────────────────────────────────────────
   if (twin?.simli_face_id) {
-    return { ok: true, faceId: twin.simli_face_id, created: false }
+    return { ok: true, faceId: twin.simli_face_id, created: false, brokerageId }
   }
 
   // ── ONE IMAGE. avatar_url/thumbnail_url are D-ID's own rendered still —
@@ -157,7 +164,18 @@ export async function ensureSimliFaceForAgent(
   const form = new FormData()
   form.append("image", imageBlob, `twin-${twin.id}.jpg`)
 
-  const res = await callConnector<{ face_id?: string; faceId?: string; id?: string; character_uid?: string }>({
+  // THE PAID DOOR (wave 156, lane 156S) — lib/vendor-governance/paid-egress.ts runPaidEgress: the agent tenant's vendor
+  // budget before Simli is reached, a receipt, the face booked once on success (no per-face price on file → a unit at
+  // price_state 'unknown'), and ONE face per (agent, twin) — a retried creation replays the face it already started.
+  type FaceRes = import("@/lib/agentic-os/connector-gateway").GatewayResponse<{ face_id?: string; faceId?: string; id?: string; character_uid?: string }>
+  const idOf = (r: FaceRes) => r.data?.face_id ?? r.data?.faceId ?? r.data?.id ?? r.data?.character_uid ?? null
+  const { runPaidEgress } = await import("@/lib/vendor-governance/paid-egress")
+  const paid = await runPaidEgress<FaceRes>({
+    brokerageId, vendor: "simli", usageType: "face_create", action: "video.simli_face.create",
+    estimatedCostUsd: 0, units: 1, priceUnknown: true,
+    subject: { type: "agent_avatar_asset", id: twin.id, ref: agentId },
+    idempotencyKey: `simli_face:${agentId}:${twin.id}`, systemSource: "live_agent_face",
+  }, () => callConnector<{ face_id?: string; faceId?: string; id?: string; character_uid?: string }>({
     connector: "simli",
     baseUrl: SIMLI_BASE,
     path: "/faces/trinity",
@@ -166,8 +184,12 @@ export async function ensureSimliFaceForAgent(
     auth: { style: "header", name: "x-simli-api-key", value: key },
     body: form,
     bodyType: "multipart",
-  })
-  const faceId = res.data?.face_id ?? res.data?.faceId ?? res.data?.id ?? res.data?.character_uid ?? null
+  }), (r) => ({ ok: r.ok && !!idOf(r), providerRef: idOf(r), error: r.ok ? null : r.error }))
+  if (!paid.ran && paid.reason === "budget_refused") {
+    return { ok: false, kind: "BudgetExceeded", error: "Vendor budget exceeded — the live face was not created" }
+  }
+  const res: FaceRes = paid.ran ? paid.result : { ok: !!paid.providerRef, status: 200, data: paid.providerRef ? { face_id: paid.providerRef } : null, headers: {}, drift: null, error: paid.providerRef ? null : paid.detail }
+  const faceId = idOf(res)
   if (!res.ok || !faceId) {
     return { ok: false, kind: "ProviderError", error: res.error ?? `Simli face creation failed (HTTP ${res.status ?? "?"})` }
   }
@@ -177,5 +199,5 @@ export async function ensureSimliFaceForAgent(
     .update({ simli_face_id: faceId, updated_at: new Date().toISOString() })
     .eq("id", twin.id), { table: "agent_avatar_assets", flow: "simli_face_id_cache", reason: "cache of the created Simli face id; the face itself exists at the provider and is returned" })
 
-  return { ok: true, faceId, created: true }
+  return { ok: true, faceId, created: true, brokerageId }
 }

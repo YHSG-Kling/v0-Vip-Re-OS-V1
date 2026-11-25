@@ -68,22 +68,30 @@ A separate render worker would need, all owner-held:
 - **Spend**: worker compute is a new paid door — it must go through `runPaidEgress` like every other render spend.
 - No Remotion package was added in this lane.
 
-## 5. The paid doors — denominator and remaining misses
+## 5. The paid doors — denominator and what remains (round 2)
 
-`test:wave156-s` §C derives every egress to a classified paid render / video / voice / image / research vendor from
-comment-stripped source and prints each door with its verdict. Doors not yet on the composition are NAMED in the guard with
-their reason; the main ones:
-- `app/api/did/generate-video/route.ts`, `app/actions/external-services.ts` — D-ID submits with no budget, no booking.
-- `app/actions/podcast-generation.ts` — calls the ElevenLabs SDK adapter directly (should call `synthesizeSpeech`).
-- `lib/providers/dispatch.ts` avatar-video legs — lane 156M owns the file.
-- Simli session tokens / face creation — no pre-flight on a live session (pricing is owner-held).
-- Platform-paid research (Tavily / Exa / NewsAPI with no tenant) — no tenant ceiling applies; a research cap is owner-held.
-- `generateImage` calls with no `spend` (two callers book on their own ledger) are not budget-gated by the door.
+`runPaidEgress` lives in `lib/vendor-governance/paid-egress.ts`, a module of its own because `budget-gate.ts` is on the
+proxy's read path (the paywall) and this composition reaches the action ledger; `budget-gate.ts` imports exactly what it did
+before (proxy.ts reaches 23 first-party modules, as at base).
+
+`test:wave156-s` §C derives 14 billable doors from comment-stripped source; 10 go through the composition:
+ElevenLabs buffered / timestamped / stream, D-ID `generateVideo`, the D-ID generate-video route, the D-ID create-avatar route,
+the ElevenLabs voice-clone route, speech-to-text (`transcribeMediaUrl`, both vendors), Simli face creation, Simli session token
+(podcast narration now calls `synthesizeSpeech`, so it is no longer an egress of its own). Each is driven four ways in §D/§F:
+over budget → 0 provider calls; success → booked once; a failed call → nothing booked; a replay under one key → one charge.
+Two doors (speech-to-text, create-avatar) keep their own inline budget gate, pinned by `test:transcription-source` and
+`test:did-integration`, and hand its verdict to the composition (`preflight`) — they refuse before the composition, so their
+refusal is the response, not a ledger row.
+
+Named, 4: `lib/providers/dispatch.ts` `dispatchVideoViaDID` (lane 156M's file — the exact change is in the guard's NAMED entry),
+and three transports inside doors (the Tavily transport under `webSearch`, the two image transports under `generateImage`).
+Platform-paid research (no tenant) has no tenant ceiling — a research cap is owner-held.
 
 ## 6. Personal videos
 
-Renders addressed to one contact are hosted in the private `personal-videos` bucket (`renderHostBucketFor`) on the
-composition, D-ID poll and re-host paths. **Not closed:** `lib/did/index.ts` `generateVideo` in synchronous mode (no
-`submitOnly`) hosts the finished talk in the public `video-assets` bucket under `workflow-video/` — the workflow video step
-(`lib/workflow/adapters/video.ts`) renders per-contact videos that way and hands the URL to later email / SMS steps. Moving it
-private needs a delivery link the contact can open (a portal card, as the welcome video does) — a product decision, reported.
+Every render addressed to one contact is hosted in the private `personal-videos` bucket (`renderHostBucketFor`). Round 2
+closed the last public path: `lib/did/index.ts` `generateVideo` in synchronous mode now takes `addresseeContactId` and hosts
+private; the workflow video step (`lib/workflow/adapters/video.ts`) files the render as the `ai_video_projects` row addressed to
+the contact and hands later steps the delivery door with a share grant for that contact
+(`lib/storage/signed-doc-url.ts` `grantDoorLinksInText`, the same door `lib/video/client-video-delivery.ts` emails). With no
+sealing secret it refuses with the reason and hands on no URL. Driven in `test:wave156-s` §G.

@@ -148,8 +148,8 @@ Wave 143, lane 143J. Live census read-only on 2026-10-23 (project hrvaqgvukzxfsk
 | multi_offer_handling | R02 | CERTIFIED | 0 |
 | transaction_orchestration | R03 | CERTIFIED | 0 |
 | snippet_generation | R15 | NOT CONFIGURED | 0 |
-| video_generation | R15 | NOT CONFIGURED | 7 |
-| voice_clone | R16 | NOT CONFIGURED | 5 |
+| video_generation | R15 | NOT CONFIGURED | 8 |
+| voice_clone | R16 | NOT CONFIGURED | 6 |
 
 | `subscription_tiers.features` key | Row | Verdict | Gate reads it |
 |---|---|---|---|

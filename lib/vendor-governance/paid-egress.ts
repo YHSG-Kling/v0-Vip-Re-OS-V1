@@ -45,6 +45,12 @@ export interface PaidEgressDoor {
   systemSource?: string
   /** "vendor" (default): book on vendor_usage_tracking on success. "caller": the door books on its own ledger. */
   book?: "vendor" | "caller"
+  /** The call is billed but no price is known here (a plan-included clone, a per-minute session opened): a success books
+   *  its units with price_state 'unknown' at $0 (meterVendorSpend's contract) — never a guessed price, never nothing. */
+  priceUnknown?: boolean
+  /** The verdict of a checkVendorBudget the door ALREADY asked for this call (its own inline gate, pinned by its own guard) —
+   *  used instead of asking the same ledger twice. Never a fabricated verdict: pass the real result or omit it. */
+  preflight?: VendorBudgetResult
   metadata?: Record<string, unknown>
 }
 
@@ -82,9 +88,11 @@ export async function runPaidEgress<T>(
   const { meterVendorSpend } = await import("./meter-vendor")
   const key = door.idempotencyKey && door.idempotencyKey.trim() ? door.idempotencyKey.trim() : null
   const book = async (j: PaidEgressJudgement, cost: number): Promise<boolean> => {
-    if (!j.ok || door.book === "caller" || cost <= 0) return false
+    if (!j.ok || door.book === "caller") return false
+    const unknown = door.priceUnknown === true && cost <= 0
+    if (cost <= 0 && !unknown) return false
     return meterVendorSpend({
-      vendorName: door.vendor, usageType: door.usageType, cost, unitCount: j.units ?? door.units ?? 1,
+      vendorName: door.vendor, usageType: door.usageType, cost: unknown ? 0 : cost, ...(unknown ? { priceState: "unknown" as const } : {}), unitCount: j.units ?? door.units ?? 1,
       brokerageId: door.brokerageId, platformPaid: !door.brokerageId, idempotencyKey: key,
       systemSource: door.systemSource ?? door.usageType,
       metadata: { ...(door.metadata ?? {}), action: door.action, ...(j.providerRef ? { provider_ref: j.providerRef } : {}) },
@@ -112,7 +120,7 @@ export async function runPaidEgress<T>(
       detail: { vendor: door.vendor, usage_type: door.usageType, estimated_cost_usd: door.estimatedCostUsd, ...(door.metadata ?? {}) },
     },
     async (): Promise<Out> => {
-      const budget = await checkVendorBudget({ brokerageId, addCost: door.estimatedCostUsd })
+      const budget = door.preflight ?? await checkVendorBudget({ brokerageId, addCost: door.estimatedCostUsd })
       if (!budget.allowed) return { kind: "refused", budget }
       const result = await call()
       const j = judge(result)
