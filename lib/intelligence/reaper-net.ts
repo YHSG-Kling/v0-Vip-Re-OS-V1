@@ -276,9 +276,9 @@ export const REAPER_NET: ReaperEntry[] = [
 // manager-standup.ts reads the activity) imported this REGISTRY for it — and the registry lazily imports
 // about 25 reapers across every manager domain, so each of those reapers sat in the import graph of every
 // app page that can reach the health supervisor or the stand-up. They now import the ledger module.
-import { recordReaperRun, loadRecentReaperActivity } from "./reaper-runs-ledger"
-export { recordReaperRun, loadRecentReaperActivity }
-export type { ManagerReaperActivity } from "./reaper-runs-ledger"
+import { recordReaperRun } from "./reaper-runs-ledger"
+export { recordReaperRun }
+export { loadRecentReaperActivity, type ManagerReaperActivity } from "./reaper-runs-ledger"
 
 
 

@@ -221,8 +221,8 @@ async function main() {
   const NET = "lib/intelligence/reaper-net.ts", LEDGER = "lib/intelligence/reaper-runs-ledger.ts"
   const netSrc = code(ROOT, NET), ledgerSrc = code(ROOT, LEDGER)
   const moved = new Set<string>()
-  for (const m of netSrc.matchAll(/import\s*\{([^}]*)\}\s*from\s*["']\.\/reaper-runs-ledger["']/g)) for (const n of m[1].split(",")) { const t = n.trim(); if (t) moved.add(t) }
-  check("the registry names the symbols it moved: it imports and re-exports them from ./reaper-runs-ledger", moved.size >= 2 && [...moved].every((n) => new RegExp(`export\\s*\\{[^}]*\\b${n}\\b`).test(netSrc)), [...moved])
+  for (const m of netSrc.matchAll(/(?:import|export)\s*\{([^}]*)\}\s*from\s*["']\.\/reaper-runs-ledger["']/g)) for (const n of m[1].split(",")) { const t = n.trim(); if (t && !t.startsWith("type ")) moved.add(t) }
+  check("the registry names the symbols it moved: it re-exports each from ./reaper-runs-ledger", moved.size >= 2 && [...moved].every((n) => new RegExp(`export\\s*\\{[^}]*\\b${n}\\b`).test(netSrc)), [...moved])
   for (const n of moved) {
     check(`${n}: DEFINED in ${LEDGER} and NOT in ${NET} (one definition)`, new RegExp(`export\\s+async\\s+function\\s+${n}\\b`).test(ledgerSrc) && !new RegExp(`function\\s+${n}\\b`).test(netSrc))
   }
