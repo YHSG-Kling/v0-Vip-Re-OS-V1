@@ -62,6 +62,9 @@ export const PARTY_ROLE_LABEL: Record<ClosingPartyRole, string> = {
   lender: "Lender", other_settlement_entity: "Other authorized settlement entity",
 }
 
+/** vendor_assignments.assignment_type for counsel on a deal (m1011) — the vendors.category spelling, one vocabulary (CLAUDE.md §6). */
+export const COUNSEL_ASSIGNMENT_TYPE = "attorney" as const
+
 const ATTORNEY_ROLES: ReadonlySet<ClosingPartyRole> = new Set(["buyer_attorney", "seller_attorney", "lender_attorney", "settlement_attorney"])
 export const isAttorneyRole = (r: unknown): boolean => typeof r === "string" && ATTORNEY_ROLES.has(r as ClosingPartyRole)
 const inVocab = <T extends string>(set: readonly T[], v: unknown): v is T => typeof v === "string" && (set as readonly string[]).includes(v)
@@ -138,8 +141,12 @@ export interface ClosingTeamFacts {
     recordingStatus?: string | null
     titleCompanyName?: string | null
   } | null
-  /** hazard / homeowner's insurance on file (lib/transactions hazard insurance view), when known. */
-  insuranceOnFile?: boolean | null
+  /**
+   * The deal's insurance checkpoint as the deal already records it (lib/transactions/lender-insurance-checkpoint.ts
+   * loadLenderInsuranceCheckpoint: the lender's requirement on transaction_lenders + the policy on transaction_vendor_services).
+   * `unreadable` = the read was refused (said, never "fine"); absent = the caller did not read it.
+   */
+  insurance?: { state: string; label: string; detail: string; coaching: string | null } | { unreadable: string } | null
   /** the brokerage-wide default closing entity (brokerage settings), when known — reported against the state, never obeyed over it. */
   brokerageClosingEntityType?: string | null
 }
@@ -277,13 +284,30 @@ export function dealTeamChecklist(f: ClosingTeamFacts, a: ClosingTeamAssessment 
     { key: "title_escrow_numbers", label: "Title file / escrow number", applies: "yes", done: !!(s.titleFileNumber || s.escrowNumber), detail: s.titleFileNumber || s.escrowNumber ? `${s.titleFileNumber ? `Title file ${s.titleFileNumber}` : ""}${s.titleFileNumber && s.escrowNumber ? " · " : ""}${s.escrowNumber ? `Escrow ${s.escrowNumber}` : ""}` : "Ask the settlement agent for their file number." },
     { key: "appointment_location", label: "Closing appointment location", applies: "yes", done: !!s.closingLocation, detail: s.closingLocation ? String(s.closingLocation) : "Not scheduled yet." },
     { key: "settlement_date", label: "Settlement date", applies: "yes", done: !!s.closingDate, detail: s.closingDate ? String(s.closingDate) : "Not scheduled yet." },
-    { key: "insurance", label: "Homeowner's insurance", applies: a.financing === "financed" ? "yes" : a.financing === "cash" ? "no" : "unknown",
-      done: f.insuranceOnFile === true, detail: a.financing === "financed" ? "The lender requires a policy before funding." : a.financing === "cash" ? "Not lender-required on a cash deal (recommended for the buyer)." : "Depends on whether the deal is financed." },
+    insuranceItem(f.insurance ?? null, a.financing),
     // whether the seller has a lien to pay off is a FACT about the seller — unknown until recorded, on every side of the deal
     checkItem("payoff", "Seller's mortgage payoff", st(s.payoffStatus), "unknown"),
     checkItem("hoa_estoppel", "HOA / estoppel letter", st(s.hoaEstoppelStatus), "unknown"),
     checkItem("recording", "Deed / security instrument recording", st(s.recordingStatus), "yes"),
   ]
+}
+
+/** States of the recorded insurance checkpoint that need nothing more for the closing. */
+const INSURANCE_DONE_STATES: ReadonlySet<string> = new Set(["verified", "not_required", "not_applicable_cash", "not_our_side"])
+
+/**
+ * PURE — the insurance item from the deal's OWN insurance checkpoint. When the deal records nothing the item says "not recorded yet"
+ * and names the next action the checkpoint gives (its coaching: ask the lender for its requirement, record the binder) — never a
+ * permanent "unknown". A refused read says so and is not done.
+ */
+export function insuranceItem(ins: ClosingTeamFacts["insurance"], financing: ClosingTeamAssessment["financing"]): ChecklistItem {
+  const label = "Homeowner's insurance"
+  if (!ins) return { key: "insurance", label, applies: financing === "cash" ? "no" : "yes", done: false, detail: "Not recorded yet. Next: record the lender's insurance requirement and the policy on the deal's insurance card." }
+  if ("unreadable" in ins) return { key: "insurance", label, applies: "yes", done: false, detail: `${ins.unreadable} — not verified, so it is not shown as done.` }
+  const applies: ChecklistItem["applies"] = ins.state === "not_applicable_cash" || ins.state === "not_our_side" || ins.state === "not_required" ? "no" : "yes"
+  const done = INSURANCE_DONE_STATES.has(ins.state)
+  const notYet = ins.state === "requirement_unknown" || ins.state === "financing_unknown" || ins.state === "required_missing"
+  return { key: "insurance", label, applies, done, detail: `${notYet ? "Not recorded yet: " : ""}${ins.label}. ${ins.detail}${!done && ins.coaching ? ` Next: ${ins.coaching}` : ""}` }
 }
 
 // ─── 5 · WHO OWNS A CLOSING DOCUMENT ────────────────────────────────────────────────────────────────────────────────

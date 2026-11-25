@@ -84,7 +84,7 @@ import {
   type InsuranceRecord,
 } from "@/lib/vendors/insurance-posture"
 
-/** vendor_assignments.assignment_type is CHECK-constrained to exactly these ten
+/** vendor_assignments.assignment_type is CHECK-constrained to exactly these eleven (ten + attorney, m1011)
  *  values — a DIFFERENT and much shorter vocabulary than vendors.category (38
  *  values) and than the free-text service_type on vendor_bookings. The picker
  *  below cannot express anything outside it, and the server action re-checks the
@@ -99,6 +99,8 @@ const VENDOR_ASSIGNMENT_TYPES = [
   "contractor",
   "mover",
   "insurance",
+  // m1011 (wave 156, lane 156D): a closing attorney joins a deal as an attorney — the vendors.category spelling, never "other".
+  "attorney",
   "other",
 ] as const
 
@@ -2346,7 +2348,7 @@ export function VendorDirectoryClient({
               <Label>
                 Assignment Type <span className="text-destructive">*</span>
               </Label>
-              {/* vendor_assignments.assignment_type admits exactly these ten
+              {/* vendor_assignments.assignment_type admits exactly these eleven (m1011)
                   values — NOT the 38-value vendors.category vocabulary and not
                   the free-text service types the booking form offers. */}
               <Select value={assignType} onValueChange={setAssignType}>

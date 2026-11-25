@@ -66,7 +66,7 @@ export async function assignVendorToListingAction(
 // ─── ACTION: assignVendorToTransactionAction ─────────────────────────────────
 //
 // vendor_assignments.assignment_type is CHECK-constrained, and its vocabulary is
-// NOT the vendors.category vocabulary — the column admits ten values where
+// NOT the vendors.category vocabulary — the column admits eleven values (ten + attorney, m1011) where
 // vendors.category admits FORTY (38 at m304, +appraiser m554, +surveyor m562). A
 // picker built from service types (the obvious mistake, and what the
 // neighbouring booking form offers: "plumber", "hvac", "roofer", "surveyor")
@@ -87,6 +87,8 @@ const VENDOR_ASSIGNMENT_TYPES = [
   "contractor",
   "mover",
   "insurance",
+  // m1011 (wave 156, lane 156D): a closing attorney joins a deal as an attorney — the vendors.category spelling, never "other".
+  "attorney",
   "other",
 ] as const
 

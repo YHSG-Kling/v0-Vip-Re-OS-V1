@@ -3706,7 +3706,6 @@ function closingTeamInput(facts: Extract<Awaited<ReturnType<typeof readClosingFa
     stateCode: facts.tx.property_state ?? null, financingType: facts.tx.financing_type ?? null, dealType: facts.tx.deal_type ?? null,
     participants: facts.participants.map((p) => ({ id: p.id as string, name: (p.name ?? null) as string | null, company: p.company ?? null, email: p.email ?? null, phone: p.phone ?? null, role: p.role ?? null, party_role: p.party_role ?? null, represents: p.represents ?? null, vendor_id: p.vendor_id ?? null, fact_source: p.fact_source ?? null, fact_confirmed_at: p.fact_confirmed_at ?? null, fact_confirmed_by: (p.fact_confirmed_by ?? null) as string | null, fact_evidence: (p.fact_evidence ?? null) as string | null })),
     settlement: s ? { kind: s.settlement_agent_kind ?? null, participantId: s.settlement_agent_participant_id ?? null, basis: s.settlement_agent_basis ?? null, titleFileNumber: s.title_file_number ?? null, escrowNumber: s.escrow_number ?? null, closingLocation: s.closing_location ?? null, closingDate: s.closing_scheduled_date ?? null, payoffStatus: s.payoff_status ?? null, hoaEstoppelStatus: s.hoa_estoppel_status ?? null, recordingStatus: s.recording_status ?? null, titleCompanyName: s.title_company_name ?? null } : null,
-    insuranceOnFile: null,
   }
 }
 
@@ -3717,7 +3716,12 @@ export async function getClosingTeam(transactionId: string) {
   const facts = await readClosingFacts(gate.db, gate.brokerageId, gate.transactionId)
   if (!facts.ok) return { success: false as const, error: facts.error }
   const cp = await import("@/lib/transactions/closing-parties")
-  const input = closingTeamInput(facts)
+  // The insurance item reads the deal's OWN insurance checkpoint (the same loader the closing gate and the insurance card read).
+  const { loadLenderInsuranceCheckpoint } = await import("@/lib/transactions/lender-insurance-checkpoint")
+  const insLoaded = await loadLenderInsuranceCheckpoint(gate.db, { brokerageId: gate.brokerageId, transactionId: gate.transactionId }).catch((e: unknown) => ({ ok: false as const, error: e instanceof Error ? e.message : String(e) }))
+  const input = { ...closingTeamInput(facts), insurance: insLoaded.ok
+    ? { state: insLoaded.facts.checkpoint.state, label: insLoaded.facts.checkpoint.label, detail: insLoaded.facts.checkpoint.detail, coaching: insLoaded.facts.checkpoint.coaching ?? null }
+    : { unreadable: "The deal's insurance record could not be read" } }
   const assessment = cp.assessClosingTeam(input)
   const checklist = cp.dealTeamChecklist(input, assessment)
   const KEY_DOCS = ["closing_disclosure", "settlement_statement", "title_commitment", "deed", "payoff_statement", "hoa_estoppel"]
@@ -3773,10 +3777,18 @@ export async function recordClosingParty(input: {
     if (!v) return { success: false as const, error: "That vendor is not on your brokerage's vendor bench, so it cannot be recorded as a party on this deal." }
     const category = (v as { category?: string | null }).category ?? null
     if (!cp.vendorCategoryFitsRole(draft.partyRole, category)) return { success: false as const, error: `That vendor is a '${category ?? "unknown"}' vendor, which does not fit the role ${cp.PARTY_ROLE_LABEL[draft.partyRole]}.` }
-    const { data: asg, error: aErr } = await db.from("vendor_assignments").select("id").eq("vendor_id", input.vendor_id).eq("transaction_id", gate.transactionId).eq("brokerage_id", gate.brokerageId).limit(1)
+    const { data: asg, error: aErr } = await db.from("vendor_assignments").select("id, assignment_type").eq("vendor_id", input.vendor_id).eq("transaction_id", gate.transactionId).eq("brokerage_id", gate.brokerageId).limit(1)
     if (aErr) return { success: false as const, error: `Could not verify the vendor's assignment: ${aErr.message}` }
     if ((asg ?? []).length === 0) return { success: false as const, error: "Assign this vendor to the deal first (the deal's vendors), then record its closing role." }
     factSource = "vendor_seat"
+    // ONE VOCABULARY (CLAUDE.md §6, m1011): counsel on the deal ledger is typed 'attorney' — the vendors.category spelling — never
+    // 'other'. An attorney assigned before m1011 (as 'other') is re-typed here, pinned to this deal and tenant and COUNTED.
+    const a0 = (asg as Array<{ id: string; assignment_type?: string | null }>)[0]
+    if (cp.isAttorneyRole(draft.partyRole) && a0.assignment_type !== cp.COUNSEL_ASSIGNMENT_TYPE) {
+      const { data: retyped, error: tErr } = await db.from("vendor_assignments").update({ assignment_type: cp.COUNSEL_ASSIGNMENT_TYPE }).eq("id", a0.id).eq("transaction_id", gate.transactionId).eq("brokerage_id", gate.brokerageId).select("id")
+      if (tErr) return { success: false as const, error: tErr.code === "23514" ? "The deal ledger cannot record an attorney assignment yet (migration m1011 has not been applied), so nothing was saved." : `Could not record the attorney's assignment type: ${tErr.message}` }
+      if (!retyped || retyped.length !== 1) return { success: false as const, error: "The attorney's assignment on this deal was not found, so nothing was saved." }
+    }
   }
   const name = input.name.trim().slice(0, 200)
   const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")

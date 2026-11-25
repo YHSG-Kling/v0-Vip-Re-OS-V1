@@ -28,6 +28,11 @@
  *     record is not moved (post-closing adjustment); a closed deal's commission terms are frozen and a posted commission is corrected
  *     only by a NEW row; an agent-reported Closing Disclosure receipt is never lender-confirmed.
  *
+ * §E  ROUND 2 (integrator): (1) m1011 — counsel joins the deal ledger as 'attorney', one vocabulary; (2) the broker's CDA signature is DRIVEN
+ *     through the real door with the final compliance check and the e-sign transport as counted seams; (3) a fully signed addendum after
+ *     the deal exists governs and holds the close for re-review, an unsigned one never governs; (4) the insurance item reads the deal's
+ *     insurance checkpoint; (5) C30 — the portal answer never invents a closing party, driven with a counted model stub.
+ *
  * RED AT BASE: W156D_ROOT=/home/user/v0-Vip-Re-OS-V1 runs §A–§C against the pre-wave tree (no closing-parties module, no closing-team
  * doors, no m1010) — they fail; §D drives survivors that existed before and passes there too (they are regression proofs, said so).
  *
@@ -67,17 +72,19 @@ const AG_A = u("e", 1), AG_X = u("e", 2)
 const TX_GA = u("d", 1), TX_NY = u("d", 2), TX_CASH = u("d", 3), TX_CLOSED = u("d", 4), TX_X = u("d", 9), TX_NEW = u("d", 5)
 const V_ATTY = u("f", 1), V_ATTY_FREE = u("f", 2), V_LENDER = u("f", 3), V_X = u("f", 4)
 const E_GA = u("c", 1), DOC_X = u("c", 2), DOC_GA = u("c", 3)
+const C1 = u("1", 1), CDA1 = u("2", 1), DOC_SIGNED = u("3", 1), DOC_UNSIGNED = u("3", 2)
 
 function world(): MemClient {
   return memSupabase({
-    brokerages: [{ id: B1, offers_cda: true, non_cda_payout_default: null }, { id: B2 }],
+    brokerages: [{ id: B1, offers_cda: true, non_cda_payout_default: null, plan_tier: "brokerage" }, { id: B2 }],
+    contacts: [{ id: C1, brokerage_id: B1, agent_id: AG_A, first_name: "Casey" }],
     users: [
       { id: U_BROKER, brokerage_id: B1, user_type: "broker" }, { id: U_AGENT, brokerage_id: B1, user_type: "agent" },
       { id: U_VENDOR, brokerage_id: B1, user_type: "vendor" }, { id: U_TC, brokerage_id: B1, user_type: "tc" }, { id: U_X, brokerage_id: B2, user_type: "broker" },
     ],
     agents: [{ id: AG_A, user_id: U_AGENT, brokerage_id: B1 }, { id: AG_X, user_id: U_X, brokerage_id: B2 }],
     transactions: [
-      { id: TX_GA, brokerage_id: B1, agent_id: AG_A, status: "under_contract", stage: "CLOSING_PREP", property_state: "GA", financing_type: "conventional", deal_type: "buyer", created_at: "2026-09-01T00:00:00Z" },
+      { id: TX_GA, brokerage_id: B1, agent_id: AG_A, contact_id: C1, deleted_at: null, status: "under_contract", stage: "CLOSING_PREP", property_state: "GA", financing_type: "conventional", deal_type: "buyer", created_at: "2026-09-01T00:00:00Z" },
       { id: TX_NY, brokerage_id: B1, agent_id: AG_A, status: "under_contract", property_state: "NY", financing_type: "conventional", deal_type: "seller", created_at: "2026-09-01T00:00:00Z" },
       { id: TX_CASH, brokerage_id: B1, agent_id: AG_A, status: "under_contract", property_state: "TX", financing_type: "cash", deal_type: "buyer", created_at: "2026-09-01T00:00:00Z" },
       { id: TX_CLOSED, brokerage_id: B1, agent_id: AG_A, status: "closed", stage: "CLOSED", property_state: "NC", financing_type: "conventional", deal_type: "buyer", created_at: "2026-06-01T00:00:00Z" },
@@ -100,8 +107,14 @@ function world(): MemClient {
       { id: DOC_GA, transaction_id: TX_GA, brokerage_id: B1, doc_type: "title_commitment", doc_label: "Title commitment", status: "uploaded", uploaded_by_type: "vendor", metadata: { vendor_id: V_ATTY } },
       { id: DOC_X, transaction_id: TX_X, brokerage_id: B2, doc_type: "title_commitment", doc_label: "Other", status: "uploaded" },
     ],
-    transaction_tasks: [], transaction_timeline: [], agent_action_ledger: [], tenant_policy_versions: [], closing_disclosure_agreement: [],
-    documents: [], notifications: [], commission_distributions: [], agent_commissions: [], commission_adjustments: [], trid_disclosure_receipts: [], contract_term_versions: [],
+    transaction_tasks: [], transaction_timeline: [], agent_action_ledger: [], tenant_policy_versions: [],
+    closing_disclosure_agreement: [{ id: CDA1, transaction_id: TX_GA, brokerage_id: B1, agent_id: AG_A, status: "approved", broker_approved_at: null, revision_number: 1, field_values: {}, generated_pdf_url: null }],
+    documents: [
+      { id: DOC_SIGNED, brokerage_id: B1, transaction_id: TX_GA, classification: "addendum", signature_completeness: { signatures: [{ signer_role: "buyer", signed: true }, { signer_role: "seller", signed: true }] }, extracted_fields: {} },
+      { id: DOC_UNSIGNED, brokerage_id: B1, transaction_id: TX_GA, classification: "addendum", signature_completeness: { signatures: [{ signer_role: "buyer", signed: true }] }, extracted_fields: {} },
+    ], notifications: [], commission_distributions: [], agent_commissions: [], commission_adjustments: [], trid_disclosure_receipts: [], contract_term_versions: [],
+    offers: [], document_field_extractions: [], transaction_coordinators: [], transaction_milestones: [], contact_memory: [], tasks: [],
+    closing_disclosure_agreement_revisions: [], transaction_vendor_services: [], brokerage_settings: [],
     trid_timeline: [], transaction_compliance_log: [], teams: [], lifecycle_events: [], policy_decisions: [], transaction_lenders: [],
   }, { uuidIds: true })
 }
@@ -110,6 +123,7 @@ function world(): MemClient {
 const G = globalThis as any
 G.__W = {
   mem: world() as MemClient, seat: null as string | null, missingColumns: null as Record<string, string[]> | null,
+  finalCheck: "fail" as "pass" | "fail", calls: { finalCheck: [] as Array<{ transactionId: string; signedAtCall: string | null }>, esign: 0, model: 0 },
   client: () => {
     const m = G.__W.mem
     return Object.assign(m, { auth: { getUser: async () => ({ data: { user: G.__W.seat ? { id: G.__W.seat, email: "seat@example.test", user_metadata: {} } : null }, error: null }) } })
@@ -117,11 +131,16 @@ G.__W = {
 }
 const realUrl = (p: string) => pathToFileURL(join(ROOT, p)).href
 const OVERRIDE: Record<string, string> = {
+  // §E2 — the final compliance check the broker-sign door runs is a COUNTED seam (its own content is test:closing-compliance's); the seam
+  // records whether the CDA was already broker-signed WHEN it ran, so the ORDER is driven, not read from source.
+  "lib/transactions/final-compliance-check.ts": "export async function runFinalComplianceCheck(transactionId){ const W = globalThis.__W; const row = (W.mem.tables.closing_disclosure_agreement ?? []).find((r) => r.transaction_id === transactionId); W.calls.finalCheck.push({ transactionId, signedAtCall: row?.broker_approved_at ?? null }); return W.finalCheck === 'pass' ? { passed: true, blockers: [] } : { passed: false, blockers: ['fixture: 1 required document not yet provided'] } }",
   "lib/supabase/server.ts": "export async function createClient(){ return globalThis.__W.client() }; export async function createServerClient(){ return globalThis.__W.client() }",
   "lib/supabase/service.ts": "export function createServiceClient(){ return globalThis.__W.client() }",
 }
 const REPLACE: Record<string, string> = {
   "lib/teams/team-scope.ts": "export async function leadsAgentsTeam(){ return { ok: true, leads: false, ledTeamId: null } }",
+  // §E2 — the e-sign transport is a counted stub: no provider is ever reached.
+  "lib/transactions/cda-esign.ts": "export async function dispatchCdaSignerEsign(){ globalThis.__W.calls.esign++; return { mode: 'in_app', provider: null, reason: 'fixture', dispatched: false } }",
 }
 const BY_SPEC: Record<string, string> = {
   "server-only": "export {}",
@@ -156,6 +175,7 @@ function as(seat: string | null, opts: { missingColumns?: Record<string, string[
   const w = world()
   G.__W.mem = opts.missingColumns ? memSupabase(w.tables as any, { uuidIds: true, missingColumns: opts.missingColumns }) : w
   G.__W.seat = seat
+  G.__W.finalCheck = "fail"; G.__W.calls = { finalCheck: [], esign: 0, model: 0 }
   return G.__W.mem
 }
 const quiet = async <X,>(fn: () => Promise<X>): Promise<X> => {
@@ -371,7 +391,7 @@ async function sectionD() {
     eff.ok && eff.deals[TX_CLOSED]?.mode === "no_cda" && eff.deals[TX_NEW]?.mode === "cda" && eff.current.mode === "cda", eff.ok ? { closed: eff.deals[TX_CLOSED]?.mode, fresh: eff.deals[TX_NEW]?.mode } : eff)
   const sw = pol.decideDealCdaSwitch({ effective: { mode: "no_cda" }, target: "cda", dealStatus: "closed", cdaRow: null, reason: "opted in to CDA this month" })
   check("C09 a closed deal accepts no CDA switch (never retroactively blocked or given a CDA)", sw.ok === false && sw.error === "deal_completed", sw)
-  check("C09 the policy reader wrote nothing — no dummy CDA row", m.writes.length === 0 && T(m, "closing_disclosure_agreement").length === 0)
+  check("C09 the policy reader wrote nothing — no dummy CDA row (only the fixture's own CDA exists)", m.writes.length === 0 && T(m, "closing_disclosure_agreement").filter((r) => r.transaction_id !== TX_GA).length === 0)
   check("a CDA never blocks a close in either mode", pol.resolveCdaMode({ offersCda: true }).blocksClosing === false && pol.resolveCdaMode({ offersCda: false }).blocksClosing === false)
   // valid no-CDA close
   const proof = pol.noCdaClosingProof({
@@ -452,6 +472,136 @@ async function sectionD() {
   check("C08 the ASSIGNED lender's receipt is lender-confirmed (positive control)", lrow?.verification_status === "lender_confirmed" && lrow?.source === "lender_portal", lrow)
 }
 
+// ═══ §E (round 2) ═════════════════════════════════════════════════════════════════════════════════════════════════════
+const constList = (stripped: string, name: string): string[] | null => {
+  const m = new RegExp(`const\\s+${name}\\s*=\\s*\\[([^\\]]*)\\]`).exec(stripped)
+  return m ? [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]) : null
+}
+async function sectionE(act: any, cp: any) {
+  section("§E1 · one vocabulary: counsel joins the deal ledger as 'attorney' (m1011)")
+  const sql = raw("supabase/migrations/m1011-vendor-assignment-type-admits-attorney.sql")
+  const m1011 = checkArray(sql, "ADD CONSTRAINT vendor_assignments_assignment_type_check", "assignment_type")
+  const cache = await load("scripts/check-vocabularies.ts").then((x) => x.CHECK_VOCABULARIES?.vendor_assignments?.assignment_type ?? null).catch(() => null)
+  const added = m1011 && cache ? m1011.filter((v) => !cache.includes(v)) : null
+  check("m1011 extends EXACTLY the live CHECK (the generated cache) by one value, 'attorney' — nothing narrowed", !!m1011 && !!cache && cache.every((v: string) => m1011.includes(v)) && added?.join() === "attorney", { m1011, cache })
+  check("'attorney' is the vendors.category spelling (one vocabulary)", (await load("lib/kernel/vendor-categories.ts")).VENDOR_CATEGORIES?.includes("attorney") === true && cp?.COUNSEL_ASSIGNMENT_TYPE === "attorney")
+  const kernelList = constList(stripComments(raw("app/actions/vendors-kernel.ts")), "VENDOR_ASSIGNMENT_TYPES"), uiList = constList(stripComments(raw("app/dashboard/vendors/vendor-directory-client.tsx")), "VENDOR_ASSIGNMENT_TYPES")
+  check("the assignment door and the picker both offer exactly the m1011 vocabulary", sameSet(kernelList, m1011) && sameSet(uiList, m1011), { kernelList, uiList })
+  check("POSITIVE CONTROL: a list without 'attorney' is caught", !sameSet((kernelList ?? []).filter((v) => v !== "attorney"), m1011))
+  let m = as(U_BROKER)
+  const r = await drive(() => act.recordClosingPartyAction({ transaction_id: TX_GA, party_role: "settlement_attorney", name: "Peach Law LLC", vendor_id: V_ATTY }))
+  check("an attorney vendor assigned as 'other' is re-typed 'attorney' on THIS deal's ledger row when recorded as counsel (counted)", r.r?.success === true && T(m, "vendor_assignments").find((x) => x.id === u("9", 1))?.assignment_type === "attorney" && T(m, "vendor_assignments").find((x) => x.id === u("9", 3))?.assignment_type === "other", r.r)
+  m = as(U_BROKER)
+  await drive(() => act.recordClosingPartyAction({ transaction_id: TX_GA, party_role: "lender", name: "First Mortgage", vendor_id: V_LENDER }))
+  check("a lender recorded as a party keeps its 'lender' assignment (positive control)", T(m, "vendor_assignments").find((x) => x.id === u("9", 2))?.assignment_type === "lender")
+
+  section("§E2 · the broker's CDA signature, DRIVEN: the fresh final compliance check runs BEFORE it is recorded")
+  const cda = await quiet(() => load("app/actions/cda-portal.ts"))
+  m = as(U_BROKER); G.__W.finalCheck = "fail"
+  const failSign = await drive(() => cda.brokerSignCdaAction({ cdaId: CDA1 }))
+  const rowF = T(m, "closing_disclosure_agreement").find((x) => x.id === CDA1)
+  check("a FAILING final compliance check: the signature is refused, NOT recorded, and the e-sign transport is never reached",
+    failSign.r?.success === false && /closing_file_not_ready/.test(failSign.r?.error ?? "") && !rowF?.broker_approved_at && G.__W.calls.esign === 0 && G.__W.calls.finalCheck.length === 1, { r: failSign.r, calls: G.__W.calls })
+  m = as(U_BROKER); G.__W.finalCheck = "pass"
+  const okSign = await drive(() => cda.brokerSignCdaAction({ cdaId: CDA1 }))
+  const rowP = T(m, "closing_disclosure_agreement").find((x) => x.id === CDA1)
+  const fc = G.__W.calls.finalCheck
+  check("a PASSING check: exactly one signature is recorded, and the check ran while the CDA was still unsigned (check → then signature)",
+    okSign.r?.success === true && !!rowP?.broker_approved_at && rowP?.broker_id === U_BROKER && fc.length === 1 && fc[0].signedAtCall === null && G.__W.calls.esign === 1, { r: okSign.r, fc })
+  const again = await drive(() => cda.brokerSignCdaAction({ cdaId: CDA1 }))
+  check("a repeated sign is idempotent — still one signature, no second check or transport", again.r?.success === true && G.__W.calls.esign === 1 && G.__W.calls.finalCheck.length === 1 && T(m, "closing_disclosure_agreement").find((x) => x.id === CDA1)?.broker_approved_at === rowP?.broker_approved_at)
+  m = as(U_AGENT); G.__W.finalCheck = "pass"
+  const agentSign = await drive(() => cda.brokerSignCdaAction({ cdaId: CDA1 }))
+  check("an agent cannot sign as the broker (positive control for the role gate)", agentSign.r?.success === false && !T(m, "closing_disclosure_agreement").find((x) => x.id === CDA1)?.broker_approved_at)
+
+  section("§E3 · a later signed document after the deal exists: a signed addendum governs and holds the close for re-review; an unsigned one never governs")
+  const gt = await load("lib/offers/governing-terms.ts"), core = await load("lib/transactions/closing-compliance-core.ts"), ccomp = await quiet(() => load("lib/transactions/closing-compliance.ts"))
+  m = as(U_BROKER)
+  const recheck: any[] = []
+  const deps = { runClosingCompliance: async (_svc: unknown, input: any) => { recheck.push(input); return { ran: true, openBlocking: 1, reason: null } } }
+  const fake = await drive(() => gt.recordContractTermsVersion(m, { brokerageId: B1, transactionId: TX_GA, source: "addendum", status: "executed", terms: { offer_price: 410000 }, documentId: DOC_UNSIGNED, executedAt: "2026-11-20T15:00:00Z", recordedBy: U_BROKER }, { consequenceDeps: deps }))
+  check("an addendum missing the seller's signature cannot be recorded as executed — nothing recorded, no consequence run", fake.r?.ok === false && /seller/.test(fake.r?.reason ?? "") && T(m, "contract_term_versions").length === 0 && recheck.length === 0, fake.r)
+  const prop = await drive(() => gt.recordContractTermsVersion(m, { brokerageId: B1, transactionId: TX_GA, source: "addendum", status: "proposed", terms: { offer_price: 390000 }, documentId: DOC_UNSIGNED, recordedBy: U_BROKER }, { consequenceDeps: deps }))
+  const gov1 = await drive(() => gt.governingContractTerms(m, B1, { transactionId: TX_GA }))
+  check("C05 an UNSIGNED (proposed) addendum is recorded as pending and never changes what governs the close; no re-review is run",
+    prop.r?.ok === true && gov1.r?.ok === true && gov1.r.governing.values.offer_price === undefined && gov1.r.governing.pending.length === 1 && recheck.length === 0, { prop: prop.r, values: gov1.r?.governing?.values })
+  const signed = await drive(() => gt.recordContractTermsVersion(m, { brokerageId: B1, transactionId: TX_GA, source: "addendum", status: "executed", terms: { offer_price: 410000 }, documentId: DOC_SIGNED, executedAt: "2026-11-20T15:00:00Z", recordedBy: U_BROKER, evidence: { term_evidence_stated: { offer_price: { page: 1, field: "Purchase price", quote: "$410,000" } } } }, { consequenceDeps: deps }))
+  const gov2 = await drive(() => gt.governingContractTerms(m, B1, { transactionId: TX_GA }))
+  check("a FULLY SIGNED addendum changing the price after the deal exists governs, and re-runs closing compliance (trigger contract_addendum)",
+    signed.r?.ok === true && gov2.r?.governing?.values?.offer_price === 410000 && recheck.length === 1 && recheck[0].trigger === "contract_addendum" && signed.r?.consequences?.complianceReReview?.ran === true, { signed: signed.r?.reason ?? signed.r?.consequences?.complianceReReview, values: gov2.r?.governing?.values })
+  // the hold: an approval pinned to the file before the addendum no longer stands; only a closing reviewer re-approves
+  const ATT = "closing_attestation"
+  const rows = [{ check_type: ATT, check_label: "Closing question", status: "pass", is_blocking: true, failure_reason: null }]
+  const base = { complianceRows: rows, settlement: { state: "ready", finalOnFile: true, fingerprint: "s1" }, trid: { tracked: false, deliveredDate: null }, cda: null, attestationStatus: "pass", attestationCheckType: ATT, flaggedDocuments: [] }
+  const before = core.buildClosingReadiness({ ...base, dealFileDocumentIds: ["contract-1"] })
+  const approved = { decision: "green" as const, fingerprint: before.fingerprint, notes: null, decidedBy: U_BROKER, decidedAt: "2026-11-19T12:00:00Z" }
+  const after = core.buildClosingReadiness({ ...base, dealFileDocumentIds: ["contract-1", DOC_SIGNED] })
+  const standBefore = core.closingReviewStanding({ required: true, latest: approved, currentFingerprint: before.fingerprint })
+  const standAfter = core.closingReviewStanding({ required: true, latest: approved, currentFingerprint: after.fingerprint })
+  check("the earlier final closing approval stood before the addendum, and is REOPENED by it — the close is held until re-review",
+    standBefore.state === "approved" && standBefore.blocker === null && standAfter.state === "reopened" && !!standAfter.blocker, { standBefore, standAfter })
+  check("only a person with closing authority may re-review (an agent / a vendor may not; compliance / the broker may)",
+    ccomp.mayReviewClosing({ userType: "agent" }) === false && ccomp.mayReviewClosing({ userType: "vendor" }) === false && ccomp.mayReviewClosing({ userType: "compliance_officer" }) === true && ccomp.mayReviewClosing({ userType: "broker" }) === true)
+  const re = core.decideClosingReview({ readiness: after, decision: "approve", notes: null, reviewer: { isReviewer: true } })
+  const standRe = core.closingReviewStanding({ required: true, latest: { ...approved, fingerprint: after.fingerprint, decidedAt: "2026-11-21T12:00:00Z" }, currentFingerprint: after.fingerprint })
+  check("a closing reviewer's re-approval on the CURRENT file releases the hold (positive control)", re.ok === true && standRe.state === "approved" && standRe.blocker === null)
+  const refusedRe = core.decideClosingReview({ readiness: after, decision: "approve", notes: null, reviewer: { isReviewer: false } })
+  check("a non-reviewer's approval is refused", refusedRe.ok === false)
+
+  section("§E4 · the insurance item reads the deal's own insurance record — never a permanent 'unknown'")
+  m = as(U_BROKER)
+  const card = await drive(() => act.getClosingTeamAction(TX_GA))
+  const ins = card.r?.checklist?.find((c: any) => c.key === "insurance")
+  check("financed deal, no lender requirement / policy recorded: 'Not recorded yet' with the next action, applies, not done", !!ins && ins.applies === "yes" && ins.done === false && /^Not recorded yet/.test(ins.detail) && /Next:/.test(ins.detail), ins)
+  m = as(U_BROKER)
+  const cash = await drive(() => act.getClosingTeamAction(TX_CASH))
+  const insCash = cash.r?.checklist?.find((c: any) => c.key === "insurance")
+  check("cash deal: the checkpoint says not applicable and the item is done (positive control)", insCash?.applies === "no" && insCash?.done === true, insCash)
+  if (cp?.insuranceItem) {
+    const unread = cp.insuranceItem({ unreadable: "The deal's insurance record could not be read" }, "financed")
+    check("an unreadable insurance record is said and never shown as done", unread.done === false && /could not be read/.test(unread.detail))
+  } else check("insuranceItem is exported", false)
+
+  section("§E5 · C30 — the portal never invents the closing attorney / lender / settlement agent")
+  const qad = await load("lib/portal/question-answer-decision.ts")
+  const fabricated = "Your closing attorney is John Fabricated of Fabricated & Co, 555-0100, closing 12/01."
+  let modelCalls = 0
+  const ask = async (question: string) => quiet(() => qad.decidePortalAnswer(G.__W.mem, { brokerageId: B1, contactId: C1, question, agentName: "Avery", generalAnswer: async () => { modelCalls++; return fabricated } }, { knowledge: async () => [] }))
+  m = as(null)
+  // nothing recorded: the deal's lender vendor assignment is removed for this part (an on-platform lender is the positive control below)
+  m.tables.vendor_assignments = m.tables.vendor_assignments.filter((x) => x.vendor_id !== V_LENDER)
+  for (const q of ["Who is my closing attorney?", "Who is our lender?", "Who is the settlement agent?"]) {
+    modelCalls = 0
+    const d: any = await ask(q).catch((e: Error) => ({ text: `threw ${e.message}`, plan: {}, modelCalls: -1 }))
+    check(`"${q}" with nothing recorded: 'not recorded — your agent has been asked', a task planned, 0 model calls, no invented name`,
+      modelCalls === 0 && d.modelCalls === 0 && /not recorded/i.test(d.text) && /asked Avery/.test(d.text) && !/Fabricated|555-0100/.test(d.text) && d.plan?.createTask === true, { text: d.text, plan: d.plan, modelCalls })
+  }
+  // THE DEFECT THIS CLOSES: a model draft that names a party carries no figure or date, so the claim screen keeps it. Asked of the
+  // general branch (where "who is our lender?" went before), the invented name reached the client.
+  modelCalls = 0
+  const nameOnly: any = await quiet(() => qad.decidePortalAnswer(G.__W.mem, { brokerageId: B1, contactId: C1, question: "Who is our lender?", agentName: "Avery", generalAnswer: async () => { modelCalls++; return "Your lender is Fabricated Mortgage Company." } }, { knowledge: async () => [] }))
+  check("a name-only model draft never reaches the client (the claim screen cannot catch a NAME, so the model is not asked at all)", modelCalls === 0 && !/Fabricated Mortgage/.test(nameOnly.text), { text: nameOnly.text, modelCalls })
+  modelCalls = 0
+  const dLender: any = await ask("Who is our lender?")
+  check("an off-platform lender is a request to the assigned human to ask the party and record it", dLender.plan?.offPlatformRequest === "lender", dLender.plan)
+  const ding: any = await quiet(() => qad.fileQuestionDing(G.__W.mem, { brokerageId: B1, contactId: C1, sessionId: null, agentId: AG_A, question: "Who is my closing attorney?", decision: dLender, surface: "portal_tutor" }))
+  check("the ding files ONE task for the agent (the 'your agent has been asked' is true)", ding.filed === true && !!ding.taskId && T(G.__W.mem, "tasks").length === 1, ding)
+  // agent-entered (unconfirmed) is listed, not stated; confirmed is stated from the record; an on-platform lender vendor is stated
+  m = as(null)
+  m.tables.transaction_participants.push({ id: u("4", 1), transaction_id: TX_GA, brokerage_id: B1, name: "Typed In Law", party_role: "settlement_attorney", fact_source: "agent_entered" })
+  const dTyped: any = await ask("Who is my closing attorney?")
+  check("an attorney only TYPED in by the agent is 'listed, not confirmed' — its name is not stated as fact", /not confirmed/.test(dTyped.text) && !/Typed In Law/.test(dTyped.text) && dTyped.answered === "unresolved", dTyped.text)
+  m.tables.transaction_participants.push({ id: u("4", 2), transaction_id: TX_GA, brokerage_id: B1, name: "Peach Law LLC", party_role: "buyer_attorney", represents: "buyer", fact_source: "party_confirmed", fact_confirmed_at: "2026-11-20T10:00:00Z" })
+  m.tables.vendor_assignments.push({ id: u("9", 9), vendor_id: V_LENDER, transaction_id: TX_GA, brokerage_id: B1, assignment_type: "lender", status: "confirmed" })
+  modelCalls = 0
+  const dOk: any = await ask("Who is my closing attorney?")
+  const dLenderOk: any = await ask("Who is our lender?")
+  check("a CONFIRMED attorney is stated from the record with whom they represent; a lender vendor on the deal is stated (positive control); still 0 model calls",
+    dOk.answered === "sourced" && /Peach Law LLC, representing the buyer/.test(dOk.text) && dLenderOk.answered === "sourced" && /First Mortgage/.test(dLenderOk.text) && modelCalls === 0, { a: dOk.text, l: dLenderOk.text })
+  check("the classifier routes these questions to the record, not to the legal-judgment or general branch", ["Who is my closing attorney?", "who's our loan officer", "Who is the title company?"].every((q) => ["closing_attorney", "lender_identity", "settlement_agent"].includes(qad.classifyPortalQuestion(q).fact ?? "")))
+  check("a general question about attorneys is still education (positive control — the rule is narrow)", qad.classifyPortalQuestion("What does a closing attorney do?").fact === null)
+}
+
 // ═══ run ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════
 async function main() {
   console.log(`wave156-d-closing-parties-guard — ROOT=${ROOT}`)
@@ -462,6 +612,7 @@ async function main() {
   await sectionB(cp)
   await sectionC(act)
   await sectionD()
+  await sectionE(act, cp)
   console.log(`\n${passed} passed, ${failed} failed`)
   if (failed) { console.log(`FAILED:\n  - ${fails.join("\n  - ")}`); process.exit(1) }
 }
