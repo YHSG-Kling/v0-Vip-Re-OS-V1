@@ -70,10 +70,12 @@ import type { EsignPacketState } from "@/lib/esign/packet-states"
 type OfferComplianceTrigger =
   | "agreement_executed"   // both sides signed — the loop's first run
   | "document_uploaded"    // a remediation upload linked to the offer — the re-entry
+  | "compliance_review_recorded" // wave 156 (156B): a reviewer accepted the executed contract (app/actions/compliance/representation-review.ts)
 
 type OfferComplianceOutcome =
   | "advanced"        // gate passed; the transaction exists and is under contract
   | "blocked"         // gate refused; blockers recorded on the offer, audience told if the set changed
+  | "awaiting_review" // wave 156 (156B): signed, complete and consistent — waiting for a person with review authority (not a correction)
   | "outside_window"  // not fully executed by both, or already converted; untouched
   | "unknown"         // the offer could not be read, or the driver could not run; nothing claimed
 
@@ -165,6 +167,11 @@ export async function runOfferComplianceLoop(
     return { outcome: "advanced", transactionId: transactionId ?? null, reason: null }
   }
 
+  // WAVE 156 (156B): the chokepoint recorded "awaiting_review" — the packet is complete and consistent and waits for a person with
+  // review authority. That is not a correction: the state stays, the packet stays compliance_pending, nobody is asked to fix anything.
+  if (prior.state === "awaiting_review") {
+    return { outcome: "awaiting_review", transactionId: null, reason: reason ?? null }
+  }
   await writeGateState(supabase, offerId, brokerageId, meta, {
     ...prior, state: "blocked", checked_at: new Date().toISOString(), trigger, reason: reason ?? null,
   })
