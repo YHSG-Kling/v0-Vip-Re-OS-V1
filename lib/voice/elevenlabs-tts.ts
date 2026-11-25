@@ -161,17 +161,6 @@ export async function synthesizeSpeech(
     return { success: false, errorCode: "no_api_key", error: "ELEVENLABS_API_KEY not set" }
   }
 
-  // Vendor budget gate — auto-pause TTS when the brokerage is over its monthly
-  // platform-vendor ceiling. Callers fall back to browser TTS on quota.
-  if (input.brokerageId) {
-    const { checkVendorBudget } = await import("@/lib/vendor-governance/budget-gate")
-    const { estimatePlatformVendorCost } = await import("@/lib/vendor-governance/meter-vendor")
-    const budget = await checkVendorBudget({ brokerageId: input.brokerageId, addCost: estimatePlatformVendorCost("elevenlabs", input.text.length) })
-    if (!budget.allowed) {
-      return { success: false, errorCode: "quota", error: "Vendor budget exceeded — TTS paused" }
-    }
-  }
-
   const voiceId = input.voiceId || FALLBACK_VOICE_ID
   const settings = { ...DEFAULT_VOICE_SETTINGS, ...(input.voiceSettings ?? {}) }
 
@@ -182,14 +171,19 @@ export async function synthesizeSpeech(
     // more hand-rolled request/response mapping.
     const modelId = input.modelId ?? DEFAULT_BUFFERED_MODEL_ID
     const langField = languageCodeField(modelId, input.languageCode)
-    const res = await convertSpeech(apiKey, {
+    // THE PAID DOOR (wave 156, lane 156S): budget before the call, a receipt, the spend booked only on success
+    // (lib/vendor-governance/paid-egress.ts runPaidEgress). Over budget → "quota", the provider never reached;
+    // callers fall back to browser TTS on quota. A call with no tenant is now booked as platform spend.
+    const paid = await runTtsDoor(input, "voice_tts", { voice_id: voiceId }, () => convertSpeech(apiKey, {
       voiceId,
       text: input.text,
       modelId,
       voiceSettings: settings,
       applyTextNormalization: ELEVENLABS_TEXT_NORMALIZATION,
       languageCode: "language_code" in langField ? langField.language_code : null,
-    })
+    }), (r) => r.ok && !!r.data)
+    if (!paid.ran) return { success: false, errorCode: "quota", error: paid.reason === "budget_refused" ? "Vendor budget exceeded — TTS paused" : paid.detail }
+    const res = paid.result
 
     if (!res.ok || !res.data) {
       const body = res.error ?? ""
@@ -210,20 +204,8 @@ export async function synthesizeSpeech(
       }
     }
 
+    // The spend (ElevenLabs bills per character synthesized) was booked by the door above, on success only.
     const arrayBuffer = res.data
-    // Unified vendor-spend ledger — ElevenLabs bills per character synthesized.
-    if (input.brokerageId) {
-      const { meterVendorSpend, estimatePlatformVendorCost } = await import("@/lib/vendor-governance/meter-vendor")
-      void meterVendorSpend({
-        vendorName: "elevenlabs",
-        usageType: "tts",
-        cost: estimatePlatformVendorCost("elevenlabs", input.text.length),
-        unitCount: input.text.length,
-        brokerageId: input.brokerageId,
-        systemSource: "voice_tts",
-        metadata: { voice_id: voiceId, chars: input.text.length },
-      })
-    }
     return { success: true, audioBuffer: Buffer.from(arrayBuffer) }
   } catch (err: any) {
     return { success: false, errorCode: "unknown", error: err?.message ?? "Network error" }
@@ -278,16 +260,6 @@ export async function synthesizeSpeechWithTimestamps(
     return { success: false, errorCode: "no_api_key", error: "ELEVENLABS_API_KEY not set" }
   }
 
-  // Same vendor budget gate as synthesizeSpeech — auto-pause when over ceiling.
-  if (input.brokerageId) {
-    const { checkVendorBudget } = await import("@/lib/vendor-governance/budget-gate")
-    const { estimatePlatformVendorCost } = await import("@/lib/vendor-governance/meter-vendor")
-    const budget = await checkVendorBudget({ brokerageId: input.brokerageId, addCost: estimatePlatformVendorCost("elevenlabs", input.text.length) })
-    if (!budget.allowed) {
-      return { success: false, errorCode: "quota", error: "Vendor budget exceeded — TTS paused" }
-    }
-  }
-
   const voiceId = input.voiceId || FALLBACK_VOICE_ID
   const settings = { ...DEFAULT_VOICE_SETTINGS, ...(input.voiceSettings ?? {}) }
 
@@ -296,14 +268,17 @@ export async function synthesizeSpeechWithTimestamps(
     // adapter as the buffered path (lib/providers/elevenlabs/client.ts).
     const modelId = input.modelId ?? DEFAULT_BUFFERED_MODEL_ID
     const langField = languageCodeField(modelId, input.languageCode)
-    const res = await convertSpeechWithTimestamps(apiKey, {
+    // The same paid door as synthesizeSpeech (budget → receipt → spend on success only).
+    const paid = await runTtsDoor(input, "voice_tts_timestamped", { voice_id: voiceId, with_timestamps: true }, () => convertSpeechWithTimestamps(apiKey, {
       voiceId,
       text: input.text,
       modelId,
       voiceSettings: settings,
       applyTextNormalization: ELEVENLABS_TEXT_NORMALIZATION,
       languageCode: "language_code" in langField ? langField.language_code : null,
-    })
+    }), (r) => r.ok && !!r.data?.audioBase64)
+    if (!paid.ran) return { success: false, errorCode: "quota", error: paid.reason === "budget_refused" ? "Vendor budget exceeded — TTS paused" : paid.detail }
+    const res = paid.result
 
     if (!res.ok || !res.data?.audioBase64) {
       const body = res.error ?? ""
@@ -328,19 +303,7 @@ export async function synthesizeSpeechWithTimestamps(
     // Prefer alignment over the original text (matches the characters we sent).
     const alignment = (res.data.alignment ?? res.data.normalizedAlignment ?? undefined) as CharacterAlignment | undefined
 
-    // Same unified vendor-spend ledger as synthesizeSpeech.
-    if (input.brokerageId) {
-      const { meterVendorSpend, estimatePlatformVendorCost } = await import("@/lib/vendor-governance/meter-vendor")
-      void meterVendorSpend({
-        vendorName: "elevenlabs",
-        usageType: "tts",
-        cost: estimatePlatformVendorCost("elevenlabs", input.text.length),
-        unitCount: input.text.length,
-        brokerageId: input.brokerageId,
-        systemSource: "voice_tts_timestamped",
-        metadata: { voice_id: voiceId, chars: input.text.length, with_timestamps: true },
-      })
-    }
+    // The spend was booked by the door above, on success only.
     return { success: true, audioBuffer, alignment: alignment ?? undefined }
   } catch (err: any) {
     return { success: false, errorCode: "unknown", error: err?.message ?? "Network error" }
@@ -366,17 +329,6 @@ export async function synthesizeSpeechStream(input: SynthesizeSpeechInput): Prom
     return { success: false, errorCode: "no_api_key", error: "ELEVENLABS_API_KEY not set" }
   }
 
-  // Vendor budget gate — auto-pause TTS when the brokerage is over its monthly
-  // platform-vendor ceiling. Callers fall back to browser TTS on quota.
-  if (input.brokerageId) {
-    const { checkVendorBudget } = await import("@/lib/vendor-governance/budget-gate")
-    const { estimatePlatformVendorCost } = await import("@/lib/vendor-governance/meter-vendor")
-    const budget = await checkVendorBudget({ brokerageId: input.brokerageId, addCost: estimatePlatformVendorCost("elevenlabs", input.text.length) })
-    if (!budget.allowed) {
-      return { success: false, errorCode: "quota", error: "Vendor budget exceeded — TTS paused" }
-    }
-  }
-
   const voiceId = input.voiceId || FALLBACK_VOICE_ID
   const settings = { ...DEFAULT_VOICE_SETTINGS, ...(input.voiceSettings ?? {}) }
 
@@ -390,7 +342,9 @@ export async function synthesizeSpeechStream(input: SynthesizeSpeechInput): Prom
     // /stream fetch (its shape, not a URL object it cannot see).
     const outputFormatQuery = input.outputFormat ? `?output_format=${input.outputFormat}` : ""
     const streamModelId = input.modelId ?? DEFAULT_STREAMING_MODEL_ID
-    const response = await fetch(
+    // THE PAID DOOR (wave 156, 156S): this leg asked the budget but never BOOKED its characters — the live
+    // assistant's and the Simli agent's speech was spend no ledger saw. Same door as the buffered legs now.
+    const paid = await runTtsDoor(input, "voice_tts_stream", { voice_id: voiceId, stream: true }, () => fetch(
       `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream${outputFormatQuery}`,
       {
         method: "POST",
@@ -413,7 +367,9 @@ export async function synthesizeSpeechStream(input: SynthesizeSpeechInput): Prom
           ...languageCodeField(streamModelId, input.languageCode),
         }),
       }
-    )
+    ), (r) => r.ok)
+    if (!paid.ran) return { success: false, errorCode: "quota", error: paid.reason === "budget_refused" ? "Vendor budget exceeded — TTS paused" : paid.detail }
+    const response = paid.result
 
     if (!response.ok) {
       const body = await response.text().catch(() => "")
@@ -436,4 +392,28 @@ export async function synthesizeSpeechStream(input: SynthesizeSpeechInput): Prom
  */
 export function audioBufferToDataUrl(buffer: Buffer): string {
   return `data:audio/mpeg;base64,${buffer.toString("base64")}`
+}
+
+/**
+ * THE ONE PAID DOOR every ElevenLabs synthesis leg above goes through (wave 156, lane 156S) — the existing
+ * lib/vendor-governance/paid-egress.ts runPaidEgress with this vendor's ONE price (estimatePlatformVendorCost
+ * "elevenlabs", per character). Replaces three hand-assembled copies: the buffered and timestamped legs gated + booked
+ * only when a tenant was passed, the stream leg gated and never booked; none left a receipt.
+ */
+async function runTtsDoor<T>(
+  input: SynthesizeSpeechInput,
+  systemSource: string,
+  metadata: Record<string, unknown>,
+  call: () => Promise<T>,
+  ok: (r: T) => boolean,
+) {
+  const { runPaidEgress } = await import("@/lib/vendor-governance/paid-egress")
+  const { estimatePlatformVendorCost } = await import("@/lib/vendor-governance/meter-vendor")
+  const chars = input.text.length
+  return runPaidEgress<T>({
+    brokerageId: input.brokerageId ?? null, vendor: "elevenlabs", usageType: "tts", action: "voice.tts.synthesize",
+    estimatedCostUsd: estimatePlatformVendorCost("elevenlabs", chars), units: chars,
+    subject: { type: "tts_voice", id: null, ref: String(metadata.voice_id ?? "") || null },
+    systemSource, metadata: { ...metadata, chars },
+  }, call, (r) => ({ ok: ok(r), units: chars }))
 }

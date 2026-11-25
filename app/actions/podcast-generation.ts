@@ -8,7 +8,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 // audio and cover art are fetched unauthenticated by podcast clients).
 import { hostRenderedMedia } from "@/lib/remotion/media-host"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
-import { convertSpeech } from "@/lib/providers/elevenlabs/client"
+// (wave 156, 156S) the ElevenLabs SDK adapter is no longer called here — synthesizeVoice goes through synthesizeSpeech.
 import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
 import { syndicateEpisode, type SyndicateEpisodeResult } from "@/lib/podcast/transistor-client"
 import { generateTextRouted } from "@/lib/ai/models"
@@ -232,7 +232,8 @@ export async function generatePodcastAudio(episodeId: string) {
           segment.text, 
           episode.primary_voice_id, 
           episode.voice_settings,
-          provider.providerKey
+          provider.providerKey,
+          brokerageId,
         )
 
         // The old key was a BARE `podcast-…-segment-N.mp3` at the store root,
@@ -375,7 +376,8 @@ async function synthesizeVoice(
   text: string,
   voiceId: string,
   settings: any,
-  providerKey: string = "elevenlabs"
+  providerKey: string = "elevenlabs",
+  brokerageId: string | null = null,
 ): Promise<Buffer> {
   if (!voiceId) {
     throw new Error(
@@ -390,20 +392,23 @@ async function synthesizeVoice(
   if (!process.env.ELEVENLABS_API_KEY) {
     throw new Error("ELEVENLABS_API_KEY is not configured. Contact your administrator to enable ElevenLabs voice synthesis.")
   }
-  // Official server SDK adapter (lib/providers/elevenlabs/client.ts) — same
-  // endpoint, same price as the raw fetch this replaced.
-  const response = await convertSpeech(process.env.ELEVENLABS_API_KEY, {
+  // THE PAID VOICE DOOR (wave 156, lane 156S): this called the ElevenLabs SDK adapter directly — no budget, no receipt,
+  // no booking. It now goes through lib/voice/elevenlabs-tts.ts synthesizeSpeech (the session tenant's vendor budget
+  // before the call, a receipt, the characters booked once on success) — same model, same voice settings as before.
+  const { synthesizeSpeech } = await import("@/lib/voice/elevenlabs-tts")
+  const response = await synthesizeSpeech({
     voiceId,
     text,
     modelId: "eleven_monolingual_v1",
     voiceSettings: settings,
+    brokerageId,
   })
 
-  if (!response.ok || !response.data) {
-    throw new Error(`ElevenLabs voice synthesis failed: ${response.error ?? `HTTP ${response.status}`}`)
+  if (!response.success || !response.audioBuffer) {
+    throw new Error(`ElevenLabs voice synthesis failed: ${response.error ?? response.errorCode ?? "unknown"}`)
   }
 
-  return response.data
+  return response.audioBuffer
 }
 
 // Get all podcast episodes for agent

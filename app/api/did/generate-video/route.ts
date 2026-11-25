@@ -421,10 +421,34 @@ export async function POST(request: NextRequest) {
     // Through Connection OS. `endpoint` is an absolute URL built above from
     // DID_API_BASE + the engine, so the path is derived from it rather than
     // re-deciding the engine here — the engine is chosen once, upstream.
-    const didRes = await didRequest<any>(endpoint.replace(DID_API_BASE, ""), {
+    // THE PAID DOOR (wave 156, lane 156S): this submit had no budget, no receipt and no booking — an ungated paid
+    // render on a session route. It now goes through lib/vendor-governance/paid-egress.ts runPaidEgress: the SESSION
+    // tenant's vendor budget before D-ID is reached, a receipt, the render booked once on success, and ONE charge per
+    // (project, exact payload) — a retried identical submit replays the job it already bought.
+    const { runPaidEgress } = await import("@/lib/vendor-governance/paid-egress")
+    const { estimatePlatformVendorCost } = await import("@/lib/vendor-governance/meter-vendor")
+    const { createHash } = await import("node:crypto")
+    const submitPath = endpoint.replace(DID_API_BASE, "")
+    const paid = await runPaidEgress<import("@/lib/did/gateway").DidGatewayResult<any>>({
+      brokerageId: auth.brokerageId ?? null, vendor: "did", usageType: "video_render", action: "video.did.render",
+      estimatedCostUsd: estimatePlatformVendorCost("did", 1), units: 1,
+      subject: { type: "video_project", id: video_project_id, ref: submitPath },
+      actor: auth.userId ? { type: "user", userId: auth.userId } : { type: "system" },
+      idempotencyKey: `did_generate_video:${video_project_id}:${createHash("sha256").update(JSON.stringify(didPayload)).digest("hex").slice(0, 32)}`,
+      systemSource: "video_generation",
+    }, () => didRequest<any>(submitPath, {
       method: "POST",
       body: didPayload,
-    })
+    }), (r) => ({ ok: r.ok && !!r.data?.id, providerRef: r.data?.id ?? null, error: r.ok ? null : (r.error ?? `HTTP ${r.status}`) }))
+    if (!paid.ran && paid.reason === "budget_refused") {
+      await releaseSlot("Vendor budget exceeded — D-ID render paused")
+      return NextResponse.json({ error: "Your plan's monthly vendor budget is used up — the video was not rendered." }, { status: 402 })
+    }
+    if (!paid.ran && !paid.providerRef) {
+      await releaseSlot(paid.detail)
+      return NextResponse.json({ error: paid.detail }, { status: 409 })
+    }
+    const didRes = paid.ran ? paid.result : { ok: true, status: 200, data: { id: paid.providerRef }, error: null }
 
     const didData = didRes.data ?? { description: didRes.error }
 

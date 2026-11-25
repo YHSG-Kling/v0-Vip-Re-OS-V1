@@ -37,7 +37,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { verifyCronAuth } from "@/lib/cron-auth"
 import { resolvePlanTier } from "@/lib/billing/plan-tier"
 import { getBundle } from "@/lib/remotion/bundle-cache"
-import { getComposition, recordRenderCompleted, canAccessComposition, type CompositionTier } from "@/lib/remotion/registry"
+import { getComposition, recordRenderCompleted, canAccessComposition, claimQueuedRender, type CompositionTier } from "@/lib/remotion/registry"
 import { finalizeCoordinatedRender } from "@/lib/remotion/render-coordinator"
 import { NO_FINISH } from "@/lib/remotion/composition-cache"
 import {
@@ -91,12 +91,12 @@ export async function POST(req: NextRequest) {
 
   // 1. Claim the row atomically (queued → rendering) so a concurrent
   //    cron tick can't double-render the same row.
-  const claim = await svc.from("remotion_composition_renders")
-    .update({ render_status: "rendering" })
-    .eq("id", body.render_id)
-    .eq("render_status", PICKABLE_RENDER_STATUS)
-    .select("id, brokerage_id, composition_id, agent_user_id, entity_type, entity_id, scope_type, scope_id, input_props")
-    .maybeSingle()
+  //    The ONE guarded transition, driven by test:wave156-s (wave 156, lane 156S):
+  //    lib/remotion/registry.ts claimQueuedRender — matched on the id AND
+  //    PICKABLE_RENDER_STATUS, the row returned with its OWN brokerage_id.
+  const claim = await claimQueuedRender(
+    svc, body.render_id,
+  )
   // A REFUSED CLAIM IS NOT AN EMPTY QUEUE (CLAUDE.md §3). supabase-js RESOLVES
   // a refusal: a PGRST204 on any column named in the update or the select, a
   // transient PostgREST 5xx, or a .maybeSingle() that matched more than one row

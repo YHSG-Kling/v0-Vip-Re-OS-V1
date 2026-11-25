@@ -127,10 +127,11 @@ export async function POST(request: NextRequest) {
     }
 
     // ─── Vendor budget gate — auto-pause over the monthly platform-vendor ceiling ─
+    let avatarPreflight: import("@/lib/vendor-governance/budget-gate").VendorBudgetResult
     {
       const { checkVendorBudget } = await import("@/lib/vendor-governance/budget-gate")
       const { estimatePlatformVendorCost } = await import("@/lib/vendor-governance/meter-vendor")
-      const bgt = await checkVendorBudget({
+      const bgt = avatarPreflight = await checkVendorBudget({
         brokerageId: agentRow.brokerage_id ?? auth.brokerageId,
         addCost: estimatePlatformVendorCost("did", 1),
       })
@@ -168,7 +169,21 @@ export async function POST(request: NextRequest) {
     // resolved, the response is shape-adapted (so a D-ID field rename self-heals
     // and reports drift), and vendor spend is metered — a raw fetch here skipped
     // all three. See lib/did/gateway.ts.
-    const didRes = await didRequest<{ id?: string }>("/scenes/avatars", {
+    // THE PAID DOOR (wave 156, lane 156S) — lib/vendor-governance/paid-egress.ts runPaidEgress around the submit: the
+    // budget verdict asked just above (`preflight` — the ledger is not read twice), a receipt, the avatar booked once on
+    // success (D-ID's per-avatar price is not on file here → a unit at price_state 'unknown', never a guess), and ONE
+    // submit per (asset, source) — a retried identical request replays the avatar job it already started.
+    const { runPaidEgress } = await import("@/lib/vendor-governance/paid-egress")
+    const { createHash } = await import("node:crypto")
+    const avatarTenant = agentRow.brokerage_id ?? auth.brokerageId
+    const paid = await runPaidEgress<import("@/lib/did/gateway").DidGatewayResult<{ id?: string }>>({
+      brokerageId: avatarTenant ?? null, vendor: "did", usageType: "avatar_create", action: "video.did_avatar.create",
+      estimatedCostUsd: 0, units: 1, priceUnknown: true, preflight: avatarPreflight,
+      subject: { type: "avatar_asset", id: assetId, ref: null },
+      actor: auth.userId ? { type: "user", userId: auth.userId } : { type: "system" },
+      idempotencyKey: `did_avatar:${assetId}:${createHash("sha256").update(String(source_url)).digest("hex").slice(0, 24)}`,
+      systemSource: "avatar_creation",
+    }, () => didRequest<{ id?: string }>("/scenes/avatars", {
       method: "POST",
       // THE COMPLETE CONTRACT. This used to send source_url alone. The
       // published POST /scenes/avatars body also takes name, consent_id,
@@ -192,7 +207,12 @@ export async function POST(request: NextRequest) {
         webhookUrl: didWebhookUrl(),
         isGreenscreen: body?.is_greenscreen === true,
       }),
-    })
+    }), (r) => ({ ok: r.ok && !!r.data?.id, providerRef: r.data?.id ?? null, error: r.ok ? null : (r.error ?? `HTTP ${r.status}`) }))
+    if (!paid.ran && paid.reason === "budget_refused") {
+      return NextResponse.json({ error: "Monthly usage limit reached — avatar creation paused.", budgetExceeded: true }, { status: 402 })
+    }
+    const didRes = paid.ran ? paid.result
+      : { ok: !!paid.providerRef, status: paid.providerRef ? 200 : 409, data: paid.providerRef ? { id: paid.providerRef } : null, error: paid.providerRef ? null : paid.detail }
 
     const didData = didRes.data ?? { description: didRes.error }
 
