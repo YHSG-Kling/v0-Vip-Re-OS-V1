@@ -28,7 +28,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { compositionSeconds } from "@/lib/remotion/composition-geometry"
 import { consumesVoiceover, missingContentProps } from "@/lib/remotion/content-contract"
 import {
-  MAX_AUTO_REQUEUE_ATTEMPTS, shouldAutoRequeueFailedRender, isStalledRender, stalledRenderError,
+  MAX_AUTO_REQUEUE_ATTEMPTS, shouldAutoRequeueFailedRender, isStalledRender, stalledRenderError, PICKABLE_RENDER_STATUS, FAIR_PICK_RECENT_MS, chooseFairRender, type FairPickClaim,
 } from "@/lib/remotion/render-decision"
 import { didRenderUsdForSeconds, elevenLabsUsdForChars } from "@/lib/video/realism-profile"
 import { wordsForSeconds, AVERAGE_CHARS_PER_WORD } from "@/lib/video/duration-model"
@@ -450,4 +450,50 @@ export async function requeueFailedRenders(svc: any, opts: { window?: number } =
     else out.moved.push({ id: f.id, reason: decision.reason })
   }
   return out
+}
+
+/**
+ * FAIR PICK (wave 156, lane 156S) — the queue tick's choice of the ONE row it renders, replacing "the globally oldest
+ * queued row" (lib/remotion/render-decision.ts chooseFairRender states why). Reads the oldest `window` queued rows and the
+ * claims of the last FAIR_PICK_RECENT_MS; a refused claims read is REPORTED and the pick falls back to the oldest row
+ * (ordering degrades, the queue never stops); a refused queue read is reported and picks nothing (CLAUDE.md §3).
+ */
+export async function pickNextQueuedRender(svc: any, opts: { now?: Date; window?: number } = {}): Promise<{
+  row: { id: string; composition_id: string; brokerage_id: string; scope_type: string | null; scope_id: string | null } | null
+  considered: number; tenants: number; error?: string; fairness?: "fair" | "oldest_first_fallback"
+}> {
+  const now = opts.now ?? new Date()
+  const { data: queued, error } = await svc.from("remotion_composition_renders")
+    .select("id, composition_id, brokerage_id, scope_type, scope_id, created_at")
+    .eq("render_status", PICKABLE_RENDER_STATUS)
+    .order("created_at", { ascending: true })
+    .limit(opts.window ?? 200)
+  if (error) return { row: null, considered: 0, tenants: 0, error: `queued-render read refused: ${error.message}` }
+  const rows = (queued ?? []) as Array<{ id: string; composition_id: string; brokerage_id: string; scope_type: string | null; scope_id: string | null; created_at: string | null }>
+  const tenants = new Set(rows.map((r) => r.brokerage_id)).size
+  if (rows.length === 0) return { row: null, considered: 0, tenants: 0 }
+  const since = new Date(now.getTime() - FAIR_PICK_RECENT_MS).toISOString()
+  const { data: recent, error: recentErr } = await svc.from("remotion_composition_renders")
+    .select("brokerage_id, scope_type, scope_id")
+    .gte("claimed_at", since)
+    .limit(2000)
+  if (recentErr) {
+    return { row: rows[0], considered: rows.length, tenants, fairness: "oldest_first_fallback", error: `recent-claims read refused (${recentErr.message}); picked the oldest row` }
+  }
+  return { row: chooseFairRender(rows, (recent ?? []) as FairPickClaim[]), considered: rows.length, tenants, fairness: "fair" }
+}
+
+/**
+ * THE CLAIM (wave 156, lane 156S; moved out of app/api/internal/remotion/render-composition/route.ts so it is driven by a
+ * proof): `queued → rendering`, matched on the id AND the queued state, so two ticks racing for one row cannot both win —
+ * the loser matches nothing and reads `data: null`. claimed_at is stamped by the m933 trigger. The row comes back with its
+ * OWN brokerage_id: the render runs as that tenant, never as the caller's.
+ */
+export async function claimQueuedRender(svc: any, renderId: string): Promise<{ data: any; error: { message: string } | null }> {
+  return svc.from("remotion_composition_renders")
+    .update({ render_status: "rendering" })
+    .eq("id", renderId)
+    .eq("render_status", PICKABLE_RENDER_STATUS)
+    .select("id, brokerage_id, composition_id, agent_user_id, entity_type, entity_id, scope_type, scope_id, input_props")
+    .maybeSingle()
 }
