@@ -37,7 +37,8 @@ async function offerBrokerageId(offerId: string): Promise<string | null> {
   return (data as any)?.brokerage_id ?? null
 }
 
-const STAFF_ROLES = new Set(["broker", "admin", "compliance_officer", "tc"])
+// TOMBSTONE (wave 156, 156B): the retyped STAFF_ROLES list (broker, admin, compliance_officer, tc) was replaced by the review
+// authority rule lib/kernel/compliance/representation-gate.ts mayReviewRepresentation (→ lib/auth/deal-work-ownership.ts).
 
 export async function acceptOfferConditionallyAction(params: {
   offerId:     string
@@ -70,8 +71,14 @@ export async function emitCompliancePassedAction(params: {
 
   // Manually emitting the compliance-passed gate bypasses the automated document
   // audit, so it is a staff-only override within the offer's own brokerage.
-  if (!STAFF_ROLES.has(caller.userType ?? "")) {
-    return { success: false, error: "Forbidden" }
+  // WAVE 156 (lane 156B): accepting a packet is the REVIEW authority (lib/auth/deal-work-ownership.ts closingApproval —
+  // compliance_officer or the tenant admin roster), read through the ONE rule the representation review uses. A TC assists
+  // the deal and never accepts its paperwork; an agent never accepts their own.
+  {
+    const { mayReviewRepresentation } = await import("@/lib/kernel/compliance/representation-gate")
+    if (!mayReviewRepresentation({ sameTenant: true, userType: caller.userType ?? null, grantedRoles: [], isOwningAgent: false }).ok) {
+      return { success: false, error: "Forbidden" }
+    }
   }
   const ownerBrokerage = await offerBrokerageId(params.offerId)
   if (!ownerBrokerage || ownerBrokerage !== caller.brokerageId) {
