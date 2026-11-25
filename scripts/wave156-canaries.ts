@@ -929,6 +929,228 @@ canary({
   },
 })
 
+// ── visitors (156F) ──────────────────────────────────────────────────────────────────────────────────────────────────────
+const vB1 = u("b", 51), vB2 = u("b", 52), vANN = u("c", 81), vH1 = u("c", 82), vH2 = u("c", 83), vBOB = u("c", 84)
+const V_SEAMS: Record<string, string> = {
+  "lib/kernel/index.ts": "export async function processKernelEvent(){ globalThis.__P.count('kernelEvent'); return { ok: true } }",
+  "lib/kernel/action-ledger.ts": "export async function withActionLedger(_m, fn){ return await fn() }; export async function ledgerSessionAction(_m, fn){ return await fn() }",
+  "lib/kernel/compliance/require-contact-consent.ts": "export async function persistContactConsent(p){ globalThis.__P.count('consent'); return { consentEventId: 'consent-1' } }",
+  "lib/kernel/person-identity.ts": "export async function resolvePerson(){ return { ok: false, reason: 'no_identity_anchor' } }; export async function linkPersonEvidence(){ return { ok: true } }",
+  "lib/errors/collect-error.ts": "export async function collectError(){ return null }",
+  "app/actions/ai-generate.ts": "export async function generateAIJSON(){ globalThis.__P.count('model'); return { data: null, error: 'fixture' } }",
+}
+function vWorld(extra: Record<string, Row[]> = {}): MemClient {
+  return memSupabase({
+    brokerages: [{ id: vB1, slug: "alpha", name: "Alpha", widget_enabled: true, status: "active", deleted_at: null, website: null }, { id: vB2, slug: "beta", name: "Beta", widget_enabled: true, status: "active", deleted_at: null, website: null }],
+    brokerage_brand_settings: [{ id: "bbs-1", brokerage_id: vB1, website_url: "https://tenant.example" }], tenant_custom_domains: [],
+    contacts: [
+      { id: vANN, brokerage_id: vB1, email: "ann@example.test", phone: null, first_name: "Ann" },
+      { id: vH1, brokerage_id: vB1, email: "family@example.test", phone: null, first_name: "P1" }, { id: vH2, brokerage_id: vB1, email: "family@example.test", phone: null, first_name: "P2" },
+      { id: vBOB, brokerage_id: vB1, email: "bob@example.test", phone: "5551230000", first_name: "Bob" },
+    ],
+    leads: [], website_visitors: [], behavioral_signals: [], site_activity: [], external_behavior: [], raw_scraped_leads: [], person_identities: [], person_identity_evidence: [],
+    contact_consent_events: [], newsletter_subscribers: [], self_heal_events: [], agent_action_ledger: [], users: [],
+    ...extra,
+  }, { uuidIds: true })
+}
+
+canary({
+  id: "C12", title: "An anonymous page view yields a session insight, never an invented name",
+  failure: "a false device / IP match becomes a Contact (or an anonymous session becomes a person Raw Lead)",
+  seams: () => ({ replace: V_SEAMS }),
+  async run() {
+    const sourcer = await load("lib/lead-pipeline/site-visitor-sourcer.ts"), rawTypes = await load("lib/lead-pipeline/raw-record-types.ts")
+    const pixel = await load("app/api/track/pixel/route.ts"), identify = await load("app/api/track/identify/route.ts")
+    if (!loaded(sourcer, "lib/lead-pipeline/site-visitor-sourcer.ts", "sourceSiteVisitorIntent") || !loaded(pixel, "app/api/track/pixel/route.ts", "GET") || !loaded(identify, "app/api/track/identify/route.ts", "POST")) return
+    const { NextRequest } = await import("next/server")
+    let ip = 0
+    const fire = (b: string, s: string, page = "https://tenant.example/listings/12-oak") => pixel.GET(new NextRequest(`https://app.test/api/track/pixel?b=${b}&s=${s}&p=${encodeURIComponent(page)}`, { headers: { "x-forwarded-for": `203.0.113.${++ip}`, referer: page } }))
+    const post = (body: Record<string, unknown>) => identify.POST(new NextRequest("https://app.test/api/track/identify", { method: "POST", body: JSON.stringify(body), headers: { "x-forwarded-for": `203.0.113.${++ip}` } }))
+    G.__P.mem = vWorld()
+    const before = { c: T(G.__P.mem, "contacts").length, l: T(G.__P.mem, "leads").length }
+    await drive(() => fire(vB1, "sess-anon-1"))
+    const row = T(G.__P.mem, "website_visitors").find((r) => r.session_id === "sess-anon-1")
+    pos("the pixel records the anonymous session in its tenant (from the tenant's registered site)", row?.brokerage_id === vB1, row)
+    neg("…that session carries no person (contact_id, lead_id, identified_at empty) and no Contact / Lead / Raw Lead is created", !!row && !row.contact_id && !row.lead_id && !row.identified_at && T(G.__P.mem, "contacts").length === before.c && T(G.__P.mem, "leads").length === before.l && T(G.__P.mem, "raw_scraped_leads").length === 0)
+    G.__P.mem = vWorld({ website_visitors: [{ id: "wv-1", brokerage_id: vB1, session_id: "sess-anon-2", page_url: "https://tenant.example/listings/12-oak?email=ann%40example.test", referrer: "https://google.com", time_on_page_seconds: 240, first_seen_at: "2026-11-25T08:00:00Z", last_seen_at: "2026-11-25T11:30:00Z", utm_source: "google", utm_medium: "cpc", utm_campaign: null, agent_id: null, contact_id: null, lead_id: null, identified_at: null }] })
+    const sv: any = await quiet(() => sourcer.sourceSiteVisitorIntent(G.__P.mem, vB1, { now: new Date("2026-11-25T12:00:00Z") }))
+    neg("the site-visitor lane hands the RawData producer NOTHING — an anonymous session is never a person Raw Lead", Array.isArray(sv?.records) && sv.records.length === 0, sv?.records)
+    neg("…nothing it returns names the browser (no session id, no email scraped from the page's query string)", !JSON.stringify(sv ?? {}).includes("sess-anon-2") && !JSON.stringify(sv ?? {}).includes("ann%40example.test"))
+    pos("the INSIGHT survives as an aggregate: one listing-page, return, campaign-referred session", sv?.aggregate?.sessions === 1 && sv.aggregate.listingPageSessions === 1 && sv.aggregate.returnSessions === 1 && sv.aggregate.campaignReferredSessions === 1, sv?.aggregate)
+    if (typeof rawTypes.isViableRecord === "function") ctrl("POSITIVE CONTROL: the RawData gate WOULD take a session id carried as `username` (the shape the lane used to emit)", rawTypes.isViableRecord({ source: "site_visitor_intent", username: "sess-anon-2", sourceUrl: "https://tenant.example/listings/12-oak" }) === true)
+    G.__P.mem = vWorld({ website_visitors: [{ id: "wv-2", brokerage_id: vB1, session_id: "sess-house", page_url: "/", contact_id: null, lead_id: null, identified_at: null }, { id: "wv-3", brokerage_id: vB1, session_id: "sess-mixed", page_url: "/", contact_id: null, lead_id: null, identified_at: null }, { id: "wv-4", brokerage_id: vB1, session_id: "sess-ann", page_url: "/", contact_id: null, lead_id: null, identified_at: null }] })
+    await drive(() => post({ sessionId: "sess-house", email: "family@example.test" }))
+    await drive(() => post({ sessionId: "sess-mixed", email: "ann@example.test", phone: "5551230000" }))
+    const v = (s: string) => T(G.__P.mem, "website_visitors").find((r) => r.session_id === s)
+    neg("a household inbox two contacts share links NOBODY (a wrong-person match is never made)", !v("sess-house")?.contact_id && !v("sess-house")?.identified_at, v("sess-house"))
+    neg("one person's email beside ANOTHER person's phone links nobody", !v("sess-mixed")?.contact_id && !v("sess-mixed")?.identified_at, v("sess-mixed"))
+    await drive(() => post({ sessionId: "sess-ann", email: "ANN@example.test" }))
+    pos("a first-party form submit whose email exactly ONE contact holds links that session (the legitimate path still works)", v("sess-ann")?.contact_id === vANN && !!v("sess-ann")?.identified_at, v("sess-ann"))
+    const link = await load("lib/lead-intelligence/visitor-link-decision.ts")
+    if (loaded(link, "lib/lead-intelligence/visitor-link-decision.ts", "decideVisitorLink")) {
+      neg("the link rule refuses ambiguity, disagreement and a refused read (fail closed)", link.decideVisitorLink([{ ids: ["x", "y"], refused: false }]).link === false && link.decideVisitorLink([{ ids: ["x"], refused: false }, { ids: ["y"], refused: false }]).link === false && link.decideVisitorLink([{ ids: ["x"], refused: true }]).link === false)
+      src("the rule takes no inferred signal — its source names no IP, device, fingerprint or geolocation input", !/\b(ip_?address|ipAddress|fingerprint|device_?id|geoloc|user_?agent)\b/i.test(code("lib/lead-intelligence/visitor-link-decision.ts")))
+    }
+    ctrl("no visitor-identification vendor was called (refusing fetch counted 0)", calls("fetch") === 0, logged("fetch"))
+  },
+})
+
+// ── calculators (156H) ───────────────────────────────────────────────────────────────────────────────────────────────────
+const SELLER_NET = { salePrice: 500000, mortgagePayoff: 200000, listingCommissionPct: 2.5, titleEscrowFees: 3200, includeTransferTax: "no" }
+canary({
+  id: "C13", title: "A consented calculator result captures exactly ONE Lead / Contact path and genuine CTA ROI",
+  failure: "every calculator view becomes a Lead",
+  seams: () => ({}),
+  async run() {
+    const A = await load("lib/calculators/artifact.ts"), K = await load("lib/kernel/lead-magnets.ts"), MS = await load("lib/kernel/manager-signals.ts"), AL = await load("lib/kernel/action-ledger.ts")
+    if (!loaded(A, "lib/calculators/artifact.ts", "createCalculatorArtifact", "computeCalculatorArtifact", "optInCalculatorResult", "recordCalculatorOpen", "getCalculatorFunnel") || !loaded(K, "lib/kernel/lead-magnets.ts", "publishLeadMagnet", "captureFormSubmission")) return
+    const TA = u("b", 61), TB = u("b", 62), AGA = u("e", 61), USA = u("a", 91), ORIGIN = "https://proof.calculators.test"
+    process.env.NEXT_PUBLIC_APP_URL = ORIGIN
+    const c = memSupabase({
+      brokerages: [{ id: TA, name: "Alpha Realty", slug: "alpha", logo_url: null, primary_color: "#123456", license_number: "A-1", license_state: "FL" }, { id: TB, name: "Beta Homes", slug: "beta" }],
+      users: [{ id: USA, brokerage_id: TA, first_name: "Ann", last_name: "Agent", email: "ann@alpha.test", user_type: "agent" }], agents: [{ id: AGA, user_id: USA, brokerage_id: TA, is_active: true }],
+      lead_capture_forms: [], form_submissions: [], contacts: [], contact_consent_events: [], marketing_campaigns: [], marketing_campaign_touchpoints: [], lifecycle_events: [], agent_action_ledger: [], qr_codes: [], qr_scan_events: [],
+      manager_signals: [], notifications: [], campaign_sequences: [], sequence_enrollments: [], lead_magnet_deliverables: [], lead_magnet_funnel_items: [], remotion_composition_renders: [], activities: [], farm_territories: [], generated_documents: [],
+    }, { uuidIds: true, stampCreatedAt: true }); (c as any).rpc = async () => ({ data: null, error: null }); G.__P.mem = c
+    let captureCalls = 0
+    const deps = { client: c, trackMagnetEvent: (i: any, o: any) => K.trackMagnetEvent(i, o), captureFormSubmission: async (i: any, o: any) => { captureCalls++; return K.captureFormSubmission(i, o) }, publishManagerSignal: MS.publishManagerSignal, createLeadMagnet: K.createLeadMagnet, withActionLedger: AL.withActionLedger }
+    const mintTrackedQr = async (args: any, svc: any) => { const { data } = await svc.from("qr_codes").insert({ brokerage_id: args.brokerageId, agent_id: args.agentId, label: args.label, slug: "qr-1", target_url: args.targetUrl, destination_type: args.destinationType, purpose: args.purpose, is_active: true, scan_count: 0 }).select("id").single(); return { qrCodeId: data.id, slug: "qr-1", scanUrl: `${ORIGIN}/api/qr/scan?slug=qr-1`, targetUrl: args.targetUrl, qrCodeDataUrl: "data:image/png;base64,AA==" } }
+    const created: any = await quiet(() => A.createCalculatorArtifact({ brokerageId: TA, agentId: AGA, createdBy: USA, title: "What will I net when I sell?", config: { kind: "seller_net_sheet", jurisdiction: "US-FL", brand: { tagline: "Know your number" }, qr: true } }, deps))
+    const pub: any = await quiet(() => K.publishLeadMagnet({ magnetId: created.magnetId, brokerageId: TA, channels: ["landing_page", "qr_code"], actorUserId: USA, baseUrl: ORIGIN }, { client: c, mintTrackedQr }))
+    pos("an authorized agent publishes a calculator lead magnet through the existing lead-magnet door (with a tracked QR)", created?.success && pub?.success && T(c, "qr_codes").length === 1, { created, pub })
+    const att = { qr: "qr-1" }
+    await quiet(() => K.trackMagnetEvent({ magnetId: created.magnetId, eventType: "qr_scan", userAgent: "Mozilla/5.0 (iPhone)" }, { client: c }))
+    await quiet(() => A.recordCalculatorOpen({ formId: created.magnetId, attribution: att }, deps))
+    for (const i of [0, 1, 2, 3, 4]) await quiet(() => A.computeCalculatorArtifact({ formId: created.magnetId, inputs: { ...SELLER_NET, salePrice: 500000 + i * 1000 }, attribution: att }, deps))
+    neg("ANONYMOUS USE: a scan, an open and FIVE calculations create 0 contacts, 0 submissions, 0 capture calls, 0 handoffs", T(c, "contacts").length === 0 && T(c, "form_submissions").length === 0 && captureCalls === 0 && T(c, "manager_signals").length === 0, { contacts: T(c, "contacts").length, subs: T(c, "form_submissions").length, captureCalls })
+    const ev = (n: string) => T(c, "lifecycle_events").filter((e) => e.event_type === `lead_magnet_${n}` && e.entity_id === created.magnetId)
+    pos("…each view IS measured as an event on the form (1 scan, 1 open, 5 calculations) — insight without a person", ev("qr_scan").length === 1 && ev("calculator_open").length === 1 && ev("calculation_completed").length === 5)
+    const none: any = await quiet(() => A.optInCalculatorResult({ formId: created.magnetId, inputs: SELLER_NET, intent: "save_results", contact: { first_name: "" } }, deps))
+    neg("an opt-in with no name / way to reach the person is refused before the capture path (0 captures)", none?.success === false && captureCalls === 0, none)
+    const opt: any = await quiet(() => A.optInCalculatorResult({ formId: created.magnetId, inputs: SELLER_NET, intent: "save_results", contact: { first_name: "Sam", last_name: "Seller", email: "sam@seller.test" }, tcpaConsentGiven: true, attribution: att }, deps))
+    pos("a CONSENTED opt-in creates EXACTLY ONE routed record: 1 capture, 1 contact in the form's tenant, 1 submission carrying the recomputed result", opt?.success && captureCalls === 1 && T(c, "contacts").length === 1 && T(c, "contacts")[0].brokerage_id === TA && T(c, "form_submissions").length === 1 && T(c, "form_submissions")[0].submission_data?.calculator_kind === "seller_net_sheet", opt)
+    const sig = T(c, "manager_signals").filter((s) => s.signal_type === "lead_magnet_handoff")
+    pos("ONE handoff to the side's manager (listing_concierge) whose next step is to EXPLAIN the estimate — not an agent task", sig.length === 1 && sig[0].to_manager === "listing_concierge" && sig[0].payload?.nextStep === "explain_estimate", sig)
+    pos("the opt-in left one ledger receipt (marketing.calculator.opt_in)", T(c, "agent_action_ledger").filter((l) => l.action === "marketing.calculator.opt_in" && l.status === "executed").length === 1)
+    const f: any = await A.getCalculatorFunnel(c, { brokerageId: TA, formId: created.magnetId })
+    pos("GENUINE CTA ROI: the funnel reads back exactly what happened — scans 1 · opens 1 · calculations 5 · opt-ins 1 · submissions 1", f?.success && f.funnel.qr_scan === 1 && f.funnel.calculator_open === 1 && f.funnel.calculation_completed === 5 && f.funnel.calculator_opt_in === 1 && f.funnel.submissions === 1, f)
+    const fb: any = await A.getCalculatorFunnel(c, { brokerageId: TB, formId: created.magnetId })
+    neg("another tenant cannot read this calculator's funnel", fb?.success === false, fb)
+    ctrl("no provider / model was reached (refusing fetch counted 0)", calls("fetch") === 0)
+  },
+})
+
+canary({
+  id: "C14", title: "Calculator net / payment math reflects the user's own inputs and a cited jurisdiction source",
+  failure: "a fabricated commission / insurance / tax percentage",
+  seams: () => ({
+    override: {
+      "lib/identity/get-agent-context.ts": `export async function getAgentContext(){ return { isAuthenticated: true, userId: ${JSON.stringify(u("a", 92))}, brokerageId: ${JSON.stringify(u("b", 63))}, role: "agent", agentId: null } }`,
+      "lib/brokerage/get-default-commission-structure.ts": "export async function getDefaultCommissionStructure(){ globalThis.__P.count('terms'); return { grossRateDecimal: 0.05, resolvedFrom: 'fixture', resolvedGrossRateDecimal: 0.05, agentBuyerSideRate: 0.025, agentListingSideRate: 0.025, brokerageBuyerSideRate: 0.005, brokerageListingSideRate: 0.005 } }",
+      "lib/brokerage/index.ts": "export async function getDefaultCommissionStructure(){ globalThis.__P.count('terms'); return { grossRateDecimal: 0.05, resolvedFrom: 'fixture', resolvedGrossRateDecimal: 0.05, agentBuyerSideRate: 0.025, agentListingSideRate: 0.025, brokerageBuyerSideRate: 0.005, brokerageListingSideRate: 0.005 } }",
+      "lib/ai/index.ts": "export async function generateAIJSON(){ globalThis.__P.count('model'); return { scenarios: [{ months: 6, appreciation: 0.03 }] } }",
+    },
+    replace: { "lib/kernel/action-ledger.ts": "export async function withActionLedger(_c, run){ return run() }; export async function ledgerSessionAction(_c, run){ return run() }; export async function ledgerToolCall(_c, run){ return run() }" },
+  }),
+  async run() {
+    const calc = await load("app/actions/calculators.ts")
+    if (!loaded(calc, "app/actions/calculators.ts", "calculateSellerNet")) return
+    G.__P.mem = memSupabase({ brokerages: [{ id: u("b", 63), plan_tier: "brokerage" }], users: [{ id: u("a", 92), brokerage_id: u("b", 63), user_type: "agent" }], calculator_history: [], ai_tool_usage: [] }, { uuidIds: true })
+    const base = { homeValue: 500000, mortgageBalance: 200000, location: "Austin", state: "TX", brokerageId: u("b", 63) }
+    resetCalls()
+    const blank: any = await quiet(() => calc.calculateSellerNet(base))
+    const blob = JSON.stringify(blank ?? {})
+    neg("with NO title / escrow quote entered, the seller net sheet does not invent one (no 0.7% title / 1.5% escrow figure: $3,500 / $7,500)", blank?.success === false || !(/\b3500\b/.test(blob) || /\b7500\b/.test(blob)), blank)
+    neg("…and Texas (no transfer-tax statute cited) gets no fabricated 0.1% transfer tax ($500)", blank?.success === false || !/"transfer_?tax"\s*:\s*500\b/i.test(blob), blank)
+    neg("…and no model is asked to predict the seller's appreciation", calls("model") === 0, calls("model"))
+    const quoted: any = await quiet(() => calc.calculateSellerNet({ ...base, titleEscrowFees: 3200, transferTaxAmount: 0, repairsConcessions: 0, movingCost: 0 }))
+    const qb = JSON.stringify(quoted ?? {})
+    pos("with the user's OWN quote ($3,200) and transfer tax ($0) the sheet computes and carries exactly those figures", quoted?.success === true && /3200/.test(qb) && !/\b3500\b/.test(qb) && !/\b7500\b/.test(qb), quoted)
+    neg("…the commission is the brokerage's agreed rate applied ONCE (5% of $500,000 = $25,000), not the agent split counted twice or a guessed 6%", /25000/.test(qb) && !/30000/.test(qb), quoted)
+    const E = await load("lib/calculators/engine.ts")
+    if (!loaded(E, "lib/calculators/engine.ts", "runCalculator", "CALCULATOR_SPECS")) return
+    const pub = { audience: "public" }
+    const fl = E.runCalculator("seller_net_sheet", { ...SELLER_NET, includeTransferTax: "yes" }, { audience: "public", jurisdiction: "US-FL" })
+    const flA = fl?.assumptions?.find((a: any) => a.key === "transferTax")
+    pos("a CITED statute is applied by jurisdiction: Florida doc stamps on $500,000 = $3,500, with the statute's URL and read date", fl?.ok && fl.lines.find((l: any) => l.key === "transferTax")?.amount === 3500 && flA?.basis === "cited_source" && /^https:\/\//.test(flA?.source?.url ?? ""), flA)
+    const tx = E.runCalculator("seller_net_sheet", { ...SELLER_NET, includeTransferTax: "yes" }, { audience: "public", jurisdiction: "US-TX" })
+    neg("NO SOURCE → 'Enter a value': Texas has no cited statute and gets no national fallback", tx?.ok === false && /Enter a value/.test(tx.missing?.[0]?.message ?? ""), tx)
+    const pay = E.runCalculator("buyer_payment", { price: 400000, downPayment: 80000, termYears: 30, annualPropertyTax: 4800, annualInsurance: 1800 }, pub)
+    neg("a buyer payment with NO rate entered refuses ('Enter a value') — no default mortgage rate is assumed", pay?.ok === false && pay.missing?.some((m: any) => m.key === "ratePct" && /^Enter a value/.test(m.message)), pay)
+    const pay2 = E.runCalculator("buyer_payment", { price: 120000, downPayment: 0, ratePct: 0, termYears: 10, annualPropertyTax: 0, annualInsurance: 0 }, pub)
+    pos("the user's own inputs drive the math exactly ($120,000 at 0% over 10 years = $1,000.00/month)", pay2?.ok && pay2.outputs?.monthlyTotal === 1000, pay2?.outputs)
+    const agreed = E.runCalculator("seller_net_sheet", SELLER_NET, { audience: "public", agreedCommission: { listingRatePct: 2.75, flatAmount: null, label: "x" } })
+    neg("the brokerage's agreed (internal) commission never reaches a PUBLIC estimate", agreed?.ok === false && agreed.refused?.some((r: any) => r.key === "agreedCommission"), agreed)
+  },
+})
+
+canary({
+  id: "C29", title: "The same calculator / packet / wording experience works for solo, team, brokerage and multi-office tenants",
+  failure: "child office data bleeds across a separate brokerage or location",
+  seams: () => ({ replace: FORMS_SEAMS }),
+  async run() {
+    const A = await load("lib/calculators/artifact.ts")
+    if (loaded(A, "lib/calculators/artifact.ts", "listPublishedCalculators")) {
+      const B1 = u("b", 71), B2 = u("b", 72), B3 = u("b", 73), B4 = u("b", 74)
+      const cfg = (kind: string, brand: Record<string, unknown> = {}) => ({ calculator: { kind, brand, cta: { mode: "save_results" } } })
+      const db = memSupabase({
+        brokerages: [{ id: B1, name: "Solo Sam Realty", primary_color: "#111111" }, { id: B2, name: "Team Tara Group", primary_color: "#222222" }, { id: B3, name: "Bravo Brokerage", primary_color: "#333333" }, { id: B4, name: "Two Office Realty", primary_color: "#444444" }],
+        lead_capture_forms: [
+          { id: "f1", brokerage_id: B1, agent_id: "ag-solo", slug: "solo-net", name: "Solo net", magnet_type: "calculator", is_active: true, settings: cfg("seller_net_sheet") },
+          { id: "f2", brokerage_id: B2, agent_id: "ag-team", slug: "team-pay", name: "Team payment", magnet_type: "calculator", is_active: true, settings: cfg("buyer_payment", { displayName: "The Tara Team" }) },
+          { id: "f3", brokerage_id: B3, agent_id: "ag-bravo", slug: "bravo-pay", name: "Bravo payment", magnet_type: "calculator", is_active: true, settings: cfg("buyer_payment") },
+          { id: "f3d", brokerage_id: B3, agent_id: "ag-bravo", slug: "bravo-draft", name: "Bravo draft", magnet_type: "calculator", is_active: false, settings: cfg("seller_net_sheet") },
+          { id: "f4a", brokerage_id: B4, agent_id: "ag-north", slug: "north-pay", name: "North payment", magnet_type: "calculator", is_active: true, settings: cfg("buyer_payment", { displayName: "Two Office Realty — North", primaryColor: "#0000AA" }) },
+          { id: "f4b", brokerage_id: B4, agent_id: "ag-south", slug: "south-net", name: "South net", magnet_type: "calculator", is_active: true, settings: cfg("seller_net_sheet", { displayName: "Two Office Realty — South", primaryColor: "#AA0000" }) },
+        ],
+      })
+      const lists: Record<string, any[]> = {}
+      for (const b of [B1, B2, B3, B4]) lists[b] = await A.listPublishedCalculators(db, b)
+      const ids = (b: string) => lists[b].map((x: any) => x.formId).sort().join(",")
+      const brand = (b: string, id: string) => lists[b].find((x: any) => x.formId === id)?.brand?.displayName
+      const shapes: Array<["solo" | "team" | "brokerage" | "multi-office", string, string, string]> = [["solo", B1, "f1", "Solo Sam Realty"], ["team", B2, "f2", "The Tara Team"], ["brokerage", B3, "f3", "Bravo Brokerage"], ["multi-office", B4, "f4a", "Two Office Realty — North"]]
+      for (const [shape, b, id, name] of shapes) {
+        const ok = lists[b].some((x: any) => x.formId === id) && brand(b, id) === name
+        pos(`CALCULATOR · ${shape}: lists its own published calculator with its own brand from the first render (${name})`, ok, { ids: ids(b), brand: brand(b, id) })
+        cell(shape, ok)
+      }
+      neg("CALCULATOR · no tenant lists another's calculator, a draft, or a guide (each list is exactly its own)", ids(B1) === "f1" && ids(B2) === "f2" && ids(B3) === "f3" && ids(B4) === "f4a,f4b", { B1: ids(B1), B2: ids(B2), B3: ids(B3), B4: ids(B4) })
+      neg("CALCULATOR · each office of the two-office brokerage keeps its OWN brand (North never renders as South)", brand(B4, "f4a") !== brand(B4, "f4b") && /North/.test(brand(B4, "f4a") ?? "") && /South/.test(brand(B4, "f4b") ?? ""))
+    }
+    // PACKETS: an office packet reaches its office; a solo agent manages its own library; another brokerage sees nothing.
+    const tp = await load("lib/forms/tenant-form-packets.ts"), intake = await load("lib/forms/form-directory-intake.ts")
+    if (loaded(tp, "lib/forms/tenant-form-packets.ts", "resolvePacketActor", "usableTenantPacketPaths") && loaded(intake, "lib/forms/form-directory-intake.ts", "addFormToLibrary")) {
+      const db = formsWorld(); G.__P.mem = db
+      const A2 = async (id: string): Promise<any> => ((await quiet(() => tp.resolvePacketActor(db, id))) as any).actor
+      const broker = await A2(fBROKER)
+      const north: any = ((await quiet(async () => intake.addFormToLibrary(db, broker, goodUpload(await makePdf(["n"], "n29"), { owner: { locationId: fOFF_N }, name: "North Office Disclosure", packetType: "disclosure", purpose: "disclosure" })))) as any)?.packet
+      const agN = await A2(fAG_N), agS = await A2(fAG_S), foreign = await A2(fFOREIGN), solo = await A2(fSOLO)
+      const usable = async (a: any, r: any) => ((await tp.usableTenantPacketPaths(db, a, [r?.storage_path])) as any)?.usable?.size === 1
+      pos("PACKET · multi-office: the North office's packet reaches the North office agent", await usable(agN, north))
+      neg("PACKET · …and NOT the South office agent of the same brokerage (no office bleed)", !(await usable(agS, north)))
+      neg("PACKET · …and NOT another brokerage's broker (no tenant bleed)", !(await usable(foreign, north)))
+      const soloAdd: any = await quiet(async () => intake.addFormToLibrary(db, solo, goodUpload(await makePdf(["s"], "s29"), { name: "Solo Listing Agreement" })))
+      pos("PACKET · solo: a solo-tier agent is its own principal and adds its own brokerage packet (no new role)", soloAdd?.ok === true && soloAdd.packet?.brokerage_id === fBSOLO, soloAdd?.error)
+      neg("PACKET · …the solo agent's packet is not usable by the multi-office brokerage's agent", !(await usable(agN, soloAdd?.packet)))
+      cell("multi-office", (await usable(agN, north)) && !(await usable(agS, north)))
+      cell("solo", soloAdd?.ok === true)
+    }
+    // WORDING: who pays / who the reader acts for, per shape (156Q) — a solo agent never reads a brokerage-payer claim.
+    const errs = await load("lib/errors/index.ts")
+    if (loaded(errs, "lib/errors/index.ts", "tenantPayerWords")) {
+      const w = (p: any) => errs.tenantPayerWords(p)
+      pos("WORDS · solo: 'you pay'", w({ kind: "solo" }).payerPays === "you pay")
+      pos("WORDS · team: 'the team pays'", w({ kind: "team" }).payerPays === "the team pays")
+      pos("WORDS · brokerage: 'the brokerage pays'", w({ kind: "brokerage" }).payerPays === "the brokerage pays")
+      pos("WORDS · multi-office office seat: acts for its office, the brokerage still pays", /Downtown/.test(w({ kind: "brokerage", office: "Downtown" }).actingFor) && w({ kind: "brokerage", office: "Downtown" }).payerPays === "the brokerage pays")
+      neg("WORDS · a solo agent never reads a brokerage payer or a broker to ask", !/brokerage|broker/.test(JSON.stringify(w({ kind: "solo" }))), w({ kind: "solo" }))
+      neg("WORDS · an unread tier fails closed to actor-neutral words (never a brokerage claim)", !/brokerage/.test(w(null).payerPays), w(null))
+      cell("team", w({ kind: "team" }).payerPays === "the team pays"); cell("brokerage", w({ kind: "brokerage" }).payerPays === "the brokerage pays")
+    }
+    note("rendering half NOT covered: the calculator component and the portal page are not rendered in a browser (no DOM run in this lane)")
+  },
+})
+
 // ═══ child / parent ═══════════════════════════════════════════════════════════════════════════════════════════════════════
 async function child(id: string) {
   const c = CANARIES.find((x) => x.id === id)
