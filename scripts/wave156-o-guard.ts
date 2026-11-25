@@ -39,7 +39,7 @@ import { walkTs } from "./runtime-roots"
 
 const WT = process.cwd()
 const ROOT = process.env.W156O_ROOT || WT
-const DIRECTIVE = process.env.W156_DIRECTIVE || "/tmp/claude-0/-home-user-v0-Vip-Re-OS-V1/366a5662-e062-5f62-b566-b8516bba37ed/scratchpad/w156/DIRECTIVE.md"
+const DIRECTIVE = process.env.W156_DIRECTIVE || "" // the directive file, where one is on this machine (the cross-check below says when it is skipped)
 let passed = 0, failed = 0
 const fails: string[] = []
 function check(name: string, ok: boolean, detail?: unknown) {

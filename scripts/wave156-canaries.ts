@@ -1469,11 +1469,17 @@ canary({
     ctrl("POSITIVE CONTROL: the finder flags a planted second recruiting owner", second([...keys, "sphere_recruiting_owner"]).length === 1)
     pos("sphere_of_influence still exists for lifetime / past-client / referral work and owns no recruiting table", keys.includes("sphere_of_influence") && !Object.entries(reg.TABLE_MANAGER).some(([t, m]) => /recruit/.test(t) && m === "sphere_of_influence"))
     // Schema / tier comparison against the PRE-WAVE tree (base0): the wave changed neither.
-    const BASE0 = process.env.WAVE156P_BASE0 || "/tmp/claude-0/-home-user-v0-Vip-Re-OS-V1/366a5662-e062-5f62-b566-b8516bba37ed/scratchpad/w156/base0"
+    const BASE0 = process.env.WAVE156P_BASE0 || "" // a checkout of the pre-wave commit, when one is on this machine (CI has none)
     const tierOf = (root: string) => (/export const TIER_ORDER[^=]*=\s*\[([^\]]*)\]/.exec(stripComments(existsSync(join(root, "lib/kernel/tier-role-matrix.ts")) ? readFileSync(join(root, "lib/kernel/tier-role-matrix.ts"), "utf8") : ""))?.[1] ?? "").replace(/\s/g, "")
-    neg("the SaaS tiers (TIER_ORDER) are identical to the pre-wave tree — no tier added or removed", tierOf(ROOT).length > 0 && tierOf(ROOT) === tierOf(BASE0), { now: tierOf(ROOT), base: tierOf(BASE0) })
+    // DURABLE RULE (no history needed): the tiers in code are exactly the tiers the live database admits (the generated CHECK vocabulary) — a tier added on either side alone fails.
+    const liveTiers = (() => { const src = existsSync(join(ROOT, "scripts/check-vocabularies.ts")) ? readFileSync(join(ROOT, "scripts/check-vocabularies.ts"), "utf8") : ""; const m = /\bplan_tier\s*:\s*\[([^\]]*)\]/.exec(src); return m ? m[1].replace(/\s/g, "").split(",").filter(Boolean).sort().join(",") : "" })()
+    neg("the SaaS tiers in code (TIER_ORDER) are exactly the tiers the live database admits (plan_tier CHECK vocabulary) — none added on either side", tierOf(ROOT).length > 0 && liveTiers.length > 0 && tierOf(ROOT).split(",").filter(Boolean).sort().join(",") === liveTiers, { code: tierOf(ROOT), live: liveTiers })
+    // POINT-IN-TIME attestations against the pre-wave tree run only where that tree is on this machine; elsewhere they are said to be unchecked, never passed.
+    const haveBase = !!BASE0 && existsSync(join(BASE0, "lib/kernel/tier-role-matrix.ts"))
+    if (haveBase) neg("the SaaS tiers (TIER_ORDER) are identical to the pre-wave tree — no tier added or removed", tierOf(ROOT).length > 0 && tierOf(ROOT) === tierOf(BASE0), { now: tierOf(ROOT), base: tierOf(BASE0) }); else note("NOT CHECKED HERE: TIER_ORDER against the pre-wave tree — no base tree on this machine (set WAVE156P_BASE0)")
     const vocab = (root: string) => { const s = existsSync(join(root, "scripts/check-vocabularies.ts")) ? readFileSync(join(root, "scripts/check-vocabularies.ts"), "utf8") : ""; const m = /\n\s*"?users"?\s*:\s*\{[^}]*?\buser_type\s*:\s*(\[[^\]]*\])/.exec(s); return m ? m[1] : "" }
-    neg("the live users.user_type vocabulary (generated cache) is identical to the pre-wave tree — no user / seat type added (no 'recruit')", vocab(ROOT).length > 0 && vocab(ROOT) === vocab(BASE0) && !/"recruit"/.test(vocab(ROOT)), { now: vocab(ROOT).slice(0, 160), base: vocab(BASE0).slice(0, 160) })
+    neg("the live users.user_type vocabulary (generated cache) has no 'recruit' seat type", vocab(ROOT).length > 0 && !/"recruit"/.test(vocab(ROOT)), { now: vocab(ROOT).slice(0, 160) })
+    if (haveBase) neg("the live users.user_type vocabulary (generated cache) is identical to the pre-wave tree — no user / seat type added", vocab(ROOT) === vocab(BASE0), { now: vocab(ROOT).slice(0, 160), base: vocab(BASE0).slice(0, 160) }); else note("NOT CHECKED HERE: users.user_type against the pre-wave tree — no base tree on this machine (set WAVE156P_BASE0)")
     ctrl("POSITIVE CONTROL: the comparison sees a planted tier", tierOf(ROOT) !== tierOf(ROOT) + ',"lead_purchase"')
   },
 })
@@ -1580,9 +1586,10 @@ canary({
     pos(`the union of every app entry is within its budget (${union.size} ≤ ${UNION_BUDGET})`, union.size <= UNION_BUDGET, union.size)
     // NO PRODUCER HIDDEN: every capability module the wave added under lib/ is still reachable from an app entry (the budget was
     // not met by cutting a producer out of the graph). The list is DERIVED from git, never typed.
-    const added = (() => { try { const r = spawnSync("git", ["-C", ROOT, "diff", "--name-only", "--diff-filter=A", "e79a13b8983aff9607e83a766743bf17c1eaa496", "HEAD", "--", "lib"], { encoding: "utf8" }); return r.status === 0 ? r.stdout.split("\n").filter((f) => /\.(ts|tsx)$/.test(f)) : [] } catch { return [] } })()
-    const orphaned = added.filter((f) => !union.has(f))
-    neg(`no capability module the wave added (${added.length}, derived from git) is cut out of the app graph to fit a budget`, orphaned.length === 0, orphaned)
+    // null = git could not answer (a shallow checkout without the pre-wave commit — CI): the check is then NOT RUN and says so. An empty list read as "0 added, 0 cut" would be a pass that checked nothing.
+    const added = (() => { try { const r = spawnSync("git", ["-C", ROOT, "diff", "--name-only", "--diff-filter=A", "e79a13b8983aff9607e83a766743bf17c1eaa496", "HEAD", "--", "lib"], { encoding: "utf8" }); return r.status === 0 ? r.stdout.split("\n").filter((f) => /\.(ts|tsx)$/.test(f)) : null } catch { return null } })()
+    const orphaned = (added ?? []).filter((f) => !union.has(f))
+    if (added && added.length) neg(`no capability module the wave added (${added.length}, derived from git) is cut out of the app graph to fit a budget`, orphaned.length === 0, orphaned); else note("NOT CHECKED HERE: 'no module the wave added is cut out of the app graph' — the pre-wave commit is not in this checkout, so the added-module list cannot be derived")
     ctrl("POSITIVE CONTROL: the reachability test sees an unreachable planted path", !union.has("lib/__planted_unreachable__.ts"))
     // NO CLIENT → SECRET: a "use client" module's graph, stopping at a "use server" boundary (a server-action reference is not code
     // shipped to the browser), must not reach lib/supabase/service.ts (SUPABASE_SERVICE_ROLE_KEY).

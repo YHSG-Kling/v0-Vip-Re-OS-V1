@@ -349,7 +349,8 @@ async function main(): Promise<void> {
     let base = ""
     try { base = execFileSync("git", ["show", `${BASE}:scripts/os-coverage-ledger-baseline.json`], { cwd: ROOT, encoding: "utf8", maxBuffer: 64 << 20 }) } catch { base = "" }
     const cur = raw("scripts/os-coverage-ledger-baseline.json")
-    check("scripts/os-coverage-ledger-baseline.json is byte-identical to the starting commit's (no gap was added, none hidden)", base.length > 0 && cur === base, `base ${base.length} bytes · now ${cur.length} bytes`)
+    // A shallow checkout (CI) does not hold the starting commit: the comparison then cannot run, and says so instead of failing or passing. The durable rule runs either way — the census this key runs first refuses a frozen gap that widens and a new unfrozen gap.
+    if (base.length > 0) check("scripts/os-coverage-ledger-baseline.json is byte-identical to the starting commit's (no gap was added, none hidden)", cur === base, `base ${base.length} bytes · now ${cur.length} bytes`); else console.log(`  · NOT CHECKED HERE (blind spot): the frozen-gap baseline against commit ${BASE.slice(0, 8)} — that commit is not in this checkout`)
   }
 
   // ══ H (round 2) ═══════════════════════════════════════════════════════════════════════════════════════════════════════

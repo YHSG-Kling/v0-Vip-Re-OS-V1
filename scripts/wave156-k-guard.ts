@@ -58,7 +58,7 @@ import { stripComments } from "./strip-comments"
 
 const WT = process.cwd()
 const ROOT = process.env.WAVE156_K_ROOT || WT
-const BASE2 = "/tmp/claude-0/-home-user-v0-Vip-Re-OS-V1/366a5662-e062-5f62-b566-b8516bba37ed/scratchpad/w156/base2"
+const BASE2 = process.env.WAVE156_K_BASE || "" // a checkout of the starting commit, when one is on this machine (never a path baked into the guard: CI has none)
 let passed = 0, failed = 0
 const fails: string[] = []
 function check(name: string, ok: boolean, detail?: unknown) {
@@ -176,8 +176,8 @@ async function sectionA() {
   check("no user type 'recruit' in the live users.user_type vocabulary", !vocab.users.user_type.includes("recruit") && vocab.users.user_type.includes("agent"))
   const mine = readdirSync(join(ROOT, "supabase/migrations")).filter((f) => /^m104[5-9]-/.test(f))
   check("this lane wrote no migration (m1045–m1049 unused): no user / seat / tier schema change", mine.length === 0, mine)
-  const seatSame = existsSync(join(BASE2, "lib/kernel/seat-usage.ts")) && raw("lib/kernel/seat-usage.ts") === readFileSync(join(BASE2, "lib/kernel/seat-usage.ts"), "utf8")
-  check("per-tenant seat caps unaffected: lib/kernel/seat-usage.ts is byte-identical to the starting commit", seatSame)
+  // The durable rule is driven below (provisioning asks the ONE seat gate before a seat is minted). The byte comparison is a point-in-time attestation against the starting commit: it runs only where WAVE156_K_BASE names that tree, and says so where it cannot (CI's checkout has no such tree).
+  if (BASE2 && existsSync(join(BASE2, "lib/kernel/seat-usage.ts"))) check("per-tenant seat caps unaffected: lib/kernel/seat-usage.ts is byte-identical to the starting commit", raw("lib/kernel/seat-usage.ts") === readFileSync(join(BASE2, "lib/kernel/seat-usage.ts"), "utf8")); else console.log("  · NOT CHECKED HERE (blind spot): seat-usage.ts against the starting commit — no base tree on this machine (set WAVE156_K_BASE)")
 }
 
 // ═══ §B ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════
