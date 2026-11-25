@@ -68,7 +68,7 @@ export function readPublicStatement(text: string): PublicStatement {
 // "I'm in high school"); nothing is inferred from style, and a statement that says nothing about age is not assumed adult or
 // minor — it stays with the existing gates. Consumer: lib/acquisition-plays/contract.ts personCandidateProblem.
 
-const MINOR_AGE_RE = /\b(?:I'?m|I am|im)\s+(?:only\s+|just\s+)?(?:1[0-7]|[5-9])(?:\s*(?:years?|yrs?)(?:\s*old)?|\s*y\/?o)?(?![\d.,])(?!\s*(?:months?|weeks?|days?|%|k\b|percent|minutes?|mins?|hours?|hrs?|miles?|blocks?|houses?|homes?|times?|stars?|o'?clock|am\b|pm\b))(?!\s+(?:into|in|of|at|with|since|away|from|years?)\b)/i
+const MINOR_AGE_RE = /\b(?:I'?m|I am|im)\s+(?:only\s+|just\s+)?(?:1[0-7]|[5-9])(?:\s*(?:years?|yrs?)(?:\s*old)?|\s*y\/?o)?(?![\d.,a-z])(?!\s*(?:months?|weeks?|days?|%|k\b|percent|minutes?|mins?|hours?|hrs?|miles?|blocks?|houses?|homes?|times?|stars?|o'?clock|am\b|pm\b))(?!\s+(?:into|in|of|at|with|since|away|from|years?)\b)/i
 const MINOR_SELF_RE = /\b(?:I'?m|I am|im)\s+(?:a\s+)?(?:minor|teen(?:ager)?|high[- ]?school(?:er| student| senior| junior| sophomore| freshman)?|in high school|still in high school|underage)\b|\bI(?:'m| am) not 18\b|\bI(?:'ll| will) be 18\b/i
 
 /** PURE — does the author say, in their own words, that they are under 18? */
