@@ -210,7 +210,7 @@ export function FormSelectorStep({
 
         {loaded && forms.length === 0 && !loadError && (
           <div className="rounded-lg border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
-            No forms configured for your brokerage.
+            No forms are configured for this account yet.
             You can add forms in <strong>Settings → Forms</strong> and continue here later.
           </div>
         )}

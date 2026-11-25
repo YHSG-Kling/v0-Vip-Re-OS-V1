@@ -40,7 +40,7 @@ interface RowSpec {
   body: string
 }
 
-const ROWS: RowSpec[] = [
+const rowsFor = (w: { payer: string; scope: string }): RowSpec[] => [
   {
     key: "revenue_share",
     title: "Residual income — agent revenue share (downline)",
@@ -48,13 +48,13 @@ const ROWS: RowSpec[] = [
       "Offer agents a share of the production of the agents they recruit (the eXp/REAL model). When on, " +
       "the commission engine pays configured sponsors on every closing, the revenue-share board appears " +
       "in your command center, and recruiting surfaces advertise the residual-income opportunity. Leave " +
-      "off if your brokerage doesn't offer revenue sharing.",
+      `off if ${w.payer} doesn't offer revenue sharing.`,
   },
   {
     key: "medical",
     title: "Medical benefits",
     body:
-      "Mark this if your brokerage offers agents access to medical benefits. Recruiting surfaces (your " +
+      `Mark this if ${w.payer} offers agents access to medical benefits. Recruiting surfaces (your ` +
       "careers page and pitch one-pager) will say it's offered — eligibility and plan details stay with " +
       "your plan documents.",
   },
@@ -62,14 +62,14 @@ const ROWS: RowSpec[] = [
     key: "retirement",
     title: "Retirement benefits",
     body:
-      "Mark this if your brokerage offers agents a retirement savings option. Advertised the same way as " +
+      `Mark this if ${w.payer} offers agents a retirement savings option. Advertised the same way as ` +
       "medical: offered/not offered, never specific terms.",
   },
   {
     key: "tax_assistance",
     title: "Tax assistance for your agents",
     body:
-      "Turns on the 1099 tax tech for this brokerage's agents: the tax set-aside planner with precise " +
+      `Turns on the 1099 tax tech for ${w.scope}'s agents: the tax set-aside planner with precise ` +
       "self-employment tax and the quarterly-estimate concierge that reminds each agent of their exact " +
       "IRS payment before every due date. Off = the tools are hidden and no reminders send.",
   },
@@ -226,11 +226,11 @@ function RevenueShareModelPanel() {
 export function BenefitOfferingsCard() {
   const [state, setState] = useState<Record<RowKey, boolean> | null>(null)
   const [saving, setSaving] = useState<RowKey | null>(null)
-  const [error, setError] = useState("")
+  const [error, setError] = useState(""); const [words, setWords] = useState({ payer: "your account", scope: "this account" })
 
   useEffect(() => {
     getBenefitOfferings().then((r) => {
-      if (r.ok) {
+      if (r.ok) { if (r.words) setWords(r.words)
         setState({
           revenue_share: r.offerings.revenueShare,
           medical: r.offerings.medical,
@@ -259,13 +259,13 @@ export function BenefitOfferingsCard() {
 
   return (
     <div className="rounded-lg border border-gray-200 p-4">
-      <h2 className="text-lg font-semibold text-gray-900">What your brokerage offers agents</h2>
+      <h2 className="text-lg font-semibold text-gray-900">What {words.payer} offers agents</h2>
       <p className="text-sm text-gray-600 mt-1">
         These marks drive your recruiting surfaces (careers page, pitch one-pager) and your agents&apos;
         tools. Anything left off is treated as not offered — nothing is ever advertised by default.
       </p>
       <div className="mt-4 divide-y divide-gray-100">
-        {ROWS.map((row) => {
+        {rowsFor(words).map((row) => {
           const on = state?.[row.key] ?? null
           return (
             <div key={row.key} className="py-4">

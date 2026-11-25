@@ -327,3 +327,29 @@ export async function resolveSeatPayer(
     return payer
   }
 }
+
+/**
+ * WAVE 156 (lane 156Q, round 2): the SESSION seat's words for a server page — the page resolves them ONCE and passes them
+ * down to its client components (a client component never calls a resolver). Tenant and user come from the session
+ * (auth user → users.brokerage_id, CLAUDE.md §4), never from a prop or a body. Any refusal / no session = actor-neutral
+ * words ("your account"), never the brokerage reading. Server-only by its imports (dynamic, inside the call).
+ */
+export async function resolveSessionSeatWords(): Promise<import("@/lib/errors").TenantPayerWords> {
+  const { tenantPayerWords } = await import("@/lib/errors")
+  try {
+    const { createClient } = await import("@/lib/supabase/server")
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const supabase = await createClient()
+    const { data: auth } = await supabase.auth.getUser()
+    const userId = auth?.user?.id ?? null
+    if (!userId) return tenantPayerWords(null)
+    const svc = createServiceClient()
+    const { data: me, error } = await svc.from("users").select("brokerage_id").eq("id", userId).maybeSingle()
+    if (error) console.error(`[resolve-user-office] session seat read REFUSED for ${userId}: ${error.message}`)
+    const brokerageId = (me as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+    if (!brokerageId) return tenantPayerWords(null)
+    return tenantPayerWords(await resolveSeatPayer(svc as SupabaseClient<any, any, any>, brokerageId, userId))
+  } catch {
+    return tenantPayerWords(null)
+  }
+}

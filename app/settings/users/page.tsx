@@ -1,6 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
-import { UsersManagementClient } from "./users-management-client"
+import { UsersManagementClient } from "./users-management-client"; import { resolveSessionSeatWords } from "@/lib/kernel/resolve-user-office"
 import { SsoConnectionCard } from "./sso-connection-card"
 import { BrokerageAdoptionCard } from "./brokerage-adoption-card"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
@@ -71,7 +71,7 @@ export default async function SettingsUsersPage() {
         currentUserId={user.id}
         brokerageId={brokerageId}
         callerRole={userType}
-        tier={planTier}
+        tier={planTier} words={await resolveSessionSeatWords()}
         storableUserTypes={CHECK_VOCABULARIES.users?.user_type}
       />
       {/* Adoption of an independent agent / team — roster work (wave 141A); hidden on a solo plan. */}

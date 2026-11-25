@@ -105,7 +105,7 @@ export interface BrokerageOfferings {
  * refused read is an error, never a confident "all off" — but a genuinely unset
  * column is honestly false (unset = not offered).
  */
-export async function getBenefitOfferings(): Promise<{ ok: boolean; offerings: BrokerageOfferings; error?: string }> {
+export async function getBenefitOfferings(): Promise<{ ok: boolean; offerings: BrokerageOfferings; error?: string; /** wave 156Q */ words?: { payer: string; scope: string } }> {
   const off: BrokerageOfferings = { revenueShare: false, medical: false, retirement: false, taxAssistance: false }
   const ctx = await resolveBrokerAdmin("read")
   if (!ctx.ok) return { ok: false, offerings: off, error: ctx.error }
@@ -120,7 +120,7 @@ export async function getBenefitOfferings(): Promise<{ ok: boolean; offerings: B
   if (error) return { ok: false, offerings: off, error: error.message }
   const row = (data ?? {}) as Record<string, boolean | null | undefined>
   return {
-    ok: true,
+    ok: true, words: await seatTenantWords(svc, ctx.brokerageId),
     offerings: {
       revenueShare: row.revenue_share_enabled === true,
       medical: row.offers_medical_benefits === true,
@@ -280,4 +280,11 @@ export async function setRevenueShareDistributionModel(
 async function revenueShareFundingLabel(svc: ReturnType<typeof createServiceClient>, brokerageId: string): Promise<string> {
   const { resolveTenantPayer, tenantPayerWords, capitalizeWords } = await import("@/lib/errors")
   return `${capitalizeWords(tenantPayerWords(await resolveTenantPayer(svc, brokerageId)).payerPays)} it`
+}
+
+/** WAVE 156Q (round 2): the session tenant's nouns for the offerings card ("your brokerage" only for a brokerage). Not exported. */
+async function seatTenantWords(svc: ReturnType<typeof createServiceClient>, brokerageId: string): Promise<{ payer: string; scope: string }> {
+  const { resolveTenantPayer, tenantPayerWords } = await import("@/lib/errors")
+  const w = tenantPayerWords(await resolveTenantPayer(svc, brokerageId))
+  return { payer: w.payer, scope: w.scope }
 }
