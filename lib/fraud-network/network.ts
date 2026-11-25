@@ -302,7 +302,9 @@ export function validateIncident(input: IncidentInput, now = new Date()): { ok: 
   const summary = str(input.summary, 4000)
   if (!summary) return { ok: false, error: "Describe what happened." }
   for (const [what, text] of [["description", summary], ["steps taken", str(input.stepsTaken, 4000)]] as const) {
-    if (SENSITIVE_NUMBER_RE.test(text)) return { ok: false, error: `Remove full account, routing, card or ID numbers from the ${what} — keep at most the last four digits.` }
+    // A phone number is allowed in a PRIVATE case (it is how the impersonator called); it is removed before the test.
+    // Only a FORMATTED phone (separators between the groups) is removed: a bare 10+ digit run stays an account number.
+    if (SENSITIVE_NUMBER_RE.test(text.replace(/(?:\+?1[\s.-])?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}\b/g, " "))) return { ok: false, error: `Remove full account, routing, card or ID numbers from the ${what} — keep at most the last four digits.` }
   }
   let eventDate: string | null = null
   if (input.eventDate) {

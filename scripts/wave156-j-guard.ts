@@ -237,7 +237,7 @@ async function main() {
   const xl = A ? await as(U_XAGENT, () => A.listFraudBulletins({})) : null
   const payload = JSON.stringify(xl)
   check("ANOTHER tenant reads the generic warning", xl?.ok === true && xl.bulletins.length === 1 && xl.bulletins[0].id === bId)
-  check("…without the reporter's identity, tenant, case, evidence or contact details", ![B1, U_AGENT, caseId, FP(1), "flrst-title.test@", "555-201", "First Realty", "I-2026-77", "account_last4"].some((s) => payload.includes(s)) && xl.bulletins[0].reportedBy === "pseudonymous", payload.slice(0, 200))
+  check("…without the reporter's identity, tenant, case, evidence or contact details", ![B1, U_AGENT, caseId, FP(1), "flrst-title.test@", "555-201", "First Realty", "I-2026-77", "account_last4"].some((s) => payload.includes(s)) && xl?.bulletins?.[0]?.reportedBy === "pseudonymous", payload.slice(0, 200))
   const opened = A ? await as(U_XAGENT, () => A.openFraudBulletin(bId)) : null
   check("opening it gives the protective action and records ONE measured read for that seat", opened?.ok === true && /independently/.test(opened.protectiveAction) && T("fraud_bulletin_reads").filter((r) => r.user_id === U_XAGENT).length === 1)
   // Named official warning: refused without an authoritative citation; admitted with one + legal review.
@@ -355,4 +355,5 @@ async function main() {
   if (failed) { console.log("FAILED:\n  - " + fails.join("\n  - ")); process.exit(1) }
 }
 
-main().catch((e) => { console.error(e); process.exit(1) })
+// A crash is a failure WITH its count (a base run must still say how many checks were red before it stopped).
+main().catch((e) => { check("the guard ran to the end", false, (e as Error)?.message ?? String(e)); console.log(`\n${passed} passed, ${failed} failed (stopped early)`); console.log("FAILED:\n  - " + fails.join("\n  - ")); process.exit(1) })
