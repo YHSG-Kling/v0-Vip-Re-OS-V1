@@ -2781,108 +2781,108 @@ export async function scrapeExternalBehavior(
   }
 }
 
-// TOMBSTONE (wave 156, lane 156F) — `export async function trackExternalActivity` stood here: a server action that wrote
-// an external_behavior row ("this visitor VIEWED <address> off-site", detected_interest_level "active") onto a tracked
-// visitor and raised that visitor's intent score. Its ONLY caller was the intent-campaign territory phase, which fed it
-// every anonymous visitor whose city matched a newly discovered Zillow listing — a view nobody observed (retired in this
-// lane; tombstone in lib/kernel/intent-campaign.ts). Off-site activity of a person cannot be observed without exactly the
-// anonymous-visitor identification the owner's decision excludes (docs/operations/WAVE156-VISITOR-IDENTITY-DECISION.md),
-// so the capability is not wanted and nothing replaces it. NO SURVIVOR BY DESIGN — scrapeExternalBehavior (above) still
-// records off-site LISTING activity as listing evidence, never as a person's behavior.
-// The blank lines below keep every `app/actions/lead-intelligence.ts:<line>` citation pointing at the code it names.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+/**
+ * Attach one observed off-site activity to an EXISTING tracked visitor.
+ *
+ * UNCALLED SINCE WAVE 156 (lane 156F) — an owner question, wire or retire.
+ * Its wave-65A caller, the intent-campaign territory phase, attached every
+ * newly-discovered off-site listing to every visitor whose CITY matched — a
+ * "view" nobody observed (tombstone in lib/kernel/intent-campaign.ts). That
+ * caller is gone; the door stays, gated (requireCallerOrCron) and pinned to
+ * the caller's tenant. A legitimate caller must hold a REAL observation of
+ * one known visitor's off-site activity — e.g. a first-party event the
+ * visitor's own authenticated portal / app session reports (a listing they
+ * saved or shared from a partner site), never an inference by place.
+ * A visitor with no matching signal in the caller's tenant is refused.
+ *
+ *
+ * @param data.detectedViaZenrows Which vendor observed this. It is the caller's
+ * to state — it used to be hard-coded `true` regardless of who actually
+ * collected it, which is a provenance lie in a subject-access-request column.
+ */
+export async function trackExternalActivity(
+  data: {
+    visitorId: string
+    source: string
+    behaviorType: string
+    propertyAddress?: string
+    searchCriteria?: Record<string, unknown> | null
+    location: string
+    detectedViaZenrows?: boolean
+  },
+  opts: { internalSecret?: string; brokerageId?: string } = {},
+) {
+  // Behavioral signal write — require auth (session OR the autonomous cron
+  // actor). Visitors don't call this directly; it's called from authenticated
+  // server flows (or the cron phase) that already know a visitor's UUID.
+  const auth = await requireCallerOrCron(opts)
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  const supabase = createServiceClient()
+
+  try {
+    // Resolve the visitor's signal INSIDE the caller's tenant. This is a
+    // service client, so RLS is not in play and the filter has to be explicit;
+    // without it a visitor_id guessed from another tenant would be updated.
+    const { data: signal, error: signalError } = await supabase
+      .from("behavioral_signals")
+      .select("*")
+      .eq("visitor_id", data.visitorId)
+      .eq("brokerage_id", auth.brokerageId)
+      .maybeSingle()
+
+    if (signalError) {
+      console.error("[lead-intelligence] Behavioral signal read error:", signalError)
+      return { success: false, error: signalError.message }
+    }
+    if (!signal) {
+      return { success: false, error: "No behavioral signal found for visitor" }
+    }
+
+    // Log external behavior — stamp brokerage from caller's session
+    const { error: behaviorError } = await supabase.from("external_behavior").insert({
+      behavioral_signal_id: signal.id,
+      brokerage_id: auth.brokerageId,
+      source: data.source,
+      activity_type: data.behaviorType,
+      property_addresses_viewed: data.propertyAddress ? [data.propertyAddress] : [],
+      // COLUMN WITH NO WRITER: external_behavior.search_criteria_json existed
+      // and nothing in the codebase ever filled it, while this function
+      // accepted a `searchCriteria` argument and silently dropped it on the
+      // floor. The caller's criteria are persisted now.
+      search_criteria_json: data.searchCriteria ?? null,
+      location: data.location,
+      detected_interest_level: "active",
+      detected_via_zenrows: data.detectedViaZenrows === true,
+      scraped_at: new Date().toISOString(),
+    })
+
+    if (behaviorError) {
+      console.error("[lead-intelligence] External behavior insert error:", behaviorError)
+      return { success: false, error: behaviorError.message }
+    }
+
+    // Update signal strength based on external activity
+    const { error: bumpError } = await supabase
+      .from("behavioral_signals")
+      .update({
+        intent_confidence_score: Math.min((signal.intent_confidence_score || 0) + 10, 100),
+      })
+      .eq("id", signal.id)
+      .eq("brokerage_id", auth.brokerageId)
+
+    if (bumpError) {
+      console.error("[lead-intelligence] Signal score update error:", bumpError)
+      return { success: false, error: bumpError.message }
+    }
+
+    return { success: true, signalId: signal.id }
+  } catch (error) {
+    console.error("[v0] External activity tracking error:", error)
+    await collectError({ workflowName: "lead_intelligence_external_activity", errorMessage: error instanceof Error ? error.message : String(error), stack: error instanceof Error ? error.stack : undefined, severity: "low", brokerageId: auth.brokerageId, context: { visitorId: data.visitorId } })
+    return { success: false, error: String(error) }
+  }
+}
 
 // ============================================
 // MOTIVATED SELLER DETECTION (Public Records + OSINT)
