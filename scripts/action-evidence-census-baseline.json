@@ -1,6 +1,6 @@
 {
   "note": "FROZEN DEBT (wave 147, lane 147F): server-action consequential writes that do not reach the action ledger, and withActionLedger replay hooks that cannot tell `refused` from `replay`. Only ever SHRINKS: a fixed entry is removed by re-running with --write-baseline; a new offender is red.",
-  "generated": "2026-11-20",
+  "generated": "2026-11-25",
   "writes": [
     "app/actions/admin/license-tracking.ts::logCeCompletion::agents",
     "app/actions/admin/locations.ts::assignUserToLocationAction::users",
@@ -19,7 +19,6 @@
     "app/actions/contacts/update-channel-controls.ts::updateChannelControls::leads",
     "app/actions/copilot.ts::postVideoContent::social_posts",
     "app/actions/data-health.ts::purgeInvalidContacts::contacts",
-    "app/actions/lead-intelligence.ts::trackBehavior::behavioral_signals",
     "app/actions/lead-lifecycle.ts::convertLeadToContact::leads",
     "app/actions/lead-quick-actions.ts::verifyLeadEmailAction::leads",
     "app/actions/learning-modules.ts::fanOutToChannel::social_posts",
