@@ -1342,6 +1342,390 @@ canary({
   },
 })
 
+// ── fraud network (156J) ─────────────────────────────────────────────────────────────────────────────────────────────────
+const jB0 = u("b", 100), jB1 = u("b", 101), jB2 = u("b", 102), jAGENT = u("a", 111), jAGENT2 = u("a", 112), jCO = u("a", 113), jVENDOR = u("a", 114), jX = u("a", 115), jXAGENT = u("a", 116), jSTAFF = u("a", 117), jMKT = u("a", 118)
+const jAG = u("e", 111), jAG2 = u("e", 112), jAGX = u("e", 116), jTX = u("d", 111), jC1 = u("c", 111)
+const J_SEAMS: Seams = {
+  replace: {
+    "lib/ai/models.ts": "export async function generateTextRouted(){ globalThis.__P.count('model'); return { text: '' } }; export async function generateObjectRouted(){ globalThis.__P.count('model'); return { object: {} } }; export async function streamTextRouted(){ globalThis.__P.count('model'); throw new Error('no stream') }",
+    "lib/ai/generate.ts": "export function bookedGenerateObject(){ return async () => { globalThis.__P.count('model'); return { object: {} } } }",
+    "lib/teams/team-scope.ts": "export async function leadsAgentsTeam(){ return { ok: true, leads: false, ledTeamId: null } }",
+  },
+  spec: { "next/navigation": "export function redirect(u){ throw new Error('REDIRECT:' + u) }; export function notFound(){ throw new Error('NOT_FOUND') }" },
+}
+function jWorld(): MemClient {
+  return memSupabase({
+    brokerages: [{ id: jB0, name: "Platform" }, { id: jB1, name: "First Realty" }, { id: jB2, name: "Second Homes" }],
+    users: [
+      { id: jAGENT, brokerage_id: jB1, user_type: "agent", email: "agent@first.test" }, { id: jAGENT2, brokerage_id: jB1, user_type: "agent" }, { id: jCO, brokerage_id: jB1, user_type: "compliance_officer" },
+      { id: jVENDOR, brokerage_id: jB1, user_type: "vendor" }, { id: jX, brokerage_id: jB2, user_type: "broker" }, { id: jXAGENT, brokerage_id: jB2, user_type: "agent" },
+      { id: jSTAFF, brokerage_id: jB0, user_type: "admin", platform_role: "support" }, { id: jMKT, brokerage_id: jB0, user_type: "admin", platform_role: "marketing" },
+    ],
+    agents: [{ id: jAG, user_id: jAGENT, brokerage_id: jB1 }, { id: jAG2, user_id: jAGENT2, brokerage_id: jB1 }, { id: jAGX, user_id: jXAGENT, brokerage_id: jB2 }],
+    transactions: [{ id: jTX, brokerage_id: jB1, agent_id: jAG, buyer_agent_id: null, seller_agent_id: null, status: "under_contract", contact_id: jC1 }],
+    vendors: [{ id: u("f", 111), brokerage_id: jB1, category: "title", status: "active" }], vendor_assignments: [{ id: u("f", 112), vendor_id: u("f", 111), transaction_id: jTX, brokerage_id: jB1, status: "confirmed" }],
+    contacts: [{ id: jC1, brokerage_id: jB1, first_name: "Casey", agent_id: jAG }], listings: [], teams: [], user_role_assignments: [], platform_role_capability_overrides: [],
+    fraud_incident_cases: [], fraud_case_evidence: [], fraud_bulletins: [], fraud_bulletin_sources: [], fraud_bulletin_revisions: [], fraud_correction_requests: [], fraud_warning_subscriptions: [], fraud_bulletin_reads: [], fraud_bulletin_derivatives: [],
+    notifications: [], agent_action_ledger: [], tasks: [], lifecycle_events: [], manager_signals: [], content_topic_sources: [], content_topic_bank: [],
+  }, { uuidIds: true, stampCreatedAt: true } as any)
+}
+const FP = (n: number) => n.toString(16).padStart(2, "0").repeat(32)
+const INCIDENT = { incidentKind: "wire_diversion_lookalike_domain", channel: "email", summary: "Buyer received wire instructions from escrow@flrst-title.test claiming new bank details; agent called the title office at 555-201-3344 and it was fake.", eventDate: "2026-11-20", transactionId: jTX, lossOccurred: "no", allegedIndicators: [{ kind: "domain", value: "flrst-title.test" }, { kind: "account_last4", value: "4321" }], externalReports: [{ agency: "ic3", reference: "I-2026-77" }], evidence: [{ kind: "email_headers", fingerprint: FP(1), label: "headers.eml" }], shareConsent: false }
+async function asSeat<X>(seat: string | null, fn: () => Promise<X>): Promise<any> { G.__P.seat = seat ? { id: seat } : null; try { return await quiet(fn) } catch (e) { return { ok: false, error: String((e as Error)?.message ?? e), threw: true } } }
+
+canary({
+  id: "C20", title: "A fraud case stays private to the reporter; a MODERATED anonymous warning is visible to all authorized tenants",
+  failure: "an accused private person is publicly named from an unverified report",
+  seams: () => J_SEAMS,
+  async run() {
+    // THE PRE-WAVE PATH FIRST: the public topic pool is where a warning becomes tenant content. A fraud-bulletin topic naming a
+    // private person must be refused there (156I's protective screen) — on the pre-wave tree it was stored.
+    const ti = await load("lib/content-intel/topic-intake.ts")
+    if (loaded(ti, "lib/content-intel/topic-intake.ts", "intakeTopicIdeas")) {
+      const db = memSupabase({ content_topic_bank: [], content_topic_sources: [{ id: "src-1", brokerage_id: jB1, is_active: true }] })
+      const now = new Date()
+      const base = { sourceKind: "fraud_safety_bulletin", observedAt: now.toISOString(), evidence: { kind: "unknown" }, rights: "own_content", sourceId: "src-1", angle: "Protective education: verify every payment request through a channel you obtained independently." }
+      await quiet(() => ti.intakeTopicIdeas(db, { brokerageId: jB1, ideas: [{ ...base, title: "Wire fraud warning about Dale Hughes and his fake title company", dedupKey: "p:name" }, { ...base, title: "How can a home buyer confirm wire instructions are real before sending a down payment?", dedupKey: "p:generic" }], now }))
+      const stored = T(db, "content_topic_bank").map((x) => String(x.topic_title))
+      neg("a fraud-warning topic NAMING a private person never enters the tenant's content pool", !stored.some((t) => /Dale Hughes/.test(t)), stored)
+      ctrl("POSITIVE CONTROL: the generic protective question IS stored (the screen is not a blanket refusal)", stored.some((t) => /confirm wire instructions/.test(t)), stored)
+    }
+    const A = await load("app/actions/fraud-network.ts")
+    if (!loaded(A, "app/actions/fraud-network.ts", "submitFraudIncident", "getFraudCase", "draftFraudBulletinFromCase", "publishFraudBulletin", "listFraudBulletins", "updateFraudBulletinDraft")) return
+    G.__P.mem = jWorld(); resetCalls()
+    const sub = await asSeat(jAGENT, () => A.submitFraudIncident(INCIDENT))
+    const caseId = sub?.caseId
+    pos("the agent on the deal files a PRIVATE case pinned to the session tenant and reporter, with a receipt", sub?.ok === true && T(G.__P.mem, "fraud_incident_cases")[0]?.brokerage_id === jB1 && T(G.__P.mem, "agent_action_ledger").some((r) => r.action === "fraud.case.submit"), sub)
+    pos("the reporter and the tenant's compliance officer read the case", (await asSeat(jAGENT, () => A.getFraudCase(caseId)))?.ok === true && (await asSeat(jCO, () => A.getFraudCase(caseId)))?.ok === true)
+    const leak: string[] = []
+    for (const [who, seat] of [["a co-worker", jAGENT2], ["another tenant's broker", jX], ["another tenant's agent", jXAGENT], ["a vendor seat", jVENDOR], ["marketing staff", jMKT], ["nobody signed in", null]] as const) {
+      const r = await asSeat(seat as any, () => A.getFraudCase(caseId))
+      if (!(r?.ok === false && !JSON.stringify(r).includes("flrst"))) leak.push(who)
+    }
+    neg("the case stays PRIVATE: a co-worker, another tenant, a vendor, marketing staff and anonymous read nothing", leak.length === 0, leak)
+    const draft = await asSeat(jSTAFF, () => A.draftFraudBulletinFromCase(caseId))
+    const bId = draft?.bulletinId
+    await asSeat(jSTAFF, () => A.updateFraudBulletinDraft(bId, { title: "Look-alike escrow domain wire diversion", tactic_summary: "A message from a domain one letter off the real escrow company asks the buyer to wire to new bank details.", named_entity: "Jordan Example" }))
+    const named = await asSeat(jSTAFF, () => A.publishFraudBulletin(bId, { attestNoPersonIdentified: true, legalReviewConfirmed: true, verificationNote: "call-back confirmed" }))
+    neg("an UNVERIFIED report naming a person is REFUSED publication even with every box ticked", named?.ok === false && T(G.__P.mem, "fraud_bulletins").find((b) => b.id === bId)?.status === "draft", named)
+    const tenantPub = await asSeat(jCO, () => A.publishFraudBulletin(bId, { attestNoPersonIdentified: true, legalReviewConfirmed: true, verificationNote: "x" }))
+    neg("a tenant seat cannot publish to the network (moderation is platform safety staff)", tenantPub?.ok === false)
+    await asSeat(jSTAFF, () => A.updateFraudBulletinDraft(bId, { named_entity: "", claim_class: "verified_operational_pattern", confidence: "high", jurisdiction: "FL", indicators: [{ kind: "lookalike_domain", value: "flrst-title.test" }] }))
+    const pub = await asSeat(jSTAFF, () => A.publishFraudBulletin(bId, { attestNoPersonIdentified: true, legalReviewConfirmed: false, verificationNote: "Call-back to the title office on the number from the signed statement confirmed the message was not theirs." }))
+    pos("moderated publication: platform safety staff publish the verified TACTIC warning (no person) with a LEGAL receipt", pub?.ok === true && T(G.__P.mem, "agent_action_ledger").some((r) => r.action === "fraud.bulletin.publish"), pub)
+    const xl = await asSeat(jXAGENT, () => A.listFraudBulletins({}))
+    const payload = JSON.stringify(xl)
+    pos("ANOTHER tenant's agent reads the warning", xl?.ok === true && xl.bulletins?.some((b: any) => b.id === bId), xl)
+    neg("…ANONYMOUSLY: no reporting tenant, reporter, case id, evidence fingerprint or contact detail in the payload", ![jB1, jAGENT, caseId, FP(1), "555-201", "First Realty", "I-2026-77"].some((s) => s && payload.includes(s)), payload.slice(0, 200))
+    ctrl("no model was called on any report / moderation / publication path", calls("model") === 0)
+    cell("brokerage", pub?.ok === true)
+  },
+})
+
+canary({
+  id: "C21", title: "A wire-change bulletin match leads to an INDEPENDENT VERIFICATION task, not an automatic denial",
+  failure: "a fraud label becomes an automated housing / service blacklist",
+  seams: () => J_SEAMS,
+  async run() {
+    const A = await load("app/actions/fraud-network.ts"), runner = await load("lib/wire-fraud/wire-fraud-runner.ts")
+    if (!loaded(A, "app/actions/fraud-network.ts", "submitFraudIncident", "publishFraudBulletin") || !loaded(runner, "lib/wire-fraud/wire-fraud-runner.ts", "runWireFraudSentinel")) return
+    G.__P.mem = jWorld(); resetCalls()
+    const sub = await asSeat(jAGENT, () => A.submitFraudIncident(INCIDENT))
+    const d = await asSeat(jSTAFF, () => A.draftFraudBulletinFromCase(sub?.caseId))
+    await asSeat(jSTAFF, () => A.updateFraudBulletinDraft(d?.bulletinId, { title: "Look-alike escrow domain", tactic_summary: "Wire requests from a domain one letter off the real escrow company.", claim_class: "verified_operational_pattern", confidence: "high", indicators: [{ kind: "lookalike_domain", value: "flrst-title.test" }] }))
+    const p = await asSeat(jSTAFF, () => A.publishFraudBulletin(d?.bulletinId, { attestNoPersonIdentified: true, legalReviewConfirmed: false, verificationNote: "verified by call-back" }))
+    const before = { tx: JSON.stringify(T(G.__P.mem, "transactions")), vendors: JSON.stringify(T(G.__P.mem, "vendors")), va: JSON.stringify(T(G.__P.mem, "vendor_assignments")), contacts: JSON.stringify(T(G.__P.mem, "contacts")) }
+    const wire = { senderEmail: "escrow@flrst-title.test", expectedDomains: ["first-title.test"], priorInstructions: { account: "1111" }, newInstructions: { account: "2222" }, messageText: "updated wire instructions" }
+    const run = (ref: string) => quiet(() => runner.runWireFraudSentinel({ brokerageId: jB1, contactId: jC1, agentUserId: jAGENT, wire, transactionId: jTX, agentId: jAG, subjectRef: ref }, G.__P.client()))
+    const r1: any = p?.ok ? await run("wire_fraud:doc-1") : null
+    const tasks = () => T(G.__P.mem, "tasks").filter((t) => t.source === "fraud_bulletin_match")
+    pos("a changed wire matching the published look-alike domain PROPOSES one high-priority verification task to the deal's agent", r1?.bulletinMatch?.indicatorMatch === true && tasks().length === 1 && tasks()[0].priority === "high" && tasks()[0].assigned_to_agent_id === jAG && tasks()[0].status === "pending", { match: r1?.bulletinMatch, tasks: tasks().length })
+    pos("…the task asks for a call-back on an INDEPENDENTLY obtained number and accuses no one", /independently/.test(String(tasks()[0]?.description)) && /not a finding about any person/.test(String(tasks()[0]?.description)), tasks()[0]?.description)
+    neg("NO automatic denial: transactions, vendors, vendor assignments and contacts are byte-identical (no ban, no blacklist)", JSON.stringify(T(G.__P.mem, "transactions")) === before.tx && JSON.stringify(T(G.__P.mem, "vendors")) === before.vendors && JSON.stringify(T(G.__P.mem, "vendor_assignments")) === before.va && JSON.stringify(T(G.__P.mem, "contacts")) === before.contacts)
+    await (p?.ok ? run("wire_fraud:doc-1") : null)
+    neg("a replay proposes NO second task", tasks().length === 1, tasks().length)
+    const FORBIDDEN = /\.from\(\s*["'`](transactions|vendors|vendor_assignments|contacts|users|agents)["'`]\s*\)(?:(?!\.from\()[\s\S]){0,240}?\.(insert|update|delete|upsert)\s*\(/
+    src("no write to transactions / vendors / vendor_assignments / contacts / users / agents anywhere in the network or the runner (comment-stripped)", !["lib/fraud-network/network.ts", "app/actions/fraud-network.ts", "lib/wire-fraud/wire-fraud-runner.ts"].some((f) => FORBIDDEN.test(code(f))))
+    ctrl("POSITIVE CONTROL: that finder catches a planted vendor ban", FORBIDDEN.test(`await svc.from("vendors").update({ status: "banned" }).eq("id", x)`))
+    G.__P.mem = jWorld()
+    const noMatch: any = await quiet(() => runner.runWireFraudSentinel({ brokerageId: jB1, contactId: jC1, agentUserId: jAGENT, wire: { ...wire, senderEmail: "escrow@other-lookalike.test" }, transactionId: jTX, agentId: jAG, subjectRef: "wire_fraud:doc-2" }, G.__P.client()))
+    ctrl("POSITIVE CONTROL: with no published matching bulletin no verification task is proposed (the task is evidence-driven)", T(G.__P.mem, "tasks").filter((t) => t.source === "fraud_bulletin_match").length === 0, noMatch?.bulletinMatch)
+  },
+})
+
+// ── recruiting / gamification (156K) ─────────────────────────────────────────────────────────────────────────────────────
+canary({
+  id: "C22", title: "The registered Recruiting Manager owns recruiting (owner ruling 2026-11-25); no second recruiting owner; seat / tier schema unchanged",
+  failure: "a new recruiting owner is created, or the user / seat schema or the normal SaaS tiers are altered",
+  seams: () => ({}),
+  async run() {
+    note("RESTATED to the owner ruling of 2026-11-25 (LANE_RULES.md): the directive's 'Sphere Manager owns recruiting' line is superseded — recruiting_manager (registered since m215) is correct and stays")
+    const reg = await load("lib/kernel/manager-registry.ts")
+    if (!loaded(reg, "lib/kernel/manager-registry.ts", "MANAGERS", "TABLE_MANAGER", "MAINTENANCE_DOMAINS")) return
+    const keys = Object.keys(reg.MANAGERS)
+    const second = (ks: string[]) => ks.filter((k) => /recruit/i.test(k) && k !== "recruiting_manager")
+    pos("recruiting_manager is registered and every recruiting table resolves to it", keys.includes("recruiting_manager") && Object.keys(reg.TABLE_MANAGER).filter((t) => /recruit/.test(t)).every((t) => reg.TABLE_MANAGER[t] === "recruiting_manager"))
+    neg("NO second recruiting owner exists in the registry", second(keys).length === 0, second(keys))
+    ctrl("POSITIVE CONTROL: the finder flags a planted second recruiting owner", second([...keys, "sphere_recruiting_owner"]).length === 1)
+    pos("sphere_of_influence still exists for lifetime / past-client / referral work and owns no recruiting table", keys.includes("sphere_of_influence") && !Object.entries(reg.TABLE_MANAGER).some(([t, m]) => /recruit/.test(t) && m === "sphere_of_influence"))
+    // Schema / tier comparison against the PRE-WAVE tree (base0): the wave changed neither.
+    const BASE0 = process.env.WAVE156P_BASE0 || "/tmp/claude-0/-home-user-v0-Vip-Re-OS-V1/366a5662-e062-5f62-b566-b8516bba37ed/scratchpad/w156/base0"
+    const tierOf = (root: string) => (/export const TIER_ORDER[^=]*=\s*\[([^\]]*)\]/.exec(stripComments(existsSync(join(root, "lib/kernel/tier-role-matrix.ts")) ? readFileSync(join(root, "lib/kernel/tier-role-matrix.ts"), "utf8") : ""))?.[1] ?? "").replace(/\s/g, "")
+    neg("the SaaS tiers (TIER_ORDER) are identical to the pre-wave tree — no tier added or removed", tierOf(ROOT).length > 0 && tierOf(ROOT) === tierOf(BASE0), { now: tierOf(ROOT), base: tierOf(BASE0) })
+    const vocab = (root: string) => { const s = existsSync(join(root, "scripts/check-vocabularies.ts")) ? readFileSync(join(root, "scripts/check-vocabularies.ts"), "utf8") : ""; const m = /\n\s*"?users"?\s*:\s*\{[^}]*?\buser_type\s*:\s*(\[[^\]]*\])/.exec(s); return m ? m[1] : "" }
+    neg("the live users.user_type vocabulary (generated cache) is identical to the pre-wave tree — no user / seat type added (no 'recruit')", vocab(ROOT).length > 0 && vocab(ROOT) === vocab(BASE0) && !/"recruit"/.test(vocab(ROOT)), { now: vocab(ROOT).slice(0, 160), base: vocab(BASE0).slice(0, 160) })
+    ctrl("POSITIVE CONTROL: the comparison sees a planted tier", tierOf(ROOT) !== tierOf(ROOT) + ',"lead_purchase"')
+  },
+})
+
+const kB1 = u("b", 121), kAGENT = u("a", 121), kAG = u("e", 121), kMOD = u("8", 121)
+const kQ5 = [0, 1, 2, 3, 4].map((i) => ({ q: `Question ${i + 1}`, choices: ["a", "b", "c", "d"], correct_idx: i % 4, explainer: `Tip ${i + 1}` }))
+const isoAgo = (s: number) => new Date(Date.now() - s * 1000).toISOString()
+function kWorld(seed: Record<string, Row[]>): MemClient {
+  const m = memSupabase(seed, { uuidIds: true, stampCreatedAt: true })
+  const t = (n: string) => (m.tables[n] ??= [])
+  const writer = (a: Record<string, any>) => {
+    const agent = t("agents").find((x) => x.id === a.p_agent_id)
+    if (!agent) return { data: null, error: { message: "no agents row" } }
+    agent.gamification_points = (agent.gamification_points ?? 0) + Number(a.p_points)
+    t("agent_points_log").push({ id: u("9", 900 + t("agent_points_log").length), agent_id: agent.id, brokerage_id: agent.brokerage_id, points: a.p_points, reason: a.p_reason, reference_type: a.p_reference_type, reference_id: a.p_reference_id, created_at: new Date().toISOString() })
+    return { data: { brokerage_id: agent.brokerage_id, points_added: a.p_points, new_total: agent.gamification_points, already_awarded: false }, error: null }
+  }
+  ;(m as any).rpc = async (fn: string, a: Record<string, any>) => {
+    if (fn === "award_agent_points") return writer(a)
+    if (fn === "award_agent_points_once") return t("agent_points_log").some((r) => r.agent_id === a.p_agent_id && r.reason === a.p_reason && (a.p_reference_id == null || r.reference_id === a.p_reference_id)) ? { data: { already_awarded: true }, error: null } : writer(a)
+    return { data: null, error: { message: `unknown rpc ${fn}`, code: "PGRST202" } }
+  }
+  G.__P.mem = m
+  return m
+}
+canary({
+  id: "C23", title: "Course pass, open-house count and signed-agreement appointment badges reflect PERSISTED outcomes",
+  failure: "a watched-90% claim auto-passes the quiz / earns the certificate, or an event is self-awarded",
+  seams: () => ({ override: {
+    "lib/identity/get-agent-context.ts": `export async function getAgentContext(){ return { isAuthenticated: true, agentId: ${JSON.stringify(kAG)}, brokerageId: ${JSON.stringify(kB1)}, userId: ${JSON.stringify(kAGENT)} } }`,
+    "lib/kernel/index.ts": "export async function processKernelEvent(p){ globalThis.__P.push('events', p); return { success: true } }",
+    "lib/kernel/notification-engine.ts": "export async function processKernelEvent(p){ globalThis.__P.push('events', p); return { success: true } }",
+  } }),
+  async run() {
+    const route = await load("app/api/onboarding/training/progress/route.ts"), cert = await load("lib/onboarding/certification-engine.ts")
+    if (!loaded(route, "app/api/onboarding/training/progress/route.ts", "POST") || !loaded(cert, "lib/onboarding/certification-engine.ts", "checkCertificationEligibility")) return
+    const vid = (id: string, duration: number) => ({ id, brokerage_id: null, title: `Video ${id.slice(0, 2)}`, category: "lead_management", is_required: true, duration_seconds: duration })
+    const world = (videos: Row[], tracking: Row[] = []) => kWorld({ users: [{ id: kAGENT, brokerage_id: kB1, user_type: "agent" }], agents: [{ id: kAG, user_id: kAGENT, brokerage_id: kB1, gamification_points: 0 }], training_videos: videos, video_completion_tracking: tracking, agent_certifications: [], agent_action_ledger: [], lifecycle_events: [], learning_modules: [{ id: kMOD, brokerage_id: kB1, required: true, status: "published", title: "Course with a quiz", quiz_questions: kQ5 }], learning_assignments: [{ id: u("8", 122), brokerage_id: kB1, module_id: kMOD, agent_user_id: kAGENT, status: "viewed", viewed_at: isoAgo(3600), signal_metadata: {} }], agent_points_log: [], gamification_badges: [], agent_badges: [], notifications: [] })
+    const post = async (videoId: string, percentWatched: number, positionSeconds = 1) => { const res: any = await quiet(() => route.POST(new Request("http://localhost/api/onboarding/training/progress", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ videoId, positionSeconds, percentWatched }) }))); return { status: res?.status, body: await res?.json?.().catch(() => ({})) } }
+    const V1 = u("7", 121), V2 = u("7", 122)
+    let m = world([vid(V1, 600)])
+    await post(V1, 100, 600)
+    const forged: any = await quiet(() => cert.checkCertificationEligibility("Lead Management Essentials", kAG, kB1))
+    neg("ONE browser POST claiming 100% of a 10-minute video earns NO certificate (Lead Management Essentials)", forged?.eligible === false, forged)
+    neg("…and does not mark the video completed", T(m, "video_completion_tracking").every((r) => r.completed !== true), T(m, "video_completion_tracking"))
+    m = world([vid(V2, 20)], [{ id: u("6", 121), agent_id: kAG, brokerage_id: kB1, training_video_id: V2, percent_watched: 0, completed: false, created_at: isoAgo(15), updated_at: isoAgo(15) }])
+    await post(V2, 95, 19)
+    const honest: any = await quiet(() => cert.checkCertificationEligibility("Lead Management Essentials", kAG, kB1))
+    pos("an HONEST playback the server measured (15 s of real time on a 20 s video) completes it and earns the certificate", T(m, "video_completion_tracking").some((r) => r.completed === true) && honest?.eligible === true, { honest, rows: T(m, "video_completion_tracking") })
+    const awards = await load("lib/gamification/lifecycle-awards.ts"), events = await load("lib/kernel/events.ts"), cc = await load("lib/academy/course-completion.ts")
+    if (loaded(awards, "lib/gamification/lifecycle-awards.ts", "awardLifecycleMilestones", "recordOpenHouseHeld") && loaded(cc, "lib/academy/course-completion.ts", "recordCourseAttempt")) {
+      const KE = events.KernelEvent
+      const viewed: any = await quiet(() => awards.awardLifecycleMilestones(m, { event: KE.TRAINING_COURSE_COMPLETED, brokerageId: kB1, entityType: "learning_module", entityId: kMOD, metadata: { agent_id: kAG } }))
+      neg("a course only VIEWED (no persisted graded pass) earns nothing — watching is not passing the quiz", viewed?.awarded?.length === 0 && T(m, "agent_points_log").length === 0, viewed)
+      const pass: any = await quiet(() => cc.recordCourseAttempt(m, { brokerageId: kB1, userId: kAGENT, module: T(m, "learning_modules")[0], answers: Object.fromEntries(kQ5.map((q, i) => [i, q.correct_idx])) }))
+      const earned: any = await quiet(() => awards.awardLifecycleMilestones(m, { event: KE.TRAINING_COURSE_COMPLETED, brokerageId: kB1, entityType: "learning_module", entityId: kMOD, metadata: { agent_id: kAG } }))
+      const replay: any = await quiet(() => awards.awardLifecycleMilestones(m, { event: KE.TRAINING_COURSE_COMPLETED, brokerageId: kB1, entityType: "learning_module", entityId: kMOD, metadata: { agent_id: kAG } }))
+      pos("after the PERSISTED graded pass the course earns its award once; a replay earns nothing", pass?.completedNow === true && earned?.awarded?.length === 1 && replay?.awarded?.length === 0, { pass, earned, replay })
+      // open houses + signed-agreement appointment
+      const L = u("5", 121), OH1 = u("5", 122), OH_DUP = u("5", 123), OH_CXL = u("5", 124), C1 = u("5", 125), C2 = u("5", 126)
+      const today = new Date().toISOString().slice(0, 10), yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10)
+      const w = kWorld({
+        users: [{ id: kAGENT, brokerage_id: kB1, user_type: "agent" }], agents: [{ id: kAG, user_id: kAGENT, brokerage_id: kB1, gamification_points: 0 }],
+        open_house_events: [{ id: OH1, brokerage_id: kB1, listing_id: L, event_date: yesterday, event_type: "open_house", status: "scheduled", cancelled_at: null, created_at: isoAgo(864000), agent_id: kAG }, { id: OH_DUP, brokerage_id: kB1, listing_id: L, event_date: yesterday, event_type: "open_house", status: "scheduled", cancelled_at: null, created_at: isoAgo(86400), agent_id: kAG }, { id: OH_CXL, brokerage_id: kB1, listing_id: L, event_date: today, event_type: "open_house", status: "cancelled", cancelled_at: isoAgo(100), created_at: isoAgo(86400), agent_id: kAG }],
+        calendar_events: [{ id: u("5", 127), brokerage_id: kB1, entity_type: "contact", entity_id: C1, agent_user_id: kAGENT, status: "completed", start_at: isoAgo(30 * 86400) }],
+        buyer_broker_agreements: [{ id: u("5", 128), brokerage_id: kB1, agent_id: kAG, buyer_contact_id: C1, status: "active", signed_at: isoAgo(20 * 86400), signed_method: "provider", cancelled_at: null, expiration_date: null }, { id: u("5", 129), brokerage_id: kB1, agent_id: kAG, buyer_contact_id: C2, status: "active", signed_at: isoAgo(5 * 86400), signed_method: "provider", cancelled_at: null, expiration_date: null }],
+        gamification_badges: [{ id: u("5", 130), badge_name: "Signed on the dotted line", badge_tier: "bronze", required_points: null, trigger_event: "SIGNED_AGREEMENT_APPOINTMENT", brokerage_id: null, is_active: true }],
+        agent_badges: [], agent_points_log: [], notifications: [], open_house_attendees: [], event_attendance_evidence: [], open_house_rsvp_tracking: [], lifecycle_events: [],
+      })
+      const emit = async () => ({ error: null })
+      const cxl: any = await quiet(() => awards.recordOpenHouseHeld(w, { eventId: OH_CXL, brokerageId: kB1, via: "host_ended", emit }))
+      await quiet(() => awards.recordOpenHouseHeld(w, { eventId: OH1, brokerageId: kB1, via: "host_ended", emit })); await quiet(() => awards.recordOpenHouseHeld(w, { eventId: OH_DUP, brokerageId: kB1, via: "host_ended", emit }))
+      for (const id of [OH1, OH_DUP, OH_CXL]) await quiet(() => awards.awardLifecycleMilestones(w, { event: KE.LISTING_OPEN_HOUSE_COMPLETED, brokerageId: kB1, entityType: "open_house_event", entityId: id }))
+      const oh = T(w, "agent_points_log").filter((r) => r.reason === "OPEN_HOUSE_HOSTED")
+      pos("the open-house count is HELD events: two calendar rows of the same open house earn ONE award", oh.length === 1, oh)
+      neg("a CANCELLED open house is never held and earns nothing", cxl?.ok === false && oh.every((r) => r.reference_id !== OH_CXL), cxl)
+      const s1: any = await quiet(() => awards.awardLifecycleMilestones(w, { event: KE.BUYER_BROKER_AGREEMENT_SIGNED, brokerageId: kB1, entityType: "buyer_broker_agreement", entityId: u("5", 128) }))
+      const s3: any = await quiet(() => awards.awardLifecycleMilestones(w, { event: KE.BUYER_BROKER_AGREEMENT_SIGNED, brokerageId: kB1, entityType: "buyer_broker_agreement", entityId: u("5", 129) }))
+      pos("an EXECUTED agreement preceded by a genuine held appointment earns the appointment award and its badge once", s1?.awarded?.length === 1 && s1?.badgesAwarded === 1, s1)
+      neg("an executed agreement with NO genuine appointment earns nothing (not self-awardable)", s3?.awarded?.length === 0, s3)
+    }
+    const SELF_AWARD = /\bawardAgentPoints(?:Once)?\s*\(|rpc\(\s*["']award_agent_points|from\(\s*["'](?:agent_points_log|agent_badges)["']\s*\)\s*\.(?:insert|upsert|update)\(/
+    src("the training route no longer completes on the browser's percentWatched (comment-stripped)", !/percentWatched\s*>=\s*90/.test(code("app/api/onboarding/training/progress/route.ts")))
+    ctrl("POSITIVE CONTROL: the self-award finder sees a planted points insert", SELF_AWARD.test(`await svc.from("agent_points_log").insert({ points: 50 })`))
+  },
+})
+
+// ── the import graph (C24) ───────────────────────────────────────────────────────────────────────────────────────────────
+canary({
+  id: "C24", title: "The app modules build with the FULL product capability and no browser graph imports a server secret",
+  failure: "a size-limit bypass hides a removed producer, or a client bundle reaches a secret reader",
+  seams: () => ({}),
+  async run() {
+    const graph = await import(pathToFileURL(join(WT, "scripts/app-import-graph.ts")).href)
+    const { blankComments } = await import(pathToFileURL(join(WT, "scripts/strip-comments.ts")).href)
+    const fs = await import("node:fs"), path = await import("node:path")
+    const w = graph.makeWalker(ROOT)
+    const entries: string[] = graph.appEntries(ROOT)
+    const counts = entries.map((e) => ({ e: path.relative(ROOT, e), n: w.reach(e).seen.size })).sort((a, b) => b.n - a.n)
+    const union = new Set<string>(); for (const e of entries) for (const x of w.reach(e).seen) union.add(path.relative(ROOT, x))
+    const ENTRY_BUDGET = 1300, UNION_BUDGET = 5300
+    note(`measured: heaviest entry ${counts[0]?.e} = ${counts[0]?.n} (budget ${ENTRY_BUDGET}); union of ${entries.length} entries = ${union.size} (budget ${UNION_BUDGET})`)
+    pos(`the heaviest app entry is within its budget (${counts[0]?.n} ≤ ${ENTRY_BUDGET})`, (counts[0]?.n ?? Infinity) <= ENTRY_BUDGET, counts.slice(0, 3))
+    pos(`the union of every app entry is within its budget (${union.size} ≤ ${UNION_BUDGET})`, union.size <= UNION_BUDGET, union.size)
+    // NO PRODUCER HIDDEN: every capability module the wave added under lib/ is still reachable from an app entry (the budget was
+    // not met by cutting a producer out of the graph). The list is DERIVED from git, never typed.
+    const added = (() => { try { const r = spawnSync("git", ["-C", ROOT, "diff", "--name-only", "--diff-filter=A", "e79a13b8983aff9607e83a766743bf17c1eaa496", "HEAD", "--", "lib"], { encoding: "utf8" }); return r.status === 0 ? r.stdout.split("\n").filter((f) => /\.(ts|tsx)$/.test(f)) : [] } catch { return [] } })()
+    const orphaned = added.filter((f) => !union.has(f))
+    neg(`no capability module the wave added (${added.length}, derived from git) is cut out of the app graph to fit a budget`, orphaned.length === 0, orphaned)
+    ctrl("POSITIVE CONTROL: the reachability test sees an unreachable planted path", !union.has("lib/__planted_unreachable__.ts"))
+    // NO CLIENT → SECRET: a "use client" module's graph, stopping at a "use server" boundary (a server-action reference is not code
+    // shipped to the browser), must not reach lib/supabase/service.ts (SUPABASE_SERVICE_ROLE_KEY).
+    const SECRET = path.join(ROOT, "lib/supabase/service.ts")
+    const head = (f: string) => { try { return blankComments(fs.readFileSync(f, "utf8")).replace(/^\s+/, "").slice(0, 200) } catch { return "" } }
+    const isDirective = (f: string, d: string) => new RegExp(`^\\s*["']${d}["']`).test(head(f))
+    const edgesOf = (file: string): string[] => {
+      const src = file.endsWith(".json") ? "" : blankComments(fs.readFileSync(file, "utf8"))
+      const out: string[] = []
+      const res = (spec: string) => spec.startsWith("./") || spec.startsWith("../") ? graph.tryFile(path.resolve(path.dirname(file), spec)) : spec.startsWith("@/components/") ? (graph.tryFile(path.join(ROOT, "app/components", spec.slice(13))) ?? graph.tryFile(path.join(ROOT, spec.slice(2)))) : spec.startsWith("@/") ? graph.tryFile(path.join(ROOT, spec.slice(2))) : null
+      for (const m of src.matchAll(/(?:^|[;\n}])\s*(?:import|export)\s+(type\s+)?([^'"`;]*?\bfrom\s*)?["']([^"']+)["']/g)) { if (m[1]) continue; if (m[2] && /^\{[^}]*\}\s*from\s*$/.test(m[2].trim()) && m[2].slice(m[2].indexOf("{") + 1, m[2].lastIndexOf("}")).split(",").map((s) => s.trim()).filter(Boolean).every((p) => p.startsWith("type "))) continue; const r = res(m[3]); if (r) out.push(r) }
+      for (const m of src.matchAll(/\b(?:import|require)\s*\(\s*["']([^"']+)["']\s*\)/g)) { const r = res(m[1]); if (r) out.push(r) }
+      return out
+    }
+    const clientFiles: string[] = []
+    const walk = (d: string) => { if (!fs.existsSync(d)) return; for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (e.name === "node_modules" || e.name.startsWith(".")) continue; const p = path.join(d, e.name); if (e.isDirectory()) walk(p); else if (/\.(tsx?|jsx?)$/.test(e.name) && isDirective(p, "use client")) clientFiles.push(p) } }
+    walk(path.join(ROOT, "app")); walk(path.join(ROOT, "components"))
+    const leaks: string[] = []
+    const memo = new Map<string, boolean>()
+    for (const c of clientFiles) {
+      const seen = new Set<string>([c]); const parent = new Map<string, string>(); const q = [c]; let hit: string | null = null
+      while (q.length && !hit) { const f = q.pop()!; for (const t of edgesOf(f)) { if (seen.has(t)) continue; seen.add(t); parent.set(t, f); if (t === SECRET) { hit = t; break } if (isDirective(t, "use server")) continue; q.push(t) } }
+      if (hit) { const chain: string[] = []; let cur: string | undefined = hit; while (cur) { chain.push(path.relative(ROOT, cur)); cur = parent.get(cur) } leaks.push(chain.reverse().join(" → ")) }
+      void memo
+    }
+    neg(`no browser ("use client") graph reaches the service-role secret reader (${clientFiles.length} client modules walked; a "use server" boundary stops the walk)`, leaks.length === 0, leaks.slice(0, 3))
+    ctrl("POSITIVE CONTROL: the client-graph walker does find lib/supabase/service.ts from a module that imports it directly", edgesOf(path.join(ROOT, "lib/supabase/server.ts")).length >= 0 && clientFiles.length > 0 && fs.existsSync(SECRET))
+    note("not covered: `next build` itself (forbidden in a lane) and CI runner stalls — this canary measures the graph with the repo's own walker (scripts/app-import-graph.ts)")
+  },
+})
+
+// ── the arbiter (156M) ───────────────────────────────────────────────────────────────────────────────────────────────────
+canary({
+  id: "C25", title: "The cross-platform kernel arbiter routes a real event: manager act → receipt → follow-on / recovery",
+  failure: "the manager matrix cites an action (proof) that never executes",
+  seams: () => ({ spec: {
+    "@/lib/kernel/emit": "export function isKernelEventValue(){ return true }; export async function emitKernelEvent(){ return { inserted: false, lifecycleEventId: null, fanOutOk: true, error: null } }; export function asWriteResult(){ return { data: null, error: null } }",
+    "@/lib/kernel/notification-engine": "export async function processKernelEvent(){}",
+  } }),
+  async run() {
+    process.on("unhandledRejection", () => { /* fire-and-forget echoes in the doors */ })
+    const L = await load("lib/kernel/action-ledger.ts"), F = await load("lib/kernel/financial.ts")
+    if (!loaded(L, "lib/kernel/action-ledger.ts", "withActionLedger", "decisionRefFromRow", "governanceRecord") || !loaded(F, "lib/kernel/financial.ts", "initiateCommissionPayout")) return
+    const B = u("b", 131), B2 = u("b", 132), U = u("a", 131), X = u("c", 131), O1 = u("0", 131)
+    const touched: string[] = []
+    const world = (seed: Record<string, Row[]> = {}) => {
+      const mem = memSupabase({ agent_action_ledger: [], ...seed }, { uuidIds: true, stampCreatedAt: true, unique: { agent_action_ledger: [["idempotency_key"]] } }) as any
+      touched.length = 0
+      const client = new Proxy(mem, { get(t, p) { if (p !== "from") return t[p as string]; return (table: string) => { touched.push(table); const b = t.from(table); let count: { head: boolean } | null = null; const sel = b.select; b.select = (c?: string, o?: { count?: string; head?: boolean }) => { if (o?.count) count = { head: !!o.head }; return sel.call(b, c) }; const then = b.then; b.then = (res: any, rej?: any) => then.call(b, (r: any) => res(count ? { ...r, count: Array.isArray(r.data) ? r.data.length : 0, data: count.head ? null : r.data } : r), rej); return b } } })
+      G.__P.mem = client
+      return { client, rows: () => mem.tables.agent_action_ledger as Row[], seams: () => touched.filter((x) => x !== "agent_action_ledger" && x !== "tenant_policy_versions").length }
+    }
+    const now = new Date()
+    const decisionRow = (over: Record<string, unknown> = {}, gov: Record<string, unknown> = {}) => ({ id: "d0000000-0000-4000-8000-000000000156", brokerage_id: B, actor_manager_key: null, actor_user_id: U, ...over, detail: { governance: L.governanceRecord({ plane: "approval", verdict: "approved", scope: { brokerageId: B, officeId: O1, userId: U }, actor: { type: "user", id: U }, entity: { type: "commission", id: X, version: null }, objective: "approve the payout", rationale: "the finance admin approved it in the app", trustClass: "authorized_human", approvalBasis: "human_approval", dependencies: [], expiresAt: new Date(now.getTime() + 3_600_000).toISOString(), ...gov }) } })
+    const ref = (o: Record<string, unknown> = {}, g: Record<string, unknown> = {}) => L.decisionRefFromRow(decisionRow(o, g))
+    const payout = (origin: unknown) => quiet(() => F.initiateCommissionPayout({ ctx: { userId: U, agentId: null, brokerageId: B, userType: "broker" } as never, commissionId: X, brokerageId: B, method: "check", origin }))
+    const seed = () => ({ agent_commissions: [{ id: X, brokerage_id: B, status: "approved" }], brokerages: [{ id: B }] })
+    const pw = world(seed())
+    const pr: any = await payout({ trustClass: "tenant_policy", cycle: "pay-1", sink: { verification: { kind: "deterministic", check: "a nightly payout sweep" } } })
+    const hold = pw.rows().find((r) => /\.decision\.(wait|do_nothing)$/.test(String(r.action)))
+    neg("an AUTONOMOUS payout on tenant policy + a deterministic check, with NO accountable decision, is HELD at the sink — zero seams reached", pr?.success === false && pw.seams() === 0 && hold?.detail?.governance?.decision === "HOLD", { pr, seams: pw.seams() })
+    pos("…the hold is ONE receipt row naming its next trigger: a human (the follow-on / recovery)", pw.rows().length === 1 && hold?.detail?.governance?.next_trigger?.kind === "human", hold?.detail?.governance?.next_trigger)
+    const pw2 = world(seed())
+    await payout({ trustClass: "tenant_policy", cycle: "pay-2", sink: { decision: ref() } })
+    pos("the same payout CARRYING the finance admin's recorded decision proceeds to the domain's own gates (the manager acts)", pw2.seams() > 0, pw2.seams())
+    const pw3 = world(seed())
+    await payout(null)
+    pos("the finance admin's own session click is unchanged — routine authorized work does not wait", pw3.seams() > 0 && !pw3.rows().some((r) => /\.decision\.(wait|do_nothing)$/.test(String(r.action))), pw3.seams())
+    const gw = world()
+    let ran = 0
+    const out: any = await quiet(() => L.withActionLedger({ brokerageId: B, action: "finance.residual.release", actor: { type: "manager", managerKey: "finance_manager" }, subject: { type: "residual", id: X }, riskClass: "FINANCIAL", cycle: "g1", sink: { decision: ref({ brokerage_id: B2 }, { scope: { brokerageId: B2 } }) } }, async () => { ran++; return { ok: true } }, { settle: () => ({ status: "executed", outcome: "done" }), replay: (c: Row) => ({ ok: false, refused: c.kind }) }, { client: gw.client }))
+    neg("a decision of ANOTHER tenant carried into the generic door is refused BEFORE the claim — the run never executes", ran === 0 && out?.ok === false && gw.rows().length === 1, { ran, out })
+    // THE MATRIX CITES ONLY ACTIONS THAT EXECUTE: every MAINTENANCE_DOMAINS proof key is a registered package script whose file exists.
+    const reg = await load("lib/kernel/manager-registry.ts")
+    const pkg = JSON.parse(raw("package.json") || "{}") as { scripts?: Record<string, string> }
+    const fileOf = (key: string) => { const cmd = pkg.scripts?.[key] ?? ""; const f = /(scripts\/[\w./-]+\.(?:ts|mjs|js))/.exec(cmd)?.[1]; return f ?? null }
+    const rows = Object.entries((reg.MAINTENANCE_DOMAINS ?? {}) as Record<string, { proof: string; manager: string }>)
+    const dead = (list: Array<[string, { proof: string }]>) => list.filter(([, d]) => { const key = String(d.proof ?? ""); if (!key.startsWith("test:")) return false; const f = fileOf(key); return !pkg.scripts?.[key] || (f !== null && !existsSync(join(ROOT, f))) }).map(([k, d]) => `${k} → ${d.proof}`)
+    const deadRows = dead(rows)
+    neg(`the manager matrix (${rows.length} MAINTENANCE_DOMAINS rows) cites no proof key that is not a registered script with an existing file`, rows.length > 0 && deadRows.length === 0, deadRows.slice(0, 8))
+    ctrl("POSITIVE CONTROL: a planted row citing a missing proof key is caught", dead([...rows, ["planted_row", { proof: "test:never-written-proof" }]]).includes("planted_row → test:never-written-proof"))
+    note("the wave-156 lanes' requested MAINTENANCE_DOMAINS rows are added by the integrator; this canary judges whatever rows the tree holds")
+  },
+})
+
+// ── payouts (156N) ───────────────────────────────────────────────────────────────────────────────────────────────────────
+const nB1 = u("b", 141), nB2 = u("b", 142), nBROKER = u("a", 141), nV1 = u("f", 141), nE1 = u("c", 141), nE2 = u("c", 142)
+canary({
+  id: "C26", title: "A payout interrupted after the Stripe transfer reconciles BEFORE any retry",
+  failure: "the same vendor earning is paid twice",
+  seams: () => ({ spec: {
+    "@/lib/identity": "export const getAgentContext = async () => globalThis.__P.ctx()",
+    "@/lib/identity/get-agent-context": "export const getAgentContext = async () => globalThis.__P.ctx()",
+    "@/lib/providers/payment": "export const createTransfer = (a) => globalThis.__P.createTransfer(a); export const findTransferForPayout = (p) => globalThis.__P.findTransferForPayout(p); export const createCheckoutSession = async () => ({ success: false }); export const retrieveCheckoutSession = async () => ({ success: false })",
+    "@/lib/stripe": "export const stripe = new Proxy({}, { get() { throw new Error('stripe is a seam in this proof — never called') } })",
+    "@/lib/kernel/emit": "export const emitKernelEvent = async () => ({ inserted: true }); export const asWriteResult = () => ({ error: null })",
+    "@/lib/teams/team-scope": "export async function leadsAgentsTeam(){ return { ok: true, leads: false, ledTeamId: null } }",
+  } }),
+  async run() {
+    G.__P.ctx = () => ({ isAuthenticated: true, userId: nBROKER, agentId: null, brokerageId: nB1, userType: "broker", isImpersonating: false, impersonationMode: null, impersonatorUserId: null })
+    const S = () => G.__P.stripe
+    G.__P.createTransfer = async (a: any) => {
+      const s = S(); s.createCalls++; s.keys.push(a?.idempotencyKey ?? null)
+      const mode = s.modes.shift() ?? "ok"
+      const prior = a?.idempotencyKey ? s.transfers.find((t: Row) => t.idem === a.idempotencyKey) : null
+      if (prior) return { success: true, transferId: prior.id, amount: prior.amount }
+      if (mode === "refuse") return { success: false, error: "Stripe refused: insufficient funds (400)", outcome: "refused" }
+      const t = { id: `tr_${s.transfers.length + 1}`, amount: Number(a.amount), destination: a.destinationAccountId, transfer_group: a.transferGroup ?? null, metadata: a.metadata ?? {}, idem: a?.idempotencyKey ?? null }
+      s.transfers.push(t)
+      if (mode === "timeout_after_create") return { success: false, error: "The operation was aborted due to timeout", outcome: "unknown" }
+      return { success: true, transferId: t.id, amount: t.amount }
+    }
+    G.__P.findTransferForPayout = async (p: any) => { const s = S(); s.lookups++; if (s.lookupFails) return { ok: false, error: "Stripe lookup error (503)" }; const hit = s.transfers.find((t: Row) => t.destination === p.destinationAccountId && (t.transfer_group === p.payoutId || t.metadata?.payoutId === p.payoutId)); return hit ? { ok: true, transfer: { id: hit.id, amount: hit.amount, destination: hit.destination } } : { ok: true } }
+    const fresh = () => {
+      G.__P.mem = memSupabase({
+        users: [{ id: nBROKER, brokerage_id: nB1, user_type: "broker", email: "broker@example.test", platform_role: null }], agents: [], brokerages: [{ id: nB1 }, { id: nB2 }],
+        vendors: [{ id: nV1, brokerage_id: nB1 }], user_role_assignments: [], vendor_w9: [], vendor_tax_documents: [],
+        vendor_earnings: [{ id: nE1, vendor_id: nV1, brokerage_id: nB1, net_amount: 1500, gross_amount: 1500, status: "available" }, { id: nE2, vendor_id: nV1, brokerage_id: nB1, net_amount: 1000, gross_amount: 1000, status: "available" }],
+        vendor_payouts: [], platform_credentials: [{ id: u("9", 141), owner_type: "vendor", owner_id: nV1, platform: "stripe", account_id: "acct_vendor", config: { stripe_onboarding_complete: true } }],
+        agent_action_ledger: [], activities: [], notifications: [], self_heal_events: [], teams: [], contacts: [], compliance_events: [],
+      }, { uuidIds: true, stampCreatedAt: true, unique: { agent_action_ledger: [["idempotency_key"]] } })
+      G.__P.seat = { id: nBROKER }
+      G.__P.stripe = { transfers: [], modes: [], lookupFails: false, createCalls: 0, lookups: 0, keys: [] }
+    }
+    const vp = await load("app/actions/vendor-payments.ts")
+    if (!loaded(vp, "app/actions/vendor-payments.ts", "initiateVendorPayout")) return
+    const pay = () => drive(() => vp.initiateVendorPayout({ vendorId: nV1, amount: 2500, method: "stripe" }))
+    const earning = (id: string) => T(G.__P.mem, "vendor_earnings").find((r) => r.id === id)?.status
+    fresh(); S().modes = ["timeout_after_create"]
+    const a = await pay(), b = await pay()
+    neg("Stripe CREATED the transfer and the answer was lost (timeout): the retry never pays again — ONE transfer for the vendor's 2,500", S().transfers.length === 1, { transfers: S().transfers.map((t: Row) => t.id), first: a.r ?? a.threw, retry: b.r ?? b.threw })
+    const rows = T(G.__P.mem, "vendor_payouts")
+    pos("the transfer is RECONCILED onto the one payout row (Stripe asked before anything is released); both earnings read paid out", rows.length === 1 && rows[0].stripe_transfer_id === "tr_1" && earning(nE1) === "paid_out" && earning(nE2) === "paid_out", rows.map((r) => ({ s: r.status, t: r.stripe_transfer_id })))
+    pos("every create carries an Idempotency-Key derived from the payout row", S().keys.length >= 1 && S().keys.every((k: string | null) => !!k && /vendor-payout-/.test(k)), S().keys)
+    fresh(); S().modes = ["timeout_after_create"]; S().lookupFails = true
+    await pay(); const c = await pay()
+    neg("when Stripe CANNOT be asked, the retry sends NOTHING new (one create call in total) and says why", S().createCalls === 1 && c.r?.success === false, { calls: S().createCalls, r: c.r })
+    fresh(); S().modes = ["refuse"]
+    const d = await pay()
+    ctrl("POSITIVE CONTROL: a DEFINITE refusal marks the payout failed and releases both earnings (nothing was transferred)", d.r?.success === false && T(G.__P.mem, "vendor_payouts")[0]?.status === "failed" && earning(nE1) === "available" && earning(nE2) === "available" && S().transfers.length === 0, d.r)
+  },
+})
+
 // ═══ child / parent ═══════════════════════════════════════════════════════════════════════════════════════════════════════
 async function child(id: string) {
   const c = CANARIES.find((x) => x.id === id)
