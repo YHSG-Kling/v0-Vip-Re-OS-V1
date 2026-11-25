@@ -200,15 +200,15 @@ async function sectionA() {
   check("A1 · the transfer id is reconciled onto the ONE payout row ('processing'), and both earnings read paid out",
     rows1.length === 1 && rows1[0].stripe_transfer_id === "tr_1" && rows1[0].status === "processing" && earning(E1) === "paid_out" && earning(E2) === "paid_out",
     rows1.map((r) => ({ s: r.status, t: r.stripe_transfer_id })))
-  check("A1 · the retry reads as success (the payout went through) rather than a failure the vendor would chase", a1b.r?.success === true, a1b.r)
+  check("A1 · the lost answer is reconciled in the SAME call (Stripe is asked before anything is released): the request reads as success, and the retry finds nothing new to pay", a1.r?.success === true && a1b.r?.success === false, { first: a1.r, retry: a1b.r })
 
   // A2 — the process died between the transfer and the row update
   fresh(U_BROKER); G.__N.stripe.modes = ["crash_after_create"]
   await pay()
-  const pending = T("vendor_payouts").find((r) => r.status === "pending")
+  const pending = (({ status, stripe_transfer_id }) => ({ status, stripe_transfer_id }))(T("vendor_payouts")[0] ?? {} as Row) // a SNAPSHOT: the retry updates the same row object in place
   const a2b = await pay()
   const rows2 = T("vendor_payouts")
-  check("A2 · after a crash the row was left 'pending' with no transfer id (the interrupted state is real)", !!pending && pending.stripe_transfer_id == null, rows2)
+  check("A2 · after a crash the row was left 'pending' with no transfer id (the interrupted state is real)", pending.status === "pending" && pending.stripe_transfer_id == null, pending)
   check("A2 NEG · the next request reconciles BEFORE any new transfer: the row carries Stripe's transfer id, still ONE transfer",
     G.__N.stripe.transfers.length === 1 && rows2.length === 1 && rows2[0].stripe_transfer_id === "tr_1" && rows2[0].status === "processing", { rows: rows2.map((r) => ({ s: r.status, t: r.stripe_transfer_id })), retry: a2b.r ?? a2b.threw })
 
