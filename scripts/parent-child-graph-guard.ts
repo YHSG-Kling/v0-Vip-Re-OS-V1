@@ -525,6 +525,9 @@ const KNOWN_FINDINGS: Record<string, { owner: ManagerKey; route: string }> = {
   // UNWIRED key is triaged by hand before it fails a run). It cannot occur while customer360For is missing; it BURNS when
   // the arbiter's own file names the C6 read.
   "step-unwired:c360:customer360For>arbitrateAndRecordExperience": { owner: "ai_isa", route: "lane 146B (contract C6) — lib/ai-isa/followup-arbiter.ts reads the contact's context through customer360For (lane 146D). If B reads it through another module (engage-contact / lead-action-plan), re-point this step's file to that module rather than keep the key" },
+  // ── wave 156 (integrator) — a KEPT DOOR NOTHING CALLS: lane 156F removed its one caller (it recorded off-site "views" for anonymous visitors
+  // who merely shared a city) and the door was restored after its retirement named no survivor while external_behavior still has readers.
+  "orphan-action:app/actions/lead-intelligence.ts:trackExternalActivity": { owner: "data_steward", route: "OWNER QUESTION (wave 156) — wire it to a real first-party observation of one known visitor's off-site activity, or retire it WITH the readers of external_behavior? Kept gated (requireCallerOrCron) and tenant-pinned; nothing runs. Census: owner-held (scripts/os-coverage-ledger.ts OWNER_HELD)" },
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
