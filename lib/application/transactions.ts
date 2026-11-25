@@ -3636,3 +3636,277 @@ async function writeTimelineLine(
   const { error } = await db.from("transaction_timeline").insert({ ...row, brokerage_id: brokerageId ?? undefined })
   if (error) { console.error("Error adding timeline entry:", error); return { ok: false, error: String(error.message ?? error) } } return { ok: true }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// THE DEAL'S CLOSING TEAM (wave 156, lane 156D) — who conducts the closing, whom each lawyer represents, and which actual party
+// owns each closing document and task. Owner (2026-11-25): "in many states, it is a closing attorney not title."
+//
+// These ride the SAME deal-desk gate as every deal-detail writer above (dealDeskWriteContext: the desk first, then the service
+// client) — no second gate. The rules are PURE in lib/transactions/closing-parties.ts (read lazily); the state's legal rule is the
+// sourced table lib/state-forms/closing-participants.ts. A lender / title company / attorney is a VENDOR CATEGORY (CLAUDE.md §4):
+// an on-platform party names its vendors row, which must already be ASSIGNED to this deal on the vendor rail (vendor_assignments)
+// in the session's tenant; an off-platform party is a roster row with no vendor and opens a task for the deal's agent to confirm
+// its facts with the party directly. NOTHING here creates a vendor, a user, a seat or a portal account, and nothing infers whom an
+// attorney represents. The m1010 columns may not be applied yet: a read falls back and SAYS so; a write refuses and says so.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+const CLOSING_SCHEMA_PENDING = "The closing-party fields are not on this database yet (migration m1010 has not been applied), so nothing was saved."
+const isMissingColumn = (e: { code?: string | null; message?: string | null } | null | undefined): boolean =>
+  !!e && (e.code === "42703" || e.code === "PGRST204" || /column .* does not exist|Could not find the '.*' column/i.test(String(e.message ?? "")))
+
+const PARTY_BASE_COLS = "id, name, company, email, phone, role, license_number, notes"
+const PARTY_M1010_COLS = "party_role, represents, vendor_id, fact_source, fact_confirmed_at"
+const SETTLEMENT_BASE_COLS = "id, title_company_name, escrow_company_name, escrow_number, closing_scheduled_date, closing_location"
+const SETTLEMENT_M1010_COLS = "settlement_agent_kind, settlement_agent_participant_id, settlement_agent_basis, title_file_number, payoff_status, hoa_estoppel_status, recording_status"
+
+/** The deal's agent's users.id — who a confirmation task is for (agents.id and users.id are DISJOINT, CLAUDE.md §3). */
+async function dealAgentUserId(db: any, brokerageId: string, transactionId: string): Promise<string | null> {
+  const { data: tx, error } = await db.from("transactions").select("agent_id").eq("id", transactionId).eq("brokerage_id", brokerageId).maybeSingle()
+  if (error || !(tx as { agent_id?: string | null } | null)?.agent_id) return null
+  const { data: ag, error: agErr } = await db.from("agents").select("user_id").eq("id", (tx as { agent_id: string }).agent_id).eq("brokerage_id", brokerageId).maybeSingle()
+  if (agErr) return null
+  return ((ag as { user_id?: string | null } | null)?.user_id) ?? null
+}
+
+/** Open ONE pending task on the deal (deduped on category + party) — the next action a person owes. Returns its id, or null. */
+async function openClosingPartyTask(db: any, g: { brokerageId: string; transactionId: string; fallbackUserId: string }, t: { category: string; title: string; description: string; participantId: string | null; priority: "high" | "medium" }): Promise<string | null> {
+  let q = db.from("transaction_tasks").select("id").eq("transaction_id", g.transactionId).eq("brokerage_id", g.brokerageId).eq("category", t.category).eq("status", "pending")
+  q = t.participantId ? q.eq("responsible_participant_id", t.participantId) : q
+  const { data: open, error: openErr } = await q.limit(1)
+  if (!openErr && (open ?? []).length > 0) return (open as Array<{ id: string }>)[0].id
+  const assignee = (await dealAgentUserId(db, g.brokerageId, g.transactionId)) ?? g.fallbackUserId
+  const row: Record<string, unknown> = { transaction_id: g.transactionId, brokerage_id: g.brokerageId, title: t.title.slice(0, 180), description: t.description.slice(0, 2000), category: t.category, priority: t.priority, status: "pending", ai_generated: false, automatable: false, assigned_user_id: assignee }
+  if (t.participantId) row.responsible_participant_id = t.participantId
+  const { data, error } = await db.from("transaction_tasks").insert(row).select("id")
+  if (error || !data || data.length !== 1) { console.error(`[closing-team] the ${t.category} task was not opened: ${error?.message ?? "no row"}`); return null }
+  return (data[0] as { id: string }).id
+}
+
+/** Read the deal's closing facts (tenant-pinned, on the desk's client). `schemaPending` = the m1010 columns are not there yet. */
+async function readClosingFacts(db: any, brokerageId: string, transactionId: string) {
+  const { data: tx, error: txErr } = await db.from("transactions").select("id, property_state, financing_type, deal_type, status, stage").eq("id", transactionId).eq("brokerage_id", brokerageId).maybeSingle()
+  if (txErr) return { ok: false as const, error: `Could not read the deal: ${txErr.message}` }
+  if (!tx) return { ok: false as const, error: "Transaction not found" }
+  let schemaPending = false
+  let parts = await db.from("transaction_participants").select(`${PARTY_BASE_COLS}, ${PARTY_M1010_COLS}`).eq("transaction_id", transactionId)
+  if (parts.error && isMissingColumn(parts.error)) { schemaPending = true; parts = await db.from("transaction_participants").select(PARTY_BASE_COLS).eq("transaction_id", transactionId) }
+  if (parts.error) return { ok: false as const, error: `Could not read the deal's parties: ${parts.error.message}` }
+  let te = await db.from("transaction_title_escrow").select(`${SETTLEMENT_BASE_COLS}, ${SETTLEMENT_M1010_COLS}`).eq("transaction_id", transactionId).limit(1)
+  if (te.error && isMissingColumn(te.error)) { schemaPending = true; te = await db.from("transaction_title_escrow").select(SETTLEMENT_BASE_COLS).eq("transaction_id", transactionId).limit(1) }
+  if (te.error) return { ok: false as const, error: `Could not read the deal's settlement record: ${te.error.message}` }
+  let docs = await db.from("transaction_documents").select("id, doc_type, doc_label, status, responsible_participant_id").eq("transaction_id", transactionId)
+  if (docs.error && isMissingColumn(docs.error)) { schemaPending = true; docs = await db.from("transaction_documents").select("id, doc_type, doc_label, status").eq("transaction_id", transactionId) }
+  if (docs.error) return { ok: false as const, error: `Could not read the deal's documents: ${docs.error.message}` }
+  return { ok: true as const, tx: tx as Record<string, string | null>, participants: (parts.data ?? []) as Array<Record<string, any>>, settlement: (((te.data ?? []) as Array<Record<string, any>>)[0]) ?? null, documents: (docs.data ?? []) as Array<Record<string, any>>, schemaPending }
+}
+
+/** The closing facts in the pure module's shape (one mapping, read by the card and by setSettlementAgent's re-assessment). */
+function closingTeamInput(facts: Extract<Awaited<ReturnType<typeof readClosingFacts>>, { ok: true }>) {
+  const s = facts.settlement
+  return {
+    stateCode: facts.tx.property_state ?? null, financingType: facts.tx.financing_type ?? null, dealType: facts.tx.deal_type ?? null,
+    participants: facts.participants.map((p) => ({ id: p.id as string, name: (p.name ?? null) as string | null, company: p.company ?? null, email: p.email ?? null, phone: p.phone ?? null, role: p.role ?? null, party_role: p.party_role ?? null, represents: p.represents ?? null, vendor_id: p.vendor_id ?? null, fact_source: p.fact_source ?? null, fact_confirmed_at: p.fact_confirmed_at ?? null })),
+    settlement: s ? { kind: s.settlement_agent_kind ?? null, participantId: s.settlement_agent_participant_id ?? null, basis: s.settlement_agent_basis ?? null, titleFileNumber: s.title_file_number ?? null, escrowNumber: s.escrow_number ?? null, closingLocation: s.closing_location ?? null, closingDate: s.closing_scheduled_date ?? null, payoffStatus: s.payoff_status ?? null, hoaEstoppelStatus: s.hoa_estoppel_status ?? null, recordingStatus: s.recording_status ?? null, titleCompanyName: s.title_company_name ?? null } : null,
+    insuranceOnFile: null,
+  }
+}
+
+/** The deal page's Closing Team card: the state's sourced rule, the parties and whom they represent, the checklist, and who owns each closing document. */
+export async function getClosingTeam(transactionId: string) {
+  const gate = await dealDeskWriteContext({ transactionId })
+  if (!gate.ok) return { success: false as const, error: gate.error }
+  const facts = await readClosingFacts(gate.db, gate.brokerageId, gate.transactionId)
+  if (!facts.ok) return { success: false as const, error: facts.error }
+  const cp = await import("@/lib/transactions/closing-parties")
+  const input = closingTeamInput(facts)
+  const assessment = cp.assessClosingTeam(input)
+  const checklist = cp.dealTeamChecklist(input, assessment)
+  const KEY_DOCS = ["closing_disclosure", "settlement_statement", "title_commitment", "deed", "payoff_statement", "hoa_estoppel"]
+  const documents = [
+    ...facts.documents.map((d) => ({ id: d.id as string | null, docType: String(d.doc_type ?? ""), label: String(d.doc_label ?? d.doc_type ?? ""), status: String(d.status ?? ""), responsibleParticipantId: (d.responsible_participant_id as string | null) ?? null, owner: cp.closingDocumentOwner(String(d.doc_type ?? ""), input, assessment) })),
+    ...KEY_DOCS.filter((k) => !facts.documents.some((d) => String(d.doc_type ?? "").includes(k))).map((k) => ({ id: null as string | null, docType: k, label: k.replace(/_/g, " "), status: "not_on_file", responsibleParticipantId: null as string | null, owner: cp.closingDocumentOwner(k, input, assessment) })),
+  ]
+  // The vocabularies ride the answer so the card never restates them (CLAUDE.md §6) and the browser bundle never loads the rule module.
+  const vocab = { partyRoles: cp.CLOSING_PARTY_ROLES.map((r) => ({ value: r, label: cp.PARTY_ROLE_LABEL[r] })), represents: [...cp.PARTY_REPRESENTS], settlementKinds: [...cp.SETTLEMENT_AGENT_KINDS], bases: [...cp.SETTLEMENT_AGENT_BASES], checkStatuses: [...cp.CLOSING_CHECK_STATUSES] }
+  return { success: true as const, schemaPending: facts.schemaPending, assessment, checklist, documents, participants: input.participants, settlement: input.settlement, aiRule: cp.CLOSING_STATEMENT_AI_RULE, vocab }
+}
+
+/**
+ * Record a closing party on the deal: an attorney (buyer's, seller's, lender's, or the closing attorney), a title or escrow company,
+ * the lender, or another authorized settlement entity. ON-PLATFORM: `vendor_id` names a vendors row of THIS tenant, of a category
+ * that fits the role, already assigned to THIS deal. OFF-PLATFORM: no vendor — the row is marked agent-entered and a task asks the
+ * deal's agent to confirm the facts with the party directly. Representation is what the caller states (a side-specific role states
+ * its own side); a settlement attorney with nothing stated stays UNKNOWN and the same task asks.
+ */
+export async function recordClosingParty(input: {
+  transaction_id: string; party_role: string; represents?: string | null; name: string
+  company?: string | null; email?: string | null; phone?: string | null; license_number?: string | null; notes?: string | null; vendor_id?: string | null
+}) {
+  const gate = await dealDeskWriteContext({ transactionId: input.transaction_id })
+  if (!gate.ok) return { success: false as const, error: gate.error }
+  const cp = await import("@/lib/transactions/closing-parties")
+  const draft = cp.decideClosingPartyDraft({ partyRole: input.party_role, represents: input.represents ?? null, name: input.name, vendorId: input.vendor_id ?? null })
+  if (!draft.ok) return { success: false as const, error: draft.error }
+  const db = gate.db
+  let factSource: "vendor_seat" | "agent_entered" = "agent_entered"
+  if (input.vendor_id) {
+    // THE VENDOR RAIL (CLAUDE.md §4): this tenant's vendor, a category that fits the role, already assigned to THIS deal. Never created here.
+    const { data: v, error: vErr } = await db.from("vendors").select("id, category, brokerage_id").eq("id", input.vendor_id).eq("brokerage_id", gate.brokerageId).maybeSingle()
+    if (vErr) return { success: false as const, error: `Could not verify the vendor: ${vErr.message}` }
+    if (!v) return { success: false as const, error: "That vendor is not on your brokerage's vendor bench, so it cannot be recorded as a party on this deal." }
+    const category = (v as { category?: string | null }).category ?? null
+    if (!cp.vendorCategoryFitsRole(draft.partyRole, category)) return { success: false as const, error: `That vendor is a '${category ?? "unknown"}' vendor, which does not fit the role ${cp.PARTY_ROLE_LABEL[draft.partyRole]}.` }
+    const { data: asg, error: aErr } = await db.from("vendor_assignments").select("id").eq("vendor_id", input.vendor_id).eq("transaction_id", gate.transactionId).eq("brokerage_id", gate.brokerageId).limit(1)
+    if (aErr) return { success: false as const, error: `Could not verify the vendor's assignment: ${aErr.message}` }
+    if ((asg ?? []).length === 0) return { success: false as const, error: "Assign this vendor to the deal first (the deal's vendors), then record its closing role." }
+    factSource = "vendor_seat"
+  }
+  const name = input.name.trim().slice(0, 200)
+  const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+  return resultFamily(await ledgerSessionAction({ brokerageId: gate.brokerageId, action: "transaction.closing_party.record", actor: { type: "user", userId: gate.actorUserId }, subject: { type: "transaction", id: gate.transactionId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { effective_user_id: gate.userId, party_role: draft.partyRole, represents: draft.represents, on_platform: !!input.vendor_id } }, async () => {
+    const row = {
+      transaction_id: gate.transactionId, brokerage_id: gate.brokerageId, role: draft.partyRole, name,
+      company: input.company ?? null, email: input.email ?? null, phone: input.phone ?? null, license_number: input.license_number ?? null, notes: input.notes ?? null,
+      party_role: draft.partyRole, represents: draft.represents, vendor_id: input.vendor_id ?? null, fact_source: factSource,
+    }
+    const { data, error } = await db.from("transaction_participants").insert(row).select("id")
+    if (error) return { success: false as const, error: isMissingColumn(error) ? CLOSING_SCHEMA_PENDING : error.message }
+    if (!data || data.length !== 1) return { success: false as const, error: "The party was not recorded (no row came back)." }
+    const participantId = (data[0] as { id: string }).id
+    const asks: string[] = []
+    if (factSource === "agent_entered") asks.push("confirm their name, firm, contact details and license directly with them (they are not on the platform — no account is created for them)")
+    if (draft.represents === null && cp.isAttorneyRole(draft.partyRole)) asks.push("ask whom they represent — a closing attorney is never assumed to represent every party")
+    let taskId: string | null = null
+    if (asks.length > 0) {
+      taskId = await openClosingPartyTask(db, { brokerageId: gate.brokerageId, transactionId: gate.transactionId, fallbackUserId: gate.userId }, {
+        category: "closing_party_confirmation", participantId, priority: "medium",
+        title: `[Closing party] Confirm ${cp.PARTY_ROLE_LABEL[draft.partyRole].toLowerCase()} ${name}`,
+        description: `${cp.PARTY_ROLE_LABEL[draft.partyRole]} ${name} was added to the deal. Please ${asks.join("; and ")}. Record what they confirmed and how (email, call, engagement letter) on the deal's Closing Team card.`,
+      })
+    }
+    await writeTimelineLine(db, gate.brokerageId, { transaction_id: gate.transactionId, activity_type: "closing_party_recorded", description: `${cp.PARTY_ROLE_LABEL[draft.partyRole]} "${name}" recorded${input.vendor_id ? " (on the platform)" : " (not on the platform — confirmation requested)"}` })
+    revalidatePath(`/dashboard/transactions/${gate.transactionId}`)
+    return { success: true as const, participantId, onPlatform: !!input.vendor_id, represents: draft.represents, confirmationTaskId: taskId }
+  }))
+}
+
+/** The deal's agent / coordinator records that a party CONFIRMED its facts, with the evidence (how and when). Closes the confirmation task. */
+export async function confirmClosingPartyFact(participantId: string, input: { evidence: string; represents?: string | null }) {
+  const gate = await dealDeskWriteContext({ table: "transaction_participants", rowId: participantId })
+  if (!gate.ok) return { success: false as const, error: gate.error }
+  const evidence = String(input?.evidence ?? "").trim()
+  if (evidence.length < 5) return { success: false as const, error: "Say how the party confirmed it (for example: 'email from the attorney, 11/20, engagement letter attached')." }
+  const cp = await import("@/lib/transactions/closing-parties")
+  const db = gate.db
+  const { data: p, error: pErr } = await db.from("transaction_participants").select("id, party_role, represents").eq("id", participantId).eq("transaction_id", gate.transactionId).maybeSingle()
+  if (pErr) return { success: false as const, error: isMissingColumn(pErr) ? CLOSING_SCHEMA_PENDING : `Could not read the party: ${pErr.message}` }
+  if (!p) return { success: false as const, error: "Participant not found on this deal." }
+  const patch: Record<string, unknown> = { fact_source: "party_confirmed", fact_confirmed_at: new Date().toISOString(), fact_confirmed_by: gate.actorUserId, fact_evidence: evidence.slice(0, 1000) }
+  if (input?.represents != null && input.represents !== "") {
+    const d = cp.decideClosingPartyDraft({ partyRole: (p as { party_role?: string | null }).party_role, represents: input.represents, name: "confirmed" })
+    if (!d.ok) return { success: false as const, error: d.error }
+    patch.represents = d.represents
+  }
+  const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+  return resultFamily(await ledgerSessionAction({ brokerageId: gate.brokerageId, action: "transaction.closing_party.confirm", actor: { type: "user", userId: gate.actorUserId }, subject: { type: "transaction_participant", id: participantId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { transaction_id: gate.transactionId, represents: patch.represents ?? null } }, async () => {
+    const { data: upd, error } = await db.from("transaction_participants").update(patch).eq("id", participantId).eq("transaction_id", gate.transactionId).select("id")
+    if (error) return { success: false as const, error: isMissingColumn(error) ? CLOSING_SCHEMA_PENDING : error.message }
+    if (!upd || upd.length !== 1) return { success: false as const, error: "The confirmation was not recorded (no row matched)." }
+    const { data: closed, error: closeErr } = await db.from("transaction_tasks").update({ status: "completed", completed_at: new Date().toISOString(), completed_by: gate.actorUserId })
+      .eq("transaction_id", gate.transactionId).eq("brokerage_id", gate.brokerageId).eq("category", "closing_party_confirmation").eq("responsible_participant_id", participantId).eq("status", "pending").select("id")
+    if (closeErr) console.error(`[closing-team] the confirmation task was not closed (the confirmation stands): ${closeErr.message}`)
+    revalidatePath(`/dashboard/transactions/${gate.transactionId}`)
+    return { success: true as const, tasksClosed: (closed ?? []).length }
+  }))
+}
+
+/**
+ * Record WHO CONDUCTS THE CLOSING — the settlement agent, as the contract names it or the party confirms it. The party must already
+ * be on this deal, and its role must fit the kind (an attorney for 'attorney', the title / escrow company for theirs). The state's
+ * sourced rule is then read: a non-attorney settlement agent in a state whose source requires an attorney opens a counsel-review task
+ * for a person — the OS never overrides the contract and never decides the legal question.
+ */
+export async function setSettlementAgent(transactionId: string, input: { participantId: string; kind: string; basis: string }) {
+  const gate = await dealDeskWriteContext({ transactionId })
+  if (!gate.ok) return { success: false as const, error: gate.error }
+  const cp = await import("@/lib/transactions/closing-parties")
+  if (!cp.isSettlementAgentKind(input?.kind)) return { success: false as const, error: `Choose who conducts the closing: ${cp.SETTLEMENT_AGENT_KINDS.join(", ").replace(/_/g, " ")}.` }
+  if (!cp.isSettlementAgentBasis(input?.basis)) return { success: false as const, error: "Say where this comes from: named in the contract, confirmed by the party, or entered by you." }
+  const db = gate.db
+  const { data: p, error: pErr } = await db.from("transaction_participants").select("id, name, party_role").eq("id", input.participantId).eq("transaction_id", gate.transactionId).maybeSingle()
+  if (pErr) return { success: false as const, error: isMissingColumn(pErr) ? CLOSING_SCHEMA_PENDING : `Could not read the party: ${pErr.message}` }
+  if (!p) return { success: false as const, error: "Record the settlement agent as a party on this deal first." }
+  const role = (p as { party_role?: string | null }).party_role ?? null
+  const fits = input.kind === "attorney" ? cp.isAttorneyRole(role) : input.kind === "title_company" ? role === "title_company" : input.kind === "escrow_company" ? role === "escrow_company" : role === "other_settlement_entity"
+  if (!fits) return { success: false as const, error: `${(p as { name?: string | null }).name ?? "That party"} is recorded as ${cp.isClosingPartyRole(role) ? cp.PARTY_ROLE_LABEL[role] : "no closing role"}, which does not fit a ${input.kind.replace(/_/g, " ")} settlement agent.` }
+  const { data: te, error: teErr } = await db.from("transaction_title_escrow").select("id").eq("transaction_id", gate.transactionId).limit(1)
+  if (teErr) return { success: false as const, error: `Could not read the settlement record: ${teErr.message}` }
+  const teId = (((te ?? []) as Array<{ id: string }>)[0])?.id
+  if (!teId) return { success: false as const, error: "Add the deal's title / escrow record first (the Title & Escrow card), then record who conducts the closing." }
+  const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+  return resultFamily(await ledgerSessionAction({ brokerageId: gate.brokerageId, action: "transaction.settlement_agent.set", actor: { type: "user", userId: gate.actorUserId }, subject: { type: "transaction", id: gate.transactionId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { kind: input.kind, basis: input.basis, participant_id: input.participantId } }, async () => {
+    const { data: upd, error } = await db.from("transaction_title_escrow").update({ settlement_agent_kind: input.kind, settlement_agent_participant_id: input.participantId, settlement_agent_basis: input.basis, updated_at: new Date().toISOString() }).eq("id", teId).eq("transaction_id", gate.transactionId).select("id")
+    if (error) return { success: false as const, error: isMissingColumn(error) ? CLOSING_SCHEMA_PENDING : error.message }
+    if (!upd || upd.length !== 1) return { success: false as const, error: "The settlement agent was not recorded (no row matched)." }
+    const facts = await readClosingFacts(db, gate.brokerageId, gate.transactionId)
+    let counselTaskId: string | null = null
+    let findings: Array<{ key: string; severity: string; message: string }> = []
+    if (facts.ok) {
+      const team = cp.assessClosingTeam(closingTeamInput(facts))
+      findings = team.findings
+      const legal = team.findings.find((f) => f.key === "state_requires_attorney_closing")
+      if (legal) counselTaskId = await openClosingPartyTask(db, { brokerageId: gate.brokerageId, transactionId: gate.transactionId, fallbackUserId: gate.userId }, { category: "closing_counsel_review", participantId: null, priority: "high", title: "[Closing] Confirm who may conduct this closing", description: `${legal.message}${legal.source ? ` Source: ${legal.source.title} (${legal.source.url}).` : ""} This is a legal question for the brokerage's counsel — the OS does not decide it.` })
+    }
+    revalidatePath(`/dashboard/transactions/${gate.transactionId}`)
+    return { success: true as const, findings, counselTaskId }
+  }))
+}
+
+/** The settlement record's closing checks: title file number, payoff, HOA / estoppel, recording. Only these fields cross the door. */
+export async function updateClosingChecks(transactionId: string, patch: { title_file_number?: string | null; payoff_status?: string | null; hoa_estoppel_status?: string | null; recording_status?: string | null }) {
+  const gate = await dealDeskWriteContext({ transactionId })
+  if (!gate.ok) return { success: false as const, error: gate.error }
+  const cp = await import("@/lib/transactions/closing-parties")
+  const allowed = new Set(["title_file_number", "payoff_status", "hoa_estoppel_status", "recording_status"])
+  const refused = Object.keys(patch ?? {}).filter((k) => !allowed.has(k))
+  if (refused.length > 0) return { success: false as const, error: `The settlement record's ${refused.join(", ")} cannot be changed here.` }
+  const out: Record<string, unknown> = {}
+  for (const k of ["payoff_status", "hoa_estoppel_status", "recording_status"] as const) {
+    if (!(k in (patch ?? {}))) continue
+    const v = patch[k]
+    if (v != null && !cp.isClosingCheckStatus(v)) return { success: false as const, error: `Choose a status: ${cp.CLOSING_CHECK_STATUSES.join(", ").replace(/_/g, " ")}.` }
+    out[k] = v ?? null
+  }
+  if ("title_file_number" in (patch ?? {})) out.title_file_number = patch.title_file_number ? String(patch.title_file_number).trim().slice(0, 80) : null
+  if (Object.keys(out).length === 0) return { success: false as const, error: "Nothing to save." }
+  const db = gate.db
+  const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+  return resultFamily(await ledgerSessionAction({ brokerageId: gate.brokerageId, action: "transaction.closing_checks.update", actor: { type: "user", userId: gate.actorUserId }, subject: { type: "transaction", id: gate.transactionId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { fields: Object.keys(out) } }, async () => {
+    const { data: upd, error } = await db.from("transaction_title_escrow").update({ ...out, updated_at: new Date().toISOString() }).eq("transaction_id", gate.transactionId).select("id")
+    if (error) return { success: false as const, error: isMissingColumn(error) ? CLOSING_SCHEMA_PENDING : error.message }
+    if (!upd || upd.length === 0) return { success: false as const, error: "Add the deal's title / escrow record first (the Title & Escrow card)." }
+    revalidatePath(`/dashboard/transactions/${gate.transactionId}`)
+    return { success: true as const }
+  }))
+}
+
+/** Name the ACTUAL party responsible for one of the deal's documents or tasks (or clear it). The party must be on THIS deal. */
+export async function assignClosingResponsibility(transactionId: string, input: { target: "document" | "task"; id: string; participantId: string | null }) {
+  const gate = await dealDeskWriteContext({ transactionId })
+  if (!gate.ok) return { success: false as const, error: gate.error }
+  const db = gate.db
+  if (input?.participantId) {
+    const { data: p, error } = await db.from("transaction_participants").select("id").eq("id", input.participantId).eq("transaction_id", gate.transactionId).maybeSingle()
+    if (error) return { success: false as const, error: `Could not read the party: ${error.message}` }
+    if (!p) return { success: false as const, error: "That party is not on this deal." }
+  }
+  const table = input?.target === "task" ? "transaction_tasks" : input?.target === "document" ? "transaction_documents" : null
+  if (!table) return { success: false as const, error: "Choose a document or a task." }
+  const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+  return resultFamily(await ledgerSessionAction({ brokerageId: gate.brokerageId, action: "transaction.closing_responsibility.assign", actor: { type: "user", userId: gate.actorUserId }, subject: { type: table === "transaction_tasks" ? "transaction_task" : "transaction_document", id: input.id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { transaction_id: gate.transactionId, participant_id: input.participantId ?? null } }, async () => {
+    const { data: upd, error } = await db.from(table).update({ responsible_participant_id: input.participantId ?? null }).eq("id", input.id).eq("transaction_id", gate.transactionId).select("id")
+    if (error) return { success: false as const, error: isMissingColumn(error) ? CLOSING_SCHEMA_PENDING : error.message }
+    if (!upd || upd.length !== 1) return { success: false as const, error: `That ${input.target} is not on this deal.` }
+    revalidatePath(`/dashboard/transactions/${gate.transactionId}`)
+    return { success: true as const }
+  }))
+}
