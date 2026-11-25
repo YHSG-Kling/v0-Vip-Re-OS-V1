@@ -407,24 +407,22 @@ function assertCompProviderDecidesBeforeSpending(): boolean {
   const body = compsRegion === null ? null : bodyAfterParams(compsRegion)
   if (body === null) return check("E3b comp-provider decides eligibility before it spends", false, "body unreadable")
   const decide = body.indexOf("resolveRentcastEligibility(")
-  // The pull is now the COMBINED reader (comparables + the AVM baseline off the
-  // one /avm/value response). Both spellings are looked for so this stays an
-  // assertion about the ORDER rather than about which name the pull has today —
-  // and a body where NEITHER appears is an offender, not a pass, because a
-  // vacuous `pull === -1` is how this check would quietly stop checking.
-  const pull = Math.min(
-    ...["getRentcastAvmAndComps(", "getRentcastComps("]
-      .map((n) => body.indexOf(n))
-      .filter((i) => i !== -1)
-      .concat([Number.POSITIVE_INFINITY]),
-  )
-  const spend = body.indexOf("costCents += RENTCAST_COMPS_COST_CENTS")
-  const ok =
-    decide !== -1 && Number.isFinite(pull) && decide < pull && (spend === -1 || decide < spend)
+  // WAVE 156 (156I r4): THE RULE, not a spelling. Since lane 156I round 3 the CMA's pulls ask THE comparables capability
+  // (lib/avm/provider-chain.ts requestPropertyComparables — LAW 3); the order that must hold is unchanged:
+  //   eligibility is decided BEFORE every pull, and every pull happens BEFORE its costCents moves — in BOTH paths (the primary
+  //   pull and the widened sold-side supplement). The k-th pull must precede the k-th spend, and there must be as many pulls as
+  //   spends (a spend with no pull before it is the original defect). A body with NO pull is an offender, never a vacuous pass.
+  //   A pull written back as a DIRECT vendor call (getRentcastAvmAndComps / getRentcastComps by name) is an offender too.
+  const all = (needle: string) => { const out: number[] = []; for (let i = body.indexOf(needle); i !== -1; i = body.indexOf(needle, i + 1)) out.push(i); return out }
+  const pulls = all("requestPropertyComparables(")
+  const spends = all("costCents += RENTCAST_COMPS_COST_CENTS")
+  const byName = ["getRentcastAvmAndComps(", "getRentcastComps("].filter((n) => body.indexOf(n) !== -1)
+  const ordered = pulls.length >= 1 && pulls.length === spends.length && pulls.every((p, k) => p < spends[k])
+  const ok = decide !== -1 && byName.length === 0 && ordered && pulls.every((p) => decide < p) && spends.every((x) => decide < x)
   return check(
-    "E3b comp-provider decides eligibility BEFORE the pull and before costCents moves",
+    "E3b comp-provider decides eligibility BEFORE every pull (the comparables capability) and every pull precedes its costCents — both paths",
     ok,
-    `decide@${decide} pull@${pull} spend@${spend}`,
+    `decide@${decide} pulls@${pulls.join(",") || "none"} spends@${spends.join(",") || "none"}${byName.length ? ` vendor-by-name: ${byName.join(", ")}` : ""}`,
   )
 }
 
@@ -584,6 +582,28 @@ async function main(): Promise<void> {
         file: F.comps,
         find: `  const rentcastEligibility = await resolveRentcastEligibility({`,
         replace: `  costCents += RENTCAST_COMPS_COST_CENTS\n  const rentcastEligibility = await resolveRentcastEligibility({`,
+      },
+      assertCompProviderDecidesBeforeSpending,
+    )
+
+    // 5b. (wave 156, 156I r4) The CMA pull written back as a DIRECT vendor call — LAW 3 regressing.
+    await controlled(
+      "the CMA pull written back as a direct vendor call (getRentcastAvmAndComps by name)",
+      {
+        file: F.comps,
+        find: `    avmPull = (await (await import("@/lib/avm/provider-chain")).requestPropertyComparables({`,
+        replace: `    avmPull = (await (await import("@/lib/property/rentcast")).getRentcastAvmAndComps({`,
+      },
+      assertCompProviderDecidesBeforeSpending,
+    )
+
+    // 5c. (wave 156, 156I r4) The SECOND path's spend moved before its pull — the widened supplement paying before it asks.
+    await controlled(
+      "the widened supplement moving costCents before its pull",
+      {
+        file: F.comps,
+        find: `        const wide = (await (await import("@/lib/avm/provider-chain")).requestPropertyComparables({`,
+        replace: `        costCents += RENTCAST_COMPS_COST_CENTS\n        const wide = (await (await import("@/lib/avm/provider-chain")).requestPropertyComparables({`,
       },
       assertCompProviderDecidesBeforeSpending,
     )
