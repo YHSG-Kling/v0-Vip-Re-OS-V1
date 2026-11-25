@@ -466,7 +466,7 @@ export async function sourceCompsForCma(req: CompSourceRequest): Promise<Sourced
     // The pull meters its own call ONCE (usage_type comps_lookup) and the AVM
     // comes back on that same call at no marginal cost; this only mirrors the
     // one spend onto the CMA's own cost estimate. It is NOT doubled for the AVM.
-    costCents += RENTCAST_COMPS_COST_CENTS
+    if (avmPull.paidRequest === true) costCents += RENTCAST_COMPS_COST_CENTS // wave 156 (156I r5): only a billed request costs
     if (rentcastRows.length > 0) {
       citations.push("RentCast comparable sales (/avm/value comparables)")
     } else {
@@ -601,7 +601,7 @@ export async function sourceCompsForCma(req: CompSourceRequest): Promise<Sourced
           systemSource: req.systemSource ?? DEFAULT_COMP_SYSTEM_SOURCE,
           contactId: req.contactId ?? null,
         })).pull
-        costCents += RENTCAST_COMPS_COST_CENTS
+        if (wide.paidRequest === true) costCents += RENTCAST_COMPS_COST_CENTS // wave 156 (156I r5): only a billed request costs
         wideRows = wide.comps
         if (wide.avmUnavailableReason === "provider_error" && wideRows.length === 0) {
           notes.push("RentCast's widened comparable search was tried to fill the sold-side shortfall and failed — the shortfall stands.")

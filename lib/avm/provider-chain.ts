@@ -840,6 +840,9 @@ export interface ComparablesRequest {
 export interface ComparablesOutcome {
   pull: import("@/lib/property/rentcast").RentcastAvmAndComps
   provider: "rentcast" | null
+  /** wave 156 (156I r5): true ONLY when this ask made a billed request — a cache hit, a joined single-flight, a refusal, the ceiling
+   *  or "not available" is false. The ONE answer a caller books cost from (never guessed from the result's shape). */
+  paidRequest: boolean
   /** null when a provider was asked; otherwise the plain reason nothing was bought. */
   notAvailable: string | null
   skipped: Array<{ provider: string; reason: string }>
@@ -858,7 +861,7 @@ export async function requestPropertyComparables(req: ComparablesRequest, deps: 
   const ctx = { brokerageId: (req.brokerageId ?? null) as string, agentUserId: req.agentUserId ?? null, teamId: req.teamId ?? null, readKind: "property_data" as const }
   const empty = async (notAvailable: string, eligibility?: Awaited<ReturnType<typeof resolveRentcastEligibility>>): Promise<ComparablesOutcome> => ({
     pull: { comps: [], avm: { value: null, rangeLow: null, rangeHigh: null }, avmAvailable: false, avmUnavailableReason: "not_eligible", eligibility: eligibility ?? await resolveRentcastEligibility(ctx).catch(() => ({ eligible: false } as never)) },
-    provider: null, notAvailable, skipped,
+    provider: null, paidRequest: false, notAvailable, skipped,
   })
   try {
     if (!req.brokerageId) return await empty("no tenant on the request — comparables are never bought unattributed (§4)")
@@ -888,7 +891,7 @@ export async function requestPropertyComparables(req: ComparablesRequest, deps: 
       brokerageId: req.brokerageId, agentUserId: req.agentUserId ?? null, teamId: req.teamId ?? null, address: req.address,
       limit: req.limit, maxRadiusMiles: req.maxRadiusMiles, daysOld: req.daysOld, systemSource: req.systemSource, contactId: req.contactId ?? null,
     })
-    return { pull, provider: "rentcast", notAvailable: null, skipped }
+    return { pull, provider: "rentcast", paidRequest: pull.paidRequest === true, notAvailable: null, skipped }
   } catch (e) {
     return await empty(`comparables capability threw: ${e instanceof Error ? e.message : String(e)}`)
   }
