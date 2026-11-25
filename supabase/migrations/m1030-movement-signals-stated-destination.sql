@@ -1,4 +1,4 @@
--- m1030 — A STATED RELOCATION PLAN CARRIES A STRUCTURED DESTINATION (wave 156, lane 156I round 3 — WRITTEN, NOT APPLIED).
+-- m1030 — A STATED RELOCATION PLAN CARRIES A STRUCTURED DESTINATION (wave 156, lane 156I round 3 — APPLIED LIVE 2026-11-25 via Supabase MCP (project hrvaqgvukzxfskkcrwbt)).
 --
 -- Directive 156I row 3: a local employer expansion becomes a relocation explainer that reaches consented people whose STATED
 -- plans align. The person's own plan is recorded by the PCS / relocation door (lib/relocation/pcs-portal-door.ts) through the

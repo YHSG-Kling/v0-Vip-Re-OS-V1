@@ -17,7 +17,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-11-25
  * source: public.live_schema_json()
- * body-sha256: d6f3f6de16623506c16d1a5ecdcdc326626b7f7cf6546a6878f790b48717a1d9
+ * body-sha256: dff65cedd16bcd7091d0e53eec32225aa543c661b13832bc6bf13e8cee37dc1d
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -467,7 +467,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   missions: ["actions", "authority_ceiling", "blockers", "brokerage_id", "budget", "completed_at", "created_at", "created_by", "deadline", "dependencies", "evidence", "id", "mission_type", "objective", "outcomes", "owner_manager", "parent_mission", "participating_managers", "priority", "progress", "spent_tokens", "spent_usd", "state", "state_changed_at", "subject_id", "subject_type", "success_criteria", "updated_at"],
   model_retraining_log: ["agent_style_updates", "approval_rate_before", "brokerage_id", "completed_at", "created_at", "error_message", "feedback_records_used", "id", "prompt_changes", "source_system", "status", "trigger_type"],
   motivated_seller_signals: ["brokerage_id", "contact_id", "detected_at", "detected_via", "id", "lead_id", "signal_details", "signal_strength", "signal_type"],
-  movement_signals: ["brokerage_id", "captured_by", "confidence", "contact_id", "created_at", "data_rights", "decided_at", "decided_by", "decision", "decision_window", "event_at", "event_relevance", "evidence", "id", "idempotency_key", "identity_match", "intents", "known_deadline_at", "known_deadline_kind", "lead_id", "life_event", "moment", "next_action", "observed_at", "outcome", "outcome_at", "outcome_evidence", "outreach", "property_address", "property_address_key", "protected_proxy", "raw_lead_id", "recorded_at", "sensitivity", "sequence", "side", "source_key", "source_kind", "stated_timeline", "subject_type", "supersedes", "targeting_prohibited", "territory_key", "updated_at"],
+  movement_signals: ["brokerage_id", "captured_by", "confidence", "contact_id", "created_at", "data_rights", "decided_at", "decided_by", "decision", "decision_window", "event_at", "event_relevance", "evidence", "id", "idempotency_key", "identity_match", "intents", "known_deadline_at", "known_deadline_kind", "lead_id", "life_event", "moment", "next_action", "observed_at", "outcome", "outcome_at", "outcome_evidence", "outreach", "property_address", "property_address_key", "protected_proxy", "raw_lead_id", "recorded_at", "sensitivity", "sequence", "side", "source_key", "source_kind", "stated_destination_city", "stated_destination_label", "stated_destination_state", "stated_timeline", "subject_type", "supersedes", "targeting_prohibited", "territory_key", "updated_at"],
   movement_source_items: ["brokerage_id", "created_at", "digest", "first_seen_at", "id", "item_key", "last_changed_at", "last_seen_at", "last_signal_id", "source_key"],
   movement_source_polls: ["brokerage_id", "cadence_minutes", "created_at", "id", "last_change_count", "last_error", "last_item_count", "last_polled_at", "last_success_at", "promised_freshness_minutes", "source_key", "updated_at"],
   narration_cache: ["alignment", "audio_url", "brokerage_id", "created_at", "duration_seconds", "first_render_key", "hit_count", "id", "last_used_at", "script_chars", "script_hash", "script_preview", "voice_id"],
