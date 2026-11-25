@@ -32,11 +32,20 @@ export async function generateStandupAudio(): Promise<StandupAudioResult> {
     return { success: false, error: "Unauthorized" }
   }
 
-  const lines = await generateManagerStandup(ctx.brokerageId)
+  // ITS OWN RECEIPT (wave 156, lane 156S — the brief-audio pattern): the action runs inside ledgerSessionAction, and the
+  // synthesis inside it is THE paid voice door (synthesizeSpeech → lib/vendor-governance/paid-egress.ts): the tenant's
+  // vendor budget before ElevenLabs is reached, the characters booked only on success, and ONE charge per (broker, day,
+  // exact script) — a repeated identical request replays its receipt instead of paying for the same audio twice.
+  const brokerageId = ctx.brokerageId, userId = ctx.userId
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId, action: "standup.audio.generate", actor: { type: "user", userId }, subject: { type: "user", id: userId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { lane: "brief_narration" } }, async (): Promise<StandupAudioResult> => {
+  const lines = await generateManagerStandup(brokerageId)
   const script = composeStandupScript(lines, { hour: new Date().getHours() })
+  const { createHash } = await import("node:crypto")
+  const scriptKey = `standup_audio:${brokerageId}:${userId}:${new Date().toISOString().slice(0, 10)}:${createHash("sha256").update(script).digest("hex").slice(0, 24)}`
 
   // Resolve the broker's chosen voice (clone vs generic), same as the morning brief.
-  const resolved = await resolveSelfVoice(ctx.userId)
+  const resolved = await resolveSelfVoice(userId)
   // MODEL + PACING through the ONE selector (lane 77C) — same lane as the
   // morning brief (app/actions/brief-audio.ts): a scripted, uninterruptible read.
   const modelId = elevenLabsModelForLane("brief_narration")
@@ -45,7 +54,8 @@ export async function generateStandupAudio(): Promise<StandupAudioResult> {
     voiceId: resolved.voiceId,
     modelId,
     voiceSettings: { stability: 0.55, similarity_boost: 0.8, style: 0.15, use_speaker_boost: true },
-    brokerageId: ctx.brokerageId,
+    brokerageId,
+    idempotencyKey: scriptKey,
   })
 
   // TTS unavailable (no key / quota) → still hand back the text so the UI shows the brief.
@@ -59,4 +69,5 @@ export async function generateStandupAudio(): Promise<StandupAudioResult> {
     audioDataUrl: audioBufferToDataUrl(result.audioBuffer),
     voiceUsed: resolved.source,
   }
+  }) as Promise<StandupAudioResult>
 }
