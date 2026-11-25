@@ -741,10 +741,10 @@ export async function acceptInvitation(token: string) {
   // LAW 5 (wave 155, lane 155R23): ONE receipt per open — the open stamps accepted / last-viewed on the member row. Tenant = the
   // one the door PROVED; actor `system` (a family member holding a link, not a user); subject the member row. No key: every
   // open re-stamps last_viewed_at. A view whose stamp was refused settles `failed` (the homes still show — collaboratorView).
-  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  const { withActionLedger, doorTrust } = await import("@/lib/kernel/action-ledger")
   type View = Awaited<ReturnType<typeof collaboratorView>>
   return withActionLedger<View>({
-    brokerageId: door.brokerageId, action: "portal.collaborative_search_member.open", actor: { type: "system", userId: null },
+    brokerageId: door.brokerageId, action: "portal.collaborative_search_member.open", actor: { type: "system", userId: null }, ...doorTrust("anonymous_public_request"),
     subject: { type: "collaborative_search_member", id: door.memberId }, riskClass: "LOW_RISK_WRITE", reasonCode: "CONVERSATION_RESPONSE",
     reasonDetail: "family member opened the homes a buyer shared", channel: "web", systemSource: "collaborative_share_link", detail: { door: door.basis },
   }, () => collaboratorView(svc, String(token ?? "")), {
@@ -764,11 +764,11 @@ export async function submitFamilyOpinionAction(input: { token: string; sharedHo
   // LAW 5 (wave 155, lane 155R23): ONE receipt per opinion (the rating, the consensus and the Shopping Agent signal it may raise).
   // Tenant = the one the door PROVED; actor `system` (a family member holding a link); subject the member row; only the vote in
   // the detail — never the comment (its words reach the agent only when the buyer consented). No key: a changed vote is new.
-  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  const { withActionLedger, doorTrust } = await import("@/lib/kernel/action-ledger")
   type Opinion = Awaited<ReturnType<typeof recordCollaboratorOpinion>>
   const sharedHomeIdIsUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(input?.sharedHomeId ?? ""))
   return withActionLedger<Opinion>({
-    brokerageId: door.brokerageId, action: "portal.collaborative_search_opinion.record", actor: { type: "system", userId: null },
+    brokerageId: door.brokerageId, action: "portal.collaborative_search_opinion.record", actor: { type: "system", userId: null }, ...doorTrust("anonymous_public_request"),
     subject: { type: "collaborative_search_member", id: door.memberId }, riskClass: "LOW_RISK_WRITE", reasonCode: "CONVERSATION_RESPONSE",
     reasonDetail: "family member gave an opinion on a shared home", channel: "web", systemSource: "collaborative_share_link",
     detail: { vote: input?.vote ?? null, shared_home_id: sharedHomeIdIsUuid ? String(input.sharedHomeId) : null, door: door.basis },

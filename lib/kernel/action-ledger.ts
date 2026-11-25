@@ -305,7 +305,7 @@ export interface ActionContext {
    * them, never by a model. Present facts are normalized onto `detail.governance` (decisionContractFacts) on the SAME insert — no
    * extra round trip. An unmapped spelling reads null and is named in `contract_findings`.
    */
-  trustClass?: string | null
+  trustClass?: string | null; /** WAVE 156 (156M round 3): WHAT the door verified to state that class (DOOR_TRUST key) — recorded as governance.trust_source. */ trustSource?: string | null
   /** The facts / versions the decision READ (dependency fingerprint is a digest over this set). */
   dependencies?: Array<{ type: string; id?: string | null; version?: string | number | null }> | null
   approvalBasis?: string | null
@@ -1480,7 +1480,7 @@ function withBaseGovernance(ctx: ActionContext, status: ActionStatus, key: strin
     expiresAt: ctx.expiresAt ?? (verdict === "wait" ? until : null),
     nextTrigger: ctx.nextTrigger ?? (verdict === "wait" && until ? { kind: "time", at: until } : verdict === "do_nothing" ? { kind: "none" } : null),
   })
-  const trustSource = ctx.trustClass ? (typeof detail.trust_source === "string" ? detail.trust_source : "stated") : human ? "session_actor" : null
+  const trustSource = ctx.trustClass ? (ctx.trustSource ?? (typeof detail.trust_source === "string" ? detail.trust_source : "stated")) : human ? "session_actor" : null
   return { ...detail, governance: { ...governance, written_by: "ledger_door", replay: key ? "at_most_once" : "recorded_only", sink_class: sinkClassOf(ctx), trust_source: trustSource } }
 }
 
@@ -1496,6 +1496,25 @@ function withOriginTrustOf(ctx: ActionContext, origin: { trustClass: string; bou
   const human = (ctx.actor.type === "user" && !!ctx.actor.userId) || (ctx.actor.type === "agent" && !!ctx.actor.agentId)
   if (human) return ctx
   return { ...ctx, trustClass: origin.trustClass, detail: { ...(ctx.detail ?? {}), trust_source: `boundary:${origin.boundary}` } }
+}
+
+/**
+ * WAVE 156 (156M, round 3) — WHAT A REQUEST DOOR VERIFIED, and the trust class that earns (DECISION_TRUST_CLASSES — no new spelling).
+ * A door states it ONCE on its own ledger context (`...doorTrust("signature_verified_provider")`), derived from the check it actually
+ * runs: a provider signature (Stripe / Twilio), a shared secret only the provider's receiver holds, an authenticated session, or none
+ * at all — an anonymous public request (a public page, a share / RSVP link, a public form, a visitor beacon) is the PERSON's input and
+ * stays untrusted (`inbound_message`). Never a default of trusted.
+ */
+export const DOOR_TRUST = {
+  signature_verified_provider: "verified_first_party",
+  internal_shared_secret: "verified_first_party",
+  authenticated_session: "authorized_human",
+  anonymous_public_request: "inbound_message",
+} as const satisfies Record<string, DecisionTrustClass>
+export type DoorTrustKind = keyof typeof DOOR_TRUST
+/** PURE. The ledger-context keys a door spreads to state its origin trust. */
+export function doorTrust(kind: DoorTrustKind): { trustClass: DecisionTrustClass; trustSource: DoorTrustKind } {
+  return { trustClass: DOOR_TRUST[kind], trustSource: kind }
 }
 
 /** PURE. The decision's read set as persisted (order-free, duplicate-free, at most 20; null = nothing named — not an empty read). */

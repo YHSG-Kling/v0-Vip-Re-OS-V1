@@ -41,10 +41,10 @@ export async function POST(request: NextRequest) {
   // LAW 5 (wave 155, lane 155R23): ONE receipt per heartbeat — FINANCIAL (each stamp extends the heartbeat-derived duration the
   // sweeper bills). Tenant = the one the door PROVED (the session row's brokerage — never the body), actor `system` (an
   // anonymous visitor's beacon), subject the session row. No key: each heartbeat is a new proof of life.
-  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  const { withActionLedger, doorTrust } = await import("@/lib/kernel/action-ledger")
   const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(liveSessionId)
   await withActionLedger<{ stamped: boolean }>({
-    brokerageId: door.brokerageId, action: "billing.live_agent_session.heartbeat", actor: { type: "system", userId: null },
+    brokerageId: door.brokerageId, action: "billing.live_agent_session.heartbeat", actor: { type: "system", userId: null }, ...doorTrust("anonymous_public_request"),
     subject: isUuid ? { type: "live_agent_session", id: liveSessionId } : { type: "live_agent_session", ref: liveSessionId },
     riskClass: "FINANCIAL", reasonCode: "CONVERSATION_RESPONSE", reasonDetail: "embed widget proof of life (visitor beacon)", channel: "web", systemSource: "embed_widget",
     detail: { door: door.basis },

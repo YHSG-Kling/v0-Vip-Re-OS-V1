@@ -509,9 +509,9 @@ export async function logLandingSession(params: {
     const door = await landingDoor("listing-landing-session", params.listingId)
     if (!door) return
     const listingRow = { brokerage_id: door.brokerageId }
-    const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+    const { withActionLedger, doorTrust } = await import("@/lib/kernel/action-ledger")
     await withActionLedger<{ recorded: boolean }>({
-      brokerageId: door.brokerageId, action: "marketing.listing_landing_view.record", actor: { type: "system", userId: null },
+      brokerageId: door.brokerageId, action: "marketing.listing_landing_view.record", actor: { type: "system", userId: null }, ...doorTrust("anonymous_public_request"),
       subject: { type: "listing", id: params.listingId }, riskClass: "LOW_RISK_WRITE", reasonCode: "CONVERSATION_RESPONSE",
       reasonDetail: "visitor opened a public listing page", channel: "web", systemSource: "listing_landing",
       detail: { utm_source: params.utmSource || null, qr: !!params.qrSource, door: door.basis },
@@ -781,10 +781,10 @@ export async function trackCtaClick(listingId: string, sessionToken: string) {
     // The SERVICE client past the door (same reason as logLandingSession: anon has no policy on either table, verified live).
     const supabase = createServiceClient()
     const today = new Date().toISOString().split("T")[0]
-    const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+    const { withActionLedger, doorTrust } = await import("@/lib/kernel/action-ledger")
     type Click = { counted: true } | { counted: false; why: string }
     await withActionLedger<Click>({
-      brokerageId: door.brokerageId, action: "marketing.listing_landing_cta.click", actor: { type: "system", userId: null },
+      brokerageId: door.brokerageId, action: "marketing.listing_landing_cta.click", actor: { type: "system", userId: null }, ...doorTrust("anonymous_public_request"),
       subject: { type: "listing", id: listingId }, riskClass: "LOW_RISK_WRITE", reasonCode: "CONVERSATION_RESPONSE",
       reasonDetail: "visitor clicked a public listing page's call to action", channel: "web", systemSource: "listing_landing",
       detail: { door: door.basis },

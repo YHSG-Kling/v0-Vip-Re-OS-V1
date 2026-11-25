@@ -78,9 +78,9 @@ export async function POST(request: NextRequest) {
   // rides `ref`. No key: `.is("recording_url", null)` is this write's own at-most-once (a Twilio retry settles 'skipped'). The
   // media URL itself is NOT in the receipt (it dereferences a recording of a person). A refusing ledger changes nothing.
   type RecordingWrite = { data: Array<{ id: string }> | null; error: { message: string } | null }
-  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  const { withActionLedger, doorTrust } = await import("@/lib/kernel/action-ledger")
   const { data: updated, error: updErr } = await withActionLedger<RecordingWrite>({
-    brokerageId: ctx.brokerageId, action: "voice.call_recording.store", actor: { type: "system", userId: null },
+    brokerageId: ctx.brokerageId, action: "voice.call_recording.store", actor: { type: "system", userId: null }, ...doorTrust("signature_verified_provider"),
     subject: { type: "voice_call", ref: parsed.callSid }, riskClass: "LOW_RISK_WRITE", reasonCode: "CONVERSATION_RESPONSE",
     reasonDetail: "Twilio recording-status callback for a recorded call", channel: "voice", systemSource: "twilio_recording_callback",
     detail: { recording_sid: parsed.recordingSid || null, duration_seconds: parsed.durationSeconds ?? null },

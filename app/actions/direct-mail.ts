@@ -587,8 +587,8 @@ export async function trackDelivery(params: TrackDeliveryParams & { webhookSecre
 
     // RECEIPT (wave 155, lane 155R5 — G99): Lob's delivery truth lands through the action ledger, actor = the provider of record
     // (system / lob_webhook), tenant from the campaign row above. Ledger absent = recorded exactly as before.
-    const { withActionLedger } = await import("@/lib/kernel/action-ledger")
-    const { data, error } = await withActionLedger({ brokerageId: campaign.brokerage_id, action: "marketing.mail_tracking.record_provider_event", actor: { type: "system" }, subject: { type: "direct_mail_campaign", id: params.campaignId }, riskClass: "LOW_RISK_WRITE", systemSource: "lob_webhook", detail: { batch_id: params.batchId ?? null, status: payload?.status ?? "unknown" } }, async () => await supabase
+    const { withActionLedger, doorTrust } = await import("@/lib/kernel/action-ledger")
+    const { data, error } = await withActionLedger({ brokerageId: campaign.brokerage_id, action: "marketing.mail_tracking.record_provider_event", actor: { type: "system" }, ...doorTrust("internal_shared_secret"), subject: { type: "direct_mail_campaign", id: params.campaignId }, riskClass: "LOW_RISK_WRITE", systemSource: "lob_webhook", detail: { batch_id: params.batchId ?? null, status: payload?.status ?? "unknown" } }, async () => await supabase
       .from("mail_tracking")
       .insert({
         brokerage_id: campaign.brokerage_id,

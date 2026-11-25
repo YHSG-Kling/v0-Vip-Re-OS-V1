@@ -39,7 +39,7 @@ G.__M156 = { svc: null as unknown }
 const STUB: Record<string, string> = {
   "server-only": "export{}",
   "@/lib/supabase/service": "export function createServiceClient(){ const s = globalThis.__M156.svc; if (!s) throw new Error('156M: no world bound'); return s }; export const createClient = createServiceClient",
-  "@/lib/supabase/server": "export async function createClient(){ const s = globalThis.__M156.svc; if (!s) throw new Error('156M: no world bound'); return s }; export const createServerClient = createClient",
+  "@/lib/supabase/server": "export async function createClient(){ const s = globalThis.__M156.svc; if (!s) throw new Error('156M: no world bound'); return new Proxy(s, { get(t, p) { if (p === 'auth') return { getUser: async () => ({ data: { user: globalThis.__M156.user ?? null }, error: null }) }; return t[p] } }) }; export const createServerClient = createClient",
   "next/cache": "export const revalidatePath = () => {}; export const revalidateTag = () => {}",
   "@/lib/kernel/emit": "export function isKernelEventValue(){ return true }; export async function emitKernelEvent(){ return { inserted: false, lifecycleEventId: null, fanOutOk: true, error: null } }; export function asWriteResult(){ return { data: null, error: null } }",
   "@/lib/kernel/notification-engine": "export async function processKernelEvent(){}",
@@ -434,7 +434,8 @@ async function main(): Promise<void> {
           for (; i < bare.length; i++) { const ch = bare[i]; if (ch === "(") depth++; else if (ch === ")") { depth--; if (depth === 0) { end = i; break } } }
           const arg = code.slice(m.index!, end).slice(0, 4000)
           const actor = /actor:\s*\{\s*type:\s*"(\w+)"/.exec(arg)?.[1] ?? "dynamic"
-          if (!(actor === "manager" || actor === "system") || /\btrustClass\s*:|\bgovernance\s*:/.test(arg)) continue
+          if (!(actor === "manager" || actor === "system")) continue
+          if (/\btrustClass\s*:|\bgovernance\s*:|\bdoorTrust\(/.test(arg)) { if (/\bdoorTrust\(/.test(arg)) sites.push({ f, cls: `stated at the door (${/doorTrust\(\s*"([a-z_]+)"/.exec(arg)?.[1] ?? "?"})` }); continue }
           const cls = /^app\/api\/cron\//.test(f) && /\bverifyCronAuth\(/.test(code) ? "cron_scheduler (boundary)"
             : reactionGraph.has(f) ? "kernel_event_processor (boundary)"
             : /^app\/api\/(webhooks|voice)\//.test(f) ? "remains: provider-signed webhook — each verifies its own signature; no shared boundary to state it once"
@@ -446,9 +447,76 @@ async function main(): Promise<void> {
       const by = new Map<string, number>()
       for (const s of sites) by.set(s.cls, (by.get(s.cls) ?? 0) + 1)
       const covered = sites.filter((s) => /\(boundary\)$/.test(s.cls)).length
-      console.log(`  · TRUST-CLASS DENOMINATOR: ${sites.length} autonomous ledger-door call sites state no trust class; ${covered} sit in a shared boundary that now states it (statically proven), ${sites.length - covered} remain:`)
+      const atDoor = sites.filter((s) => /^stated at the door/.test(s.cls)).length
+      const remain = sites.length - covered - atDoor
+      console.log(`  · TRUST-CLASS DENOMINATOR: ${sites.length} autonomous ledger-door call sites stated no trust class at round 1; ${covered} sit in a shared boundary that states it (statically proven), ${atDoor} now state it at their own door (DOOR_TRUST), ${remain} remain:`)
       for (const [k, v] of [...by.entries()].sort((a, b) => b[1] - a[1])) console.log(`      ${v} × ${k}`)
-      check(`the census derives the split (denominator ${sites.length} > 0; ${covered} covered by a boundary)`, sites.length > 0 && covered > 0)
+      check(`the census derives the split (denominator ${sites.length} > 0; ${covered} covered by a boundary; ${atDoor} stated at the door)`, sites.length > 0 && covered > 0)
+      const doorRemain = sites.filter((s) => /^remains: (a request door|provider-signed webhook)/.test(s.cls))
+      check(`every request door and provider-signed webhook now states its own origin trust (${doorRemain.length} left: ${doorRemain.map((s) => s.f).join(", ")})`, doorRemain.length === 0)
+      const anon = sites.filter((s) => /anonymous_public_request/.test(s.cls)).length, trusted = sites.filter((s) => /(signature_verified_provider|internal_shared_secret)/.test(s.cls)).length
+      check(`NEGATIVE · no anonymous door is stated trusted: ${anon} anonymous public requests read inbound_message, ${trusted} verified provider doors read verified_first_party`, L.DOOR_TRUST?.anonymous_public_request === "inbound_message" && L.DOOR_TRUST?.signature_verified_provider === "verified_first_party" && anon > 0 && trusted > 0)
+    }
+  }
+
+  // ══ K (round 3) ═══════════════════════════════════════════════════════════════════════════════════════════════════════
+  section("K · the APPROVAL QUEUE door — a held send reaches a person in the existing Command Center (red at base: no queue item, no door)")
+  {
+    const CC = await mod("app/actions/command-center.ts")
+    const KC = await mod("lib/kernel/command-center.ts")
+    const D = await mod("lib/providers/dispatch.ts")
+    const has = typeof KC.loadHeldSendActions === "function" && typeof D.declineHeldSend === "function"
+    check("the queue reader and the decline door exist (lib/kernel/command-center.ts loadHeldSendActions, dispatch.ts declineHeldSend)", has)
+    if (has) {
+      const BROKER = U, AGENT = "c6c6c6c6-0000-4000-8000-0000000000a6", OTHER = "c6c6c6c6-0000-4000-8000-0000000000b7"
+      const seed = () => ({
+        contacts: [{ id: X, brokerage_id: B, phone: "+15555550158", email: "k@example.test", tcpa_consent: true, dnc_status: false, state: "FL" }],
+        messages: [{ id: "m-1", brokerage_id: B, contact_id: X, direction: "inbound", created_at: new Date(now.getTime() - 120_000).toISOString() }],
+        users: [{ id: BROKER, brokerage_id: B, user_type: "broker" }, { id: AGENT, brokerage_id: B, user_type: "agent" }, { id: OTHER, brokerage_id: B2, user_type: "broker" }],
+        email_suppressions: [], deconflict_suppression_log: [], isa_outreach_log: [],
+      })
+      const w = world(seed())
+      const hold = async (cycle: string) => { await quiet(() => D.dispatchSms({ brokerageId: B, to: "+15555550158", message: `Reply ${cycle}`, contactId: X, systemSource: "ai_isa", origin: { trustClass: "model_output", cycle } })); return w.rows().filter((r) => r.action === "comms.decision.wait").at(-1) as Row }
+      const as = (id: string | null) => { G.__M156.user = id ? { id } : null }
+      const h1 = await hold("k-1")
+      const listB = await KC.loadHeldSendActions(w.client, B, 50, new Date())
+      const listB2 = await KC.loadHeldSendActions(w.client, B2, 50, new Date())
+      check("READER · this tenant's queue lists the held send with who / what / why from the row; another tenant's queue lists nothing",
+        listB.some((a: Row) => a.id === h1?.id && a.queue === "held_send" && /Held by the send gate/.test(a.rationale) && a.actionInput.channel === "sms") && listB2.length === 0, JSON.stringify(listB.map((a: Row) => [a.id, a.queue])))
+      as(AGENT)
+      const byAgent = await quiet(() => CC.approveAgentAction({ queue: "held_send", actionId: h1?.id })) as Row
+      check("NEGATIVE · an agent seat (no approval authority — requireApprover) is refused; nothing sent", byAgent?.ok === false && /Not authorized/.test(String(byAgent.error)) && !w.rows().some((r) => r.action === "comms.sms.send"))
+      as(OTHER)
+      const byOther = await quiet(() => CC.approveAgentAction({ queue: "held_send", actionId: h1?.id })) as Row
+      check("NEGATIVE · another tenant's broker: the hold is not found in their brokerage; nothing sent", byOther?.ok === false && /not in your brokerage/.test(String(byOther.error)) && !w.rows().some((r) => r.action === "comms.sms.send"), JSON.stringify(byOther))
+      as(BROKER)
+      await quiet(() => CC.approveAgentAction({ queue: "held_send", actionId: h1?.id }))
+      await quiet(() => CC.approveAgentAction({ queue: "held_send", actionId: h1?.id }))
+      const sends = w.rows().filter((r) => r.action === "comms.sms.send")
+      const prop = w.rows().find((r) => r.action === "comms.sms.propose")
+      const sess = w.rows().filter((r) => r.action === "comms.held_send.approve")
+      check("POSITIVE · the broker approves (double-clicked): exactly ONE send reaches the dispatcher, the release CARRIES the approval (ALLOW, verified by the approver), one session receipt",
+        sends.length === 1 && prop?.detail?.governance?.decision === "ALLOW" && prop?.detail?.governance?.verification?.kind === "authorized_human" && sess.length === 1, JSON.stringify({ sends: sends.length, sess: sess.length }))
+      const h2 = await hold("k-2")
+      const dec = await quiet(() => CC.rejectAgentAction({ queue: "held_send", actionId: h2?.id })) as Row
+      const after = await quiet(() => CC.approveAgentAction({ queue: "held_send", actionId: h2?.id })) as Row
+      const listed = (await KC.loadHeldSendActions(w.client, B, 50, new Date())).some((a: Row) => a.id === h2?.id)
+      check("DECLINE · the broker declines: a terminal decision; approving it later is refused; it leaves the queue", dec?.ok === true && after?.ok === false && /already closed/.test(String(after.error)) && !listed, JSON.stringify({ dec, after }))
+      const h3 = await hold("k-3")
+      await D.approveHeldSend(w.client, { brokerageId: B, holdId: h3?.id, approverUserId: BROKER, authority: "approved earlier, window lapsed", ttlMinutes: -1 })
+      const exp = await quiet(() => CC.approveAgentAction({ queue: "held_send", actionId: h3?.id })) as Row
+      check("EXPIRED · an approval that lapsed is refused with the sentence the row shows, nothing sent, and the hold is closed", exp?.ok === false && /lapsed/.test(String(exp.error)) && !(await KC.loadHeldSendActions(w.client, B, 50, new Date())).some((a: Row) => a.id === h3?.id), JSON.stringify(exp))
+      const h4 = await hold("k-4")
+      ;(w.mem.tables.messages as Row[]).push({ id: "m-9", brokerage_id: B, contact_id: X, direction: "inbound", created_at: new Date(Date.now() + 1000).toISOString() })
+      const moved = await quiet(() => CC.approveAgentAction({ queue: "held_send", actionId: h4?.id })) as Row
+      check("THREAD MOVED ON · they wrote again after the draft: approving it is refused at the sink (superseded) with the sentence the row shows, the hold closes", moved?.ok === false && /moved on/.test(String(moved.error)) && w.rows().filter((r) => r.action === "comms.sms.send").length === 1, JSON.stringify(moved))
+      const src = stripComments(raw("app/actions/command-center.ts"))
+      check("WIRING · both existing doors route held_send to the one helper, AFTER requireApprover, under ledgerSessionAction (stripped source)",
+        /export async function approveAgentAction[\s\S]*?requireApprover\(\)[\s\S]*?queue === "held_send"\) return heldSendDecision\("approve"/.test(src) && /export async function rejectAgentAction[\s\S]*?requireApprover\(\)[\s\S]*?queue === "held_send"\) return heldSendDecision\("decline"/.test(src) && /async function heldSendDecision[\s\S]*?ledgerSessionAction\(/.test(src))
+      const lw = world()
+      await quiet(() => L.withActionLedger({ brokerageId: B, action: "marketing.listing_landing_view.record", actor: { type: "system", userId: null }, ...L.doorTrust("anonymous_public_request"), subject: { type: "listing", id: X }, cycle: "dt" }, async () => ({ ok: true }), { settle: () => ({ status: "executed", outcome: "done" }), replay: () => ({ ok: false }) }, { client: lw.client }))
+      const dg = lw.rows()[0]?.detail?.governance
+      check("DOOR TRUST · a public page's ledger row records what the door verified: inbound_message, trust_source anonymous_public_request (never trusted)", dg?.trust_class === "inbound_message" && dg?.trust_source === "anonymous_public_request", JSON.stringify(dg && [dg.trust_class, dg.trust_source]))
     }
   }
 
@@ -464,6 +532,7 @@ async function main(): Promise<void> {
     check("  NEGATIVE CONTROL · a SERVICING (transactional) text to the same contact passes the consent gate (refused, if at all, by a later gate)", servicing?.providerKey !== "compliance_gate", JSON.stringify(servicing))
   }
 
+  console.log("\n BLIND SPOTS (round 3): §K's sends fail at the provider (no credentials, fetch refused) — 'exactly one send' counts the dispatcher's send rows; on the live table a FAILED release is re-claimed by a second click (attempts + 1, by design), while the in-memory table has no attempts default, so that re-claim reads as in flight. §I's census classifies by path and literal spelling; the 41 library functions are covered only at run time under a cron / reaction scope (published, not proven).")
   console.log("\n BLIND SPOTS: SIMULATED throughout (in-memory PostgREST, fetch throws, counted model seam). The superseded check needs both the decision and the door to name a fact's version; the office check needs both to name an office; the census reads literal actor / trust spellings (a context built elsewhere reads 'dynamic'); the decider finder reads literal `cls:` / `conflictClass:` sites (a class computed elsewhere is not seen until it is spelled).")
   console.log(`\nGUARD_RESULT wave156-m: ${pass} passed, ${fail} failed`)
   if (fail > 0) { console.log(` failed: ${failures.join(" | ")}`); process.exit(1) }

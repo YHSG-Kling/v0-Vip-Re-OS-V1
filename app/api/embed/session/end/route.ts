@@ -66,11 +66,11 @@ export async function POST(request: NextRequest) {
   // invoice). The tenant is the one the door PROVED (the session row's brokerage — never the body); the actor is `system` (an
   // anonymous visitor's beacon); the subject is the session row. No key: endLiveAgentSession is its own at-most-once (a closed
   // row books 0 and settles 'skipped'). A refusing ledger changes nothing — the booking still runs.
-  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  const { withActionLedger, doorTrust } = await import("@/lib/kernel/action-ledger")
   type Booked = Awaited<ReturnType<typeof endLiveAgentSession>>
   const bookMinutes = (): Promise<Booked> => endLiveAgentSession(liveSessionId, clamped)
   const result = door.brokerageId ? await withActionLedger<Booked>({
-    brokerageId: door.brokerageId, action: "billing.live_agent_minutes.book", actor: { type: "system", userId: null },
+    brokerageId: door.brokerageId, action: "billing.live_agent_minutes.book", actor: { type: "system", userId: null }, ...doorTrust("anonymous_public_request"),
     subject: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(liveSessionId) ? { type: "live_agent_session", id: liveSessionId } : { type: "live_agent_session", ref: liveSessionId },
     riskClass: "FINANCIAL", reasonCode: "CONVERSATION_RESPONSE", reasonDetail: "embed widget session ended (visitor beacon)", channel: "web", systemSource: "embed_widget",
     detail: { reported_seconds: seconds, billed_seconds: clamped, door: door.basis },
