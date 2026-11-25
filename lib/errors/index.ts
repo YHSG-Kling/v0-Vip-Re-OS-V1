@@ -392,7 +392,7 @@ type TenantNextActor = "you" | "account_admin" | "platform_support" | "provider"
 type TenantAudience = "account" | "contact" | "vendor"
 
 /** WHICH business the tenant is — from its own plan tier (the existing tier vocabulary), "unknown" when unread. */
-export interface TenantPayer { kind: "brokerage" | "team" | "solo" | "unknown" }
+export interface TenantPayer { kind: "brokerage" | "team" | "solo" | "unknown"; /** wave 156Q: the office an office-pinned seat of a brokerage acts for (lib/kernel/resolve-user-office.ts resolveSeatPayer) — never who is billed. */ office?: string | null }
 
 /** The actor-neutral payer: what every caller gets when the tier was not (or could not be) read. */
 const UNKNOWN_PAYER: TenantPayer = { kind: "unknown" }
@@ -460,7 +460,7 @@ const TENANT_COPY_RULES: ReadonlyArray<{ scope: TenantCopyRuleScope; re: RegExp;
   { scope: "authored", re: /\b(?:api[_ -]?key|secret|password|token|bearer)\b/i, why: "credential vocabulary" },
   { scope: "authored", re: /\$\s?\d[\d,]*(?:\.\d+)?/, why: "a price" },
   { scope: "authored", re: /platform[- ]?covered|\bplatform[- ]paid\b|\b(?:the )?platform (?:pays|is paying|will pay)\b|\bpaid by the platform\b/i, why: "the platform-pays phrase" },
-  { scope: "payer", re: /\b(?:brokerage (?:pays|will pay|is paying)|(?:billed|charged|invoiced) to (?:your |the |my )?brokerage|(?:your|the|my) brokerage(?:'s)? (?:is |will be )?(?:billed|charged|invoiced)\b|bills? (?:your|the|my) brokerage|payer:?\s*(?:your |the |my )?brokerage|paid by (?:your|the|my) brokerage)/i, why: "a brokerage-payer claim" },
+  { scope: "payer", re: /\b(?:brokerage (?:pays|will pay|is paying)|(?:billed|charged|invoiced) to (?:your |the |my )?brokerage|(?:your|the|my) brokerage(?:'s)? (?:is |will be )?(?:billed|charged|invoiced)\b|bills? (?:your|the|my) brokerage|payer:?\s*(?:your |the |my )?brokerage|paid by (?:your|the|my) brokerage|brokerage (?:covers|pays out)\b|brokerage's subscription\b|broker pays\b)/i, why: "a brokerage-payer claim" },
 ]
 
 /**
@@ -782,4 +782,69 @@ export function tenantProviderAttestation(provider: string, payer: TenantPayer |
 
 export {
   ERROR_MESSAGES,
+}
+
+// ============================================
+// THE SUBSCRIBER-SHAPE WORDS (wave 156, lane 156Q — directive 156A item 5)
+// ============================================
+//
+// Owner: "a solo-agent tenant must not see `brokerage pays`, unless they actually are a brokerage; an office user acts for
+// the authorized tenant/team/office, not a generic brokerage." EXTENDS the one presenter above (LAW 1): the business kind
+// still comes ONLY from resolveTenantPayer (the session tenant's own plan tier); the office a seat acts for comes ONLY from
+// lib/kernel/resolve-user-office.ts resolveSeatPayer (the one "which office does this person work out of" answer). This is
+// WORDS ONLY — no identifier, stored value, role or permission is read or changed here.
+//
+// TWO different questions, kept apart on purpose:
+//   · WHO PAYS / owns the subscription — the tenant: "your brokerage" · "your team" · "your account" (an office seat of a
+//     brokerage still reads "your brokerage" here: the brokerage pays, an office does not);
+//   · WHO THE READER ACTS FOR — an office-pinned seat of a brokerage acts for ITS OFFICE ("the Downtown office"); everyone
+//     else acts for the tenant they belong to (a solo agent acts for themself: "you" / "your").
+// An unread tier is actor-neutral ("your account") — the brokerage reading is never the default (fail closed).
+
+/** The words one subscriber shape reads. Sentence-start forms are capitalized by the caller with `capitalizeWords`. */
+export interface TenantPayerWords {
+  kind: TenantPayer["kind"]
+  /** Who is billed: "your brokerage" · "your team" · "your account". */
+  payer: string
+  /** "your brokerage's" · "your team's" · "your" (solo / unknown: "your subscription", never "your account's subscription"). */
+  payerPossessive: string
+  /** Who pays, as a clause subject + verb: "the brokerage pays" · "the team pays" · "you pay" · "your account pays". */
+  payerPays: string
+  /** Who the reader acts for: "the Downtown office" · "your brokerage" · "your team" · "you" · "your account". */
+  actingFor: string
+  /** "the Downtown office's" · "your brokerage's" · "your team's" · "your". */
+  actingForPossessive: string
+  /** The tenant as a container: "this brokerage" · "this team" · "this account". */
+  scope: string
+  /** Who to ask for something the seat lacks: "your broker" · "your team lead" · "an admin on your account". */
+  askWho: string
+}
+
+/** PURE — "Downtown" → "the Downtown office"; "Downtown Office" stays one office word, never "office office". */
+function officeNoun(name: string): string {
+  const n = name.replace(/\s+/g, " ").trim()
+  return /\boffice$/i.test(n) ? `the ${n}` : `the ${n} office`
+}
+
+/** PURE — the words a subscriber shape reads (see the block comment above). */
+export function tenantPayerWords(payer: TenantPayer | null | undefined): TenantPayerWords {
+  const owner = accountOwner(payer ?? undefined)
+  const kind = payer?.kind ?? "unknown"
+  const office = kind === "brokerage" && typeof payer?.office === "string" && payer.office.trim() ? officeNoun(payer.office) : null
+  const base = {
+    kind,
+    payer: owner.noun,
+    payerPossessive: owner.possessive,
+    payerPays: kind === "brokerage" ? "the brokerage pays" : kind === "team" ? "the team pays" : kind === "solo" ? "you pay" : "your account pays",
+    scope: kind === "brokerage" ? "this brokerage" : kind === "team" ? "this team" : "this account",
+    askWho: kind === "brokerage" ? "your broker" : kind === "team" ? "your team lead" : "an admin on your account",
+  }
+  if (office) return { ...base, actingFor: office, actingForPossessive: `${office}'s` }
+  if (kind === "solo") return { ...base, actingFor: "you", actingForPossessive: "your" }
+  return { ...base, actingFor: owner.noun, actingForPossessive: owner.possessive }
+}
+
+/** PURE — sentence-start form of any word above ("the brokerage pays" → "The brokerage pays"). */
+export function capitalizeWords(s: string): string {
+  return s ? `${s.charAt(0).toUpperCase()}${s.slice(1)}` : s
 }
