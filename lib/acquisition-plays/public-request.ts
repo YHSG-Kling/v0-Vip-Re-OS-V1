@@ -127,7 +127,7 @@ function classifyPublicRequest(r: ExaHuntResult, now: Date): Classified {
   const statement = readPublicStatement(`${r.title ?? ""}. ${r.text ?? ""} ${(r.highlights ?? []).join(" ")}`)
   if (!statement.requestsAgentContact && !statement.statesHousingNeed && !statement.isQuestion) return { kind: "dropped", why: "neither a request for an agent, a stated real-estate need nor a real-estate question" }
   const identity = identityFromStatement(r, rights)
-  const candidate: PersonCandidate = { statement: { firstPerson: statement.firstPerson, requestsAgentContact: statement.requestsAgentContact, statesHousingNeed: statement.statesHousingNeed, quote: statement.quote }, identity, rights, publishedAt: evidence.publishedAt }
+  const candidate: PersonCandidate = { statement: { firstPerson: statement.firstPerson, requestsAgentContact: statement.requestsAgentContact, statesHousingNeed: statement.statesHousingNeed, quote: statement.quote, minorAuthor: statement.minorAuthor }, identity, rights, publishedAt: evidence.publishedAt }
   const problem = personCandidateProblem(candidate, now)
   if (!problem) return { kind: "person_candidate", candidate, evidence, rights, statement, author: r.author?.trim() || null }
   return { kind: "anonymous_question", evidence, rights, statement, why: problem, identityBasis: identity.basis }
