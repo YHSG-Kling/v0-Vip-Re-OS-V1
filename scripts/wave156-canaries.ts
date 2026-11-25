@@ -765,6 +765,170 @@ canary({
   },
 })
 
+// ── the deal desk (156E) world ───────────────────────────────────────────────────────────────────────────────────────────
+const eB = u("b", 31), eB2 = u("b", 32), eBROKER = u("a", 71), eTC = u("a", 72), eAGENT = u("a", 74), eAGENT2 = u("a", 75), eVENDOR = u("a", 79), eCONTACT = u("a", 80), eX = u("a", 81)
+const eAG = u("e", 74), eAG2 = u("e", 75), eAGX = u("e", 81), eTX = u("d", 71), eTXX = u("d", 79), eC1 = u("c", 71), eL1 = u("c", 72), eDOC = u("c", 73), eVROW = u("f", 71)
+const E_SEAMS: Seams = {
+  override: {
+    "lib/ai/generate.ts": "export function bookedGenerateObject(){ return async () => { globalThis.__P.count('model'); return { object: {}, usage: {} } } }",
+    "lib/ai/models.ts": "export async function generateTextRouted(){ globalThis.__P.count('model'); return { text: 'stub', usage: {} } }; export async function generateObjectRouted(){ globalThis.__P.count('model'); return { object: {}, usage: {} } }; export async function streamTextRouted(){ globalThis.__P.count('model'); throw new Error('fixture: no stream') }",
+    "lib/ai/resolve-model.ts": "export function resolveModel(x){ return x }",
+    "lib/ai/pipeline.ts": "export async function runPipeline(){ globalThis.__P.count('model'); return { content: 'stub', text: 'stub' } }; export async function runPipelineSimple(){ globalThis.__P.count('model'); return 'stub' }",
+  },
+  replace: {
+    "lib/teams/team-scope.ts": "export async function leadsAgentsTeam(){ return { ok: true, leads: false, ledTeamId: null } }",
+    "lib/kernel/transactions.ts": "export async function emitTransactionEvent(){ globalThis.__P.count('event'); return { inserted: true } }; export async function updateLenderState(){ globalThis.__P.count('event') }",
+    "app/actions/inbox.ts": "export async function sendInboxMessage(p){ globalThis.__P.count('send'); return { success: true, messageId: 'fixture' } }",
+  },
+}
+function eWorld(): MemClient {
+  return memSupabase({
+    brokerages: [{ id: eB }, { id: eB2 }],
+    users: [
+      { id: eBROKER, brokerage_id: eB, user_type: "broker" }, { id: eTC, brokerage_id: eB, user_type: "tc" }, { id: eAGENT, brokerage_id: eB, user_type: "agent" }, { id: eAGENT2, brokerage_id: eB, user_type: "agent" },
+      { id: eVENDOR, brokerage_id: eB, user_type: "vendor" }, { id: eCONTACT, brokerage_id: eB, user_type: "contact" }, { id: eX, brokerage_id: eB2, user_type: "broker" },
+    ],
+    agents: [{ id: eAG, user_id: eAGENT, brokerage_id: eB }, { id: eAG2, user_id: eAGENT2, brokerage_id: eB }, { id: eAGX, user_id: eX, brokerage_id: eB2 }],
+    transactions: [
+      { id: eTX, brokerage_id: eB, agent_id: eAG, buyer_agent_id: null, seller_agent_id: null, status: "under_contract", purchase_price: 400000, contact_id: eC1, listing_id: eL1, property_address: "1 Fixture Way", close_date: "2026-12-30" },
+      { id: eTXX, brokerage_id: eB2, agent_id: eAGX, buyer_agent_id: null, seller_agent_id: null, status: "under_contract" },
+    ],
+    vendors: [{ id: eVROW, brokerage_id: eB, category: "lender" }],
+    vendor_assignments: [{ id: u("9", 71), vendor_id: eVROW, transaction_id: eTX, brokerage_id: eB, status: "confirmed" }],
+    user_role_assignments: [{ id: u("8", 71), user_id: eVENDOR, vendor_id: eVROW }],
+    contacts: [{ id: eC1, brokerage_id: eB, first_name: "Casey", agent_id: eAG }], listings: [{ id: eL1, brokerage_id: eB, address: "1 Fixture Way" }],
+    transaction_documents: [{ id: eDOC, transaction_id: eTX, brokerage_id: eB, doc_type: "purchase_agreement", doc_label: "Purchase agreement", storage_url: null, extracted_data: { text: "fixture contract: purchase price $400,000; closing December 30, 2026" } }],
+    transaction_milestones: [], transaction_deadlines: [], transaction_tasks: [], transaction_timeline: [], transaction_participants: [], generated_documents: [], lifecycle_events: [], notifications: [], agent_action_ledger: [],
+    teams: [], deposits: [], compliance_tasks: [], client_portal_messages: [], tasks: [], activities: [], client_documents: [], transaction_communications: [], transaction_coordinators: [], transaction_assignments: [], transaction_lenders: [], transaction_inspections: [], ai_tool_usage: [],
+  }, { uuidIds: true })
+}
+
+canary({
+  id: "C10", title: "The deal-desk AI coordinator refuses a vendor BEFORE any paid model invocation",
+  failure: "a vendor seat causes the AI model to read private terms or write milestones",
+  seams: () => E_SEAMS,
+  async run() {
+    const coord = await load("app/actions/ai-transaction-coordinator.ts"), cr = await load("app/actions/ai-contract-review.ts")
+    if (!loaded(coord, "app/actions/ai-transaction-coordinator.ts", "analyzeTransactionHealth", "predictAndManageDeadlines")) return
+    const effects = (m: MemClient) => m.writes.filter((w) => w.table !== "agent_action_ledger").map((w) => `${w.op} ${w.table}`)
+    const as = (id: string | null) => { G.__P.mem = eWorld(); G.__P.seat = id ? { id } : null; resetCalls(); return G.__P.mem as MemClient }
+    const doors: Array<[string, () => Promise<any>]> = [
+      ["analyzeTransactionHealth", () => coord.analyzeTransactionHealth({ transactionId: eTX })],
+      ["predictAndManageDeadlines (writes deadlines / milestones)", () => coord.predictAndManageDeadlines({ transactionId: eTX })],
+      ["generateSmartTasks (writes tasks)", () => coord.generateSmartTasks({ transactionId: eTX })],
+    ]
+    if (!cr.__loadError && typeof cr.reviewContract === "function") doors.push(["ai-contract-review reviewContract (reads the contract terms)", () => cr.reviewContract({ documentId: eDOC, transactionId: eTX, documentType: "purchase_agreement", state: "TX" })])
+    else check("LOAD", "app/actions/ai-contract-review.ts exports reviewContract", false, cr.__loadError)
+    for (const [label, call] of doors) {
+      let m = as(eVENDOR)
+      const v = await drive(call)
+      neg(`VENDOR seat assigned to the deal → ${label}: refused with 0 model calls and 0 writes`, calls("model") === 0 && effects(m).length === 0 && (!!v.threw || (v.r as any)?.success === false), { model: calls("model"), writes: effects(m), r: v.r ?? v.threw })
+      m = as(eCONTACT)
+      const c = await drive(call)
+      neg(`CONTACT seat → ${label}: 0 model calls, 0 writes`, calls("model") === 0 && effects(m).length === 0 && (!!c.threw || (c.r as any)?.success === false), { model: calls("model"), r: c.r ?? c.threw })
+      m = as(eX)
+      const x = await drive(call)
+      neg(`another tenant's BROKER → ${label}: 0 model calls, 0 writes`, calls("model") === 0 && effects(m).length === 0, { model: calls("model"), r: x.r ?? x.threw })
+      as(eAGENT)
+      const a = await drive(call)
+      pos(`the AGENT on the deal passes the desk and reaches the (counted) model seam → ${label}`, calls("model") >= 1, a.r ?? a.threw)
+    }
+    as(eTC)
+    await drive(() => coord.analyzeTransactionHealth({ transactionId: eTX }))
+    pos("the deal's coordinator (a desk seat) reaches the model too", calls("model") >= 1)
+    ctrl("POSITIVE CONTROL: no provider was reached by any seat (the refusing fetch counted 0)", calls("fetch") === 0, logged("fetch"))
+  },
+})
+
+canary({
+  id: "C11", title: "The five deal tables' owner-approved RLS SQL, measured LOCALLY, denies cross-tenant inserts — and is labeled local, not applied",
+  failure: "a local scratch result is recorded as live-applied",
+  seams: () => ({}),
+  async run() {
+    const rules = await load("scripts/release-rules.ts")
+    if (!loaded(rules, "scripts/release-rules.ts", "r6AppliedLive")) return
+    // The measurement artifact: the cells 156E measured on a local PostgreSQL, pinned in test:deal-desk (comment-stripped) with the
+    // fingerprint of the exact §R.6 block. The fingerprint is RE-COMPUTED here from OWNER-SQL.md, so a stale measurement goes red.
+    const dd = code("scripts/deal-desk-guard.ts")
+    const at = dd.indexOf("const PG_MEASURED = {")
+    const block = at < 0 ? "" : dd.slice(at, dd.indexOf("\n}", at) + 2)
+    const sha = /proposedSqlSha256:\s*"([0-9a-f]{64})"/.exec(block)?.[1] ?? ""
+    const engine = /engine:\s*"([^"]+)"/.exec(block)?.[1] ?? ""
+    const cases = [...(/cases:\s*\[([^\]]*)\]/.exec(block)?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((x) => x[1])
+    const modeRows = (mode: string): Record<string, string> => { const i = block.indexOf(`${mode}: {`); const s = i < 0 ? "" : block.slice(i, block.indexOf("}", i)); return Object.fromEntries([...s.matchAll(/(\w+):\s*"([0-9 ]+)"/g)].map((x) => [x[1], x[2]])) }
+    const proposed = modeRows("proposed"), live = modeRows("live")
+    const cellOf = (rows: Record<string, string>, seat: string, op: string) => rows[seat]?.split(" ")[cases.indexOf(op)]
+    const doc = raw("docs/operations/OWNER-SQL.md")
+    const sec = doc.includes("### R.6 ") ? doc.slice(doc.indexOf("### R.6 ")) : ""
+    const bAt = sec.indexOf("```sql"), sqlBlock = bAt < 0 ? "" : sec.slice(bAt + 6, sec.indexOf("```", bAt + 6))
+    const measuredSql = sqlBlock.includes("begin;") && sqlBlock.includes("commit;") ? sqlBlock.slice(sqlBlock.indexOf("begin;"), sqlBlock.indexOf("commit;") + 7) : ""
+    const recomputed = (await import("node:crypto")).createHash("sha256").update(measuredSql.replace(/\s+/g, " ").trim()).digest("hex")
+    pos(`the measured block IS the published owner SQL (fingerprint recomputed from OWNER-SQL.md §R.6 = the measurement's ${sha.slice(0, 12)}…)`, sha.length === 64 && recomputed === sha, { recomputed: recomputed.slice(0, 16), pinned: sha.slice(0, 16) })
+    const tenantA = Object.keys(proposed).filter((s) => s !== "other_tenant_broker" && s !== "anon")
+    pos(`measured on ${engine || "?"}: under the owner-approved SQL NO tenant-A seat can insert on tenant B's deal (${tenantA.length} seats → 42501)`, tenantA.length >= 14 && tenantA.every((s) => cellOf(proposed, s, "insert_b2_deal") === "42501"), tenantA.map((s) => `${s}:${cellOf(proposed, s, "insert_b2_deal")}`))
+    pos("…and tenant B's broker cannot insert on tenant A's deal (42501)", cellOf(proposed, "other_tenant_broker", "insert_b1_deal") === "42501")
+    ctrl("POSITIVE CONTROL: the same measurement shows the hole the SQL closes — today (live policies) a tenant-A seat CAN insert on tenant B's deal", tenantA.some((s) => cellOf(live, s, "insert_b2_deal") === "1"))
+    const packet = raw("docs/operations/WAVE156-R6-DEAL-TABLE-POLICY-PACKET.md")
+    pos("the packet is LABELED local / not applied (Status: NOT APPLIED; 'a local measurement is not proof that production is fixed')", /\*\*Status:\*\*\s*NOT APPLIED/.test(packet) && /local measurement is not proof that production is fixed/i.test(packet))
+    const localWords = /PostgreSQL 16\.\d+[^\n.|]*/.exec(packet)?.[0] ?? "PostgreSQL 16 (local)"
+    neg("the local measurement written as 'APPLIED LIVE' — with the project id, the 10 rows and the refusals — is REFUSED by the release rule", rules.r6AppliedLive(`- R6 status: APPLIED LIVE 2026-11-25 — ${localWords}: hrvaqgvukzxfskkcrwbt 10 rows, vendor REFUSED`) === false)
+    neg("'APPLIED LIVE … simulated' / '… scratch' / '… in-memory canary' are refused too", ["simulated read", "scratch database", "in-memory canary"].every((w) => rules.r6AppliedLive(`- R6 status: APPLIED LIVE 2026-11-25 — ${w}: hrvaqgvukzxfskkcrwbt 10 rows; REFUSED`) === false))
+    ctrl("POSITIVE CONTROL: the owner's real live read-back line DOES lift R6", rules.r6AppliedLive("- R6 status: APPLIED LIVE 2026-12-01 — hrvaqgvukzxfskkcrwbt AFTER read-back 10 rows; two-tenant script 5 REFUSED then ROLLBACK") === true)
+    const sheet = raw("docs/operations/WAVE156-OWNER-ACTION-SHEET.md")
+    neg("today the owner sheet keeps R6 OPEN (no live read-back recorded)", /^- R6 status:/m.test(sheet) && rules.r6AppliedLive(sheet) === false)
+    const lib = await load("lib/platform/go-live-readiness.ts")
+    if (loaded(lib, "lib/platform/go-live-readiness.ts", "releaseStateVerdict", "RELEASE_STATES")) {
+      const spec = lib.RELEASE_STATES.find((s: any) => s.key === "SECURITY READBACK GREEN")
+      const row = (o: any = {}) => ({ state: "SECURITY READBACK GREEN", status: "MET", date: "2026-12-01", origin: spec.specimen.origin, reader: spec.specimen.reader, evidence: spec.specimen.evidence, ...o })
+      neg("SECURITY READBACK GREEN from a local_db origin is NOT MET", !lib.releaseStateVerdict("SECURITY READBACK GREEN", row({ origin: "local_db" }), { openBlockers: [] }).met)
+      neg("…nor while R6 is an open blocker, whatever the row says", !lib.releaseStateVerdict("SECURITY READBACK GREEN", row(), { openBlockers: ["R6"] }).met)
+      ctrl("POSITIVE CONTROL: the live specimen with no open blocker is MET", lib.releaseStateVerdict("SECURITY READBACK GREEN", row(), { openBlockers: [] }).met === true)
+    }
+    note("the PostgreSQL measurement itself is 156E's (scripts/deal-table-policy-measure.py); this canary re-derives its fingerprint and reads its cells — it does not start a database")
+  },
+})
+
+canary({
+  id: "C28", title: "A verified production-status gate separates owner SQL, provider keys and deployment from test results",
+  failure: "a simulated provider is displayed as live connected",
+  seams: () => ({ override: { "lib/identity/get-agent-context.ts": "export async function getAgentContext(){ return { brokerageId: globalThis.__P.brokerageId ?? null, userId: null, agentId: null } }" } }),
+  async run() {
+    const lib = await load("lib/platform/go-live-readiness.ts")
+    if (loaded(lib, "lib/platform/go-live-readiness.ts", "releaseStateVerdict", "RELEASE_STATES", "configurationNote", "releaseClaimAllowed")) {
+      const FIVE = ["CODE GREEN", "SECURITY READBACK GREEN", "LEGAL/LICENSING READY", "PREVIEW LIVE VERIFIED", "PUBLIC RELEASE AUTHORIZED"]
+      const keys = lib.RELEASE_STATES.map((s: any) => s.key)
+      pos("five DISTINCT release states, each with its own evidence rule (owner SQL, legal / provider licensing, deployment, authorization, code)", JSON.stringify(keys) === JSON.stringify(FIVE) && new Set(lib.RELEASE_STATES.map((s: any) => (s.shape ?? []).map(String).join())).size === 5, keys)
+      const row = (k: string, o: any = {}) => { const s = lib.RELEASE_STATES.find((x: any) => x.key === k); return { state: k, status: "MET", date: "2026-12-01", origin: s.specimen.origin, reader: s.specimen.reader, evidence: s.specimen.evidence, ...o } }
+      for (const k of FIVE.filter((x) => x !== "CODE GREEN")) {
+        neg(`${k}: a SIMULATED origin (or 'in-memory canary' evidence) is never MET`, !lib.releaseStateVerdict(k, row(k, { origin: "simulated" }), { openBlockers: [], otherStatesMet: true }).met && !lib.releaseStateVerdict(k, row(k, { evidence: `${row(k).evidence}; proven by the in-memory canary` }), { openBlockers: [], otherStatesMet: true }).met)
+        ctrl(`${k}: its live specimen IS met (the rule is not a blanket refusal)`, lib.releaseStateVerdict(k, row(k), { openBlockers: [], otherStatesMet: true }).met === true)
+      }
+      pos("CODE GREEN may come from the local chain (test results), and only CODE GREEN", lib.releaseStateVerdict("CODE GREEN", row("CODE GREEN", { origin: "local_chain" }), { openBlockers: [] }).met === true && !lib.releaseStateVerdict("PREVIEW LIVE VERIFIED", row("PREVIEW LIVE VERIFIED", { origin: "local_chain" }), { openBlockers: [], otherStatesMet: true }).met)
+      const note2 = lib.configurationNote(9, 9)
+      neg("even with every configuration domain answering, the board makes no release claim (no GO; names the five states)", !/\bGO\b/.test(note2) && lib.releaseClaimAllowed(note2, false) && FIVE.every((k) => note2.includes(k)), note2)
+      neg("'ready to sell' / launch wording is refused while public release is not authorized", lib.releaseClaimAllowed("The OS is ready to sell", false) === false)
+    }
+    // The tenant settings services registry: an env key is "configured (not live-verified)", a dormant provider "dormant" — never "connected".
+    process.env.BATCHDATA_API_KEY = "fixture"; process.env.PEOPLEDATA_API_KEY = "fixture"; process.env.DID_API_KEY = "fixture"
+    G.__P.mem = memSupabase({ brokerage_integrations: [] }); G.__P.brokerageId = u("b", 41)
+    const svc = await load("app/actions/services-config.ts")
+    if (loaded(svc, "app/actions/services-config.ts", "getServicesRegistry")) {
+      const r: any = await quiet(() => svc.getServicesRegistry())
+      const services: any[] = r?.services ?? []
+      const byId = Object.fromEntries(services.map((s) => [s.id, s.status]))
+      neg("no env-keyed service reads 'connected' (a key being set is not a live connection)", services.length > 0 && !services.some((s) => s.status === "connected"), byId)
+      neg("BatchData and PeopleData Labs (dormant survivors) with keys set read 'dormant'", byId.batchdata === "dormant" && byId.peopledatalabs === "dormant", byId)
+      pos("a configured key reads 'configured' (honest: present, not live-verified)", services.some((s) => s.status === "configured"), byId)
+    }
+    const matrix = await load("lib/providers/provider-capability-matrix.ts")
+    if (loaded(matrix, "lib/providers/provider-capability-matrix.ts", "providerCapabilityMatrix")) {
+      const rows: any[] = matrix.providerCapabilityMatrix()
+      neg("the provider capability matrix shows NO 'ready' route without live evidence", rows.filter((m) => (m.states?.platform === "ready" || m.states?.tenant === "ready") && !/live: (?!none)/.test(m.validation ?? "")).length === 0)
+      ctrl("POSITIVE CONTROL: the matrix rows are real (rentcast / versium / datafiniti present)", ["rentcast", "versium", "datafiniti"].every((p) => rows.some((m) => m.provider === p)))
+    }
+  },
+})
+
 // ═══ child / parent ═══════════════════════════════════════════════════════════════════════════════════════════════════════
 async function child(id: string) {
   const c = CANARIES.find((x) => x.id === id)
