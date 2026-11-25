@@ -1550,3 +1550,61 @@ commit;
 -- Then, signed in as a vendor seat and as a contact seat of a test tenant, an INSERT into each table must be refused (42501).
 -- Rollback: re-run ALTER POLICY with the with_check / using text the Before read returned.
 ```
+
+## S. Wave 156 — owner SQL named by the wave's lanes (2026-11-25)
+
+Nothing in this section has been run. The ORDER of work, the release-blocking steps and each step's before read, after read and rollback are in
+`docs/operations/WAVE156-OWNER-ACTION-SHEET.md` — that sheet is the one place the wave's owner steps are sequenced; this section holds the
+statements that sheet does not carry in full and points at the ones it does (one copy of each statement, never two).
+
+### S.1 — `compliance_events`: approval rows become append-only for tenant sessions (lane 156B)
+
+The exact block (before read, statements, after read, rollback, required role `postgres`) is **Also A** of the action sheet. Until it runs, a tenant
+staff seat can write or change an approval row in its own name through the data API; the application ignores an approval whose author does not
+hold review authority when the row is read, so this closes the hole at the database as well.
+
+### S.2 — `brokerage_form_library`: office and agent scope in the read policy and the registered-packet function (lane 156C; m1005 is applied)
+
+The exact block, including the full replacement text of `public.brokerage_forms_registered_packet_readable(text)`, is **Also B** of the action sheet.
+Until it runs, the product's own doors already enforce office and agent scope after their gate; a direct authenticated read through the data API or
+storage can still see a same-brokerage office row or another agent's own supplemental form.
+
+### S.3 — training progress is written by the server only; `recruits` is limited to the tenant-admin roster (lane 156K)
+
+Why: one request claiming 100% watched earned a certificate and its points (the application now credits watch time itself and writes through the
+service client after its gate, so the session INSERT / UPDATE policies have no remaining caller); and `recruits_brokerage_isolation` lets every
+signed-in user that carries the tenant — a Contact or a vendor seat included — read and write every recruit row. Live policies read 2026-11-25.
+
+```sql
+-- Before: select tablename, policyname, cmd, qual, with_check from pg_policies where tablename in ('video_completion_tracking','recruits');
+-- Expected before: vct_insert, vct_select, vct_update, video_completion_tracking_brokerage_isolation (ALL), recruits_brokerage_isolation (ALL).
+-- A: video progress becomes server-written only. Readers keep SELECT. Both writers now use the service client.
+DROP POLICY IF EXISTS vct_insert ON public.video_completion_tracking;
+DROP POLICY IF EXISTS vct_update ON public.video_completion_tracking;
+DROP POLICY IF EXISTS video_completion_tracking_brokerage_isolation ON public.video_completion_tracking;
+CREATE POLICY video_completion_tracking_brokerage_isolation ON public.video_completion_tracking FOR SELECT TO public USING (brokerage_id = current_user_brokerage_id());
+-- B: recruits limited to the tenant-admin roster (is_brokerage_admin() = TENANT_ADMIN_USER_TYPES), plus the referring agent reading their own referrals.
+DROP POLICY IF EXISTS recruits_brokerage_isolation ON public.recruits;
+CREATE POLICY recruits_tenant_admin ON public.recruits FOR ALL TO authenticated USING (is_platform_admin() OR (brokerage_id = current_user_brokerage_id() AND is_brokerage_admin())) WITH CHECK (is_platform_admin() OR (brokerage_id = current_user_brokerage_id() AND is_brokerage_admin()));
+CREATE POLICY recruits_recruiter_read ON public.recruits FOR SELECT TO authenticated USING (brokerage_id = current_user_brokerage_id() AND recruiter_agent_id IN (SELECT a.id FROM public.agents a WHERE a.user_id = auth.uid()));
+-- After: the same query. Expected: vct_select plus the SELECT-only isolation policy; recruits_tenant_admin plus recruits_recruiter_read.
+-- Rollback: drop the three new policies, then recreate the originals verbatim from the Before read:
+-- - vct_insert: INSERT, WITH CHECK agent_id IN (SELECT agents.id FROM agents WHERE agents.user_id = auth.uid())
+-- - vct_update: UPDATE, USING the same subquery; WITH CHECK that subquery AND has_brokerage_access(brokerage_id)
+-- - video_completion_tracking_brokerage_isolation: ALL, USING brokerage_id = current_user_brokerage_id()
+-- - recruits_brokerage_isolation: ALL, USING brokerage_id = current_user_brokerage_id()
+```
+
+Session-client readers of recruits found: the recruiting-roi page, which is gated to the admin roster. The other readers I saw use the service client. I did not exhaustively audit for other session readers.
+
+### S.4 — the fraud network's private evidence bucket (lane 156J)
+
+The network (m1035, applied) stores a FINGERPRINT of each evidence file and never the file: no bucket exists, and a bucket plus its `storage.objects`
+policies are owner SQL. Until it exists the evidence door answers "Evidence storage is not enabled yet" and a case keeps its text, fingerprints and
+report numbers. The statements are written with the network's second round (see the action sheet's fraud-network step).
+
+### S.5 — §R.6 status
+
+NOT APPLIED — re-read live 2026-11-25: the ten policies are unchanged and the five deal tables hold no rows. Statements: §R.6 above (unchanged, the
+deal-desk guard pins their fingerprint). How to apply, the two-tenant check that ends in ROLLBACK, and the rollback order:
+`docs/operations/WAVE156-R6-DEAL-TABLE-POLICY-PACKET.md`.
