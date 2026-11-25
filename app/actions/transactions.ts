@@ -998,3 +998,48 @@ export async function loadClientDashboard(transactionId: string, contactId?: str
 //   Completing a milestone — and what follows it: the deadline mirror, the portal card, education at the moment — is the
 //   survivor's (← completeMilestoneAction ← the deal page). This door completed EVERY milestone of a deal sharing a name, by name,
 //   with no tenant predicate, then posted a celebration and an education assignment of its own.
+
+// ============================================
+// THE CLOSING TEAM (wave 156, lane 156D) — who conducts the closing (a closing attorney, a title company, an escrow company or
+// another authorized entity), whom each lawyer represents, and which actual party owns each closing document and task.
+// Each door validates its ids and hands over to the deal-desk writer in lib/application/transactions.ts, which runs the ONE gate
+// (dealDeskWriteContext: the session, the deal desk for THIS deal, then the service client) — no second gate here.
+// Called by app/dashboard/transactions/[id]/closing-team-section.tsx.
+// ============================================
+
+export async function getClosingTeamAction(transactionId: string) {
+  if (!isValidUUID(transactionId)) return { success: false as const, error: "Invalid transaction ID" }
+  return TransactionService.getClosingTeam(transactionId)
+}
+
+export async function recordClosingPartyAction(input: {
+  transaction_id: string; party_role: string; represents?: string | null; name: string
+  company?: string | null; email?: string | null; phone?: string | null; license_number?: string | null; notes?: string | null; vendor_id?: string | null
+}) {
+  if (!isValidUUID(input?.transaction_id)) return { success: false as const, error: "Invalid transaction ID" }
+  if (input.vendor_id && !isValidUUID(input.vendor_id)) return { success: false as const, error: "Invalid vendor ID" }
+  return TransactionService.recordClosingParty(input)
+}
+
+export async function confirmClosingPartyFactAction(participantId: string, input: { evidence: string; represents?: string | null }) {
+  if (!isValidUUID(participantId)) return { success: false as const, error: "Invalid participant ID" }
+  return TransactionService.confirmClosingPartyFact(participantId, input)
+}
+
+export async function setSettlementAgentAction(transactionId: string, input: { participantId: string; kind: string; basis: string }) {
+  if (!isValidUUID(transactionId)) return { success: false as const, error: "Invalid transaction ID" }
+  if (!isValidUUID(input?.participantId)) return { success: false as const, error: "Choose the party who conducts the closing." }
+  return TransactionService.setSettlementAgent(transactionId, input)
+}
+
+export async function updateClosingChecksAction(transactionId: string, patch: { title_file_number?: string | null; payoff_status?: string | null; hoa_estoppel_status?: string | null; recording_status?: string | null }) {
+  if (!isValidUUID(transactionId)) return { success: false as const, error: "Invalid transaction ID" }
+  return TransactionService.updateClosingChecks(transactionId, patch)
+}
+
+export async function assignClosingResponsibilityAction(transactionId: string, input: { target: "document" | "task"; id: string; participantId: string | null }) {
+  if (!isValidUUID(transactionId)) return { success: false as const, error: "Invalid transaction ID" }
+  if (!isValidUUID(input?.id)) return { success: false as const, error: "Invalid document or task ID" }
+  if (input.participantId && !isValidUUID(input.participantId)) return { success: false as const, error: "Invalid participant ID" }
+  return TransactionService.assignClosingResponsibility(transactionId, input)
+}

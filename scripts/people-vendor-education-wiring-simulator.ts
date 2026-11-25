@@ -456,10 +456,9 @@ const LIVE = {
   // scripts/check-vocabularies.ts, the generated cache of the live CHECKs,
   // which the schema-cache-drift guard holds in agreement with the database.
   agentGoalTypes: CHECK_VOCABULARIES.agent_goals?.goal_type ?? [],
-  vendorAssignmentTypes: [
-    "inspector", "lender", "title", "stager", "photographer",
-    "cleaner", "contractor", "mover", "insurance", "other",
-  ],
+  // DERIVED, NOT TYPED (wave 156, lane 156D): the generated cache of the live CHECK, like agentGoalTypes above — a hand-typed
+  // copy of vendor_assignments_assignment_type_check would pass a stale vocabulary the day m1011 widened it with 'attorney'.
+  vendorAssignmentTypes: CHECK_VOCABULARIES.vendor_assignments?.assignment_type ?? [],
   vendorBookingStatuses: ["booked", "confirmed", "completed", "cancelled", "no_show"],
   complianceFlagStatuses: ["flagged", "reviewed", "resolved", "overridden"],
 }

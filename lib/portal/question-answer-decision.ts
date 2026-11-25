@@ -42,6 +42,8 @@ type Db = { from: (t: string) => any }
 export const QUESTION_KINDS = ["general_education", "tenant_procedure", "own_transaction", "vendor_fact", "legal_financial_judgment", "human_preference"] as const
 export type QuestionKind = (typeof QUESTION_KINDS)[number]
 export type DealFact = "closing_date" | "lender_clearance" | "lender_receipt" | "title_clearance" | "signing_status" | "insurance_confirmation" | "vendor_promise" | "deal_status"
+  // WAVE 156 (lane 156D, canary C30): WHO the deal's closing attorney / lender / settlement agent is, stated only from the record.
+  | "closing_attorney" | "lender_identity" | "settlement_agent"
 export type DealPartyRole = "lender" | "title" | "insurance"
 export type QuestionGuard = "injection" | "steering" | "forecast"
 /** notifications.priority's CHECK vocabulary (scripts/check-vocabularies.ts) — the ONE severity model. */
@@ -68,7 +70,14 @@ const OWN_RE = /\b(?:my|our|we|i|me|us|we're|i'm)\b/i
 /** "What is clear to close?" asks for a DEFINITION (education); "Did title come back clean?" asks about THIS deal. */
 const DEFINITIONAL_RE = /^\s*(?:what\s+(?:is|are|does|do)\s+(?!my\b|our\b|we\b|i\b)|what's\s+(?!my\b|our\b)|how\s+(?:does|do)\s+(?!i\b|we\b)|explain\b|define\b|what\s+happens\s+(?:if|when)\b)/i
 
+// WAVE 156 (lane 156D, canary C30): "who is my closing attorney / lender / settlement agent?" asks about THIS deal's parties. Before,
+// "attorney" fell to the legal-judgment branch and "who is my lender?" to the general branch, where the surface's model drafts the
+// answer and the claim screen does not catch a NAME. These rules run first, so the answer comes only from the record.
+const WHO_IS = String.raw`\b(?:who(?:'s|\s+is|\s+are|\s+will\s+be)|what(?:'s|\s+is)\s+the\s+(?:name|phone|number|contact)\s+(?:of|for)|(?:name|phone|number|contact)\s+(?:of|for))\s+(?:my|our|the)\s+`
 const FACT_RULES: ReadonlyArray<{ fact: DealFact; re: RegExp; party: DealPartyRole | null }> = [
+  { fact: "settlement_agent", re: new RegExp(String.raw`${WHO_IS}(?:settlement\s+agent|closing\s+agent|closing\s+company|title\s+(?:company|agent|officer)|escrow\s+(?:company|officer|agent))\b`, "i"), party: "title" },
+  { fact: "closing_attorney", re: new RegExp(String.raw`${WHO_IS}(?:closing\s+)?(?:attorney|lawyer|counsel)\b`, "i"), party: null },
+  { fact: "lender_identity", re: new RegExp(String.raw`${WHO_IS}(?:lender|loan\s+officer|mortgage\s+(?:company|lender|broker)|bank)\b`, "i"), party: "lender" },
   { fact: "lender_clearance", re: /\b(?:clear(?:ed)?\s+(?:me\s+|us\s+)?to\s+close|ctc|loan\s+(?:approv\w*|decision|status|denied|denial)|underwrit\w*|final\s+approval|approved\s+for\s+(?:the|my|our)\s+(?:loan|mortgage)|conditions?\s+(?:cleared|outstanding|left))\b/i, party: "lender" },
   { fact: "lender_receipt", re: /\b(?:closing\s+disclosure|did\s+(?:the|my|our)\s+(?:lender|bank|loan\s+officer)\s+(?:get|receive)|(?:lender|bank|loan\s+officer)\s+(?:receive|received|got|have|has)\s+(?:my|our|the))\b/i, party: "lender" },
   { fact: "title_clearance", re: /\btitle\b[^.?!]{0,40}\b(?:clean|clear\w*|come\s+back|came\s+back|commitment|issues?|liens?|search)\b/i, party: "title" },
@@ -148,6 +157,7 @@ const FACT_LABEL: Readonly<Record<DealFact, string>> = Object.freeze({
   closing_date: "the closing date", lender_clearance: "clear to close on your loan", lender_receipt: "the lender's receipt of your documents",
   title_clearance: "title clearance", signing_status: "the signing status", insurance_confirmation: "your insurance being in place",
   vendor_promise: "their next step", deal_status: "the status of your file",
+  closing_attorney: "your closing attorney", lender_identity: "your lender", settlement_agent: "who conducts your closing",
 })
 const PARTY_LABEL: Readonly<Record<DealPartyRole, string>> = Object.freeze({ lender: "your lender", title: "the title company", insurance: "your insurance agent" })
 const PARTY_CATEGORIES: Readonly<Record<DealPartyRole, readonly string[]>> = Object.freeze({ lender: ["lender", "refinance_lender"], title: ["title"], insurance: ["insurance"] })
@@ -229,6 +239,7 @@ export async function loadDealContext(db: Db, a: { brokerageId: string; contactI
     const seatUserIds = v ? seats.filter((s) => s.vendor_id === v.id && s.user_id).map((s) => s.user_id as string) : []
     if (v || name) out.parties.push({ role, vendorId: v?.id ?? null, name, onPlatform: seatUserIds.length > 0, seatUserIds })
   }
+  await addClosingPartyFacts(db, a.brokerageId, out, deals, vendors, assigns)
   // Recorded replies (a human from an off-platform party, or the vendor's own seat) — the "memory" the owner names.
   const { data: mem, error: mErr } = await db.from("contact_memory").select("id, entity_id, metadata, created_at")
     .eq("brokerage_id", a.brokerageId).eq("entity_type", "transaction").eq("memory_kind", "agent_note").in("entity_id", ids).is("archived_at", null)
@@ -240,6 +251,45 @@ export async function loadDealContext(db: Db, a: { brokerageId: string; contactI
     out.facts.push({ fact: f, text: recordedReplyText(f, md), source: `contact_memory:${m.id}`, version: m.created_at, scope: "own_deal", basis: md.provenance === "vendor_seat" ? "vendor_seat" : "agent_recorded", answers: true })
   }
   return out
+}
+
+/**
+ * WAVE 156 (lane 156D, canary C30): WHO the deal's closing attorney, lender and settlement agent are, from the RECORD only.
+ * A name is stated when the party is a vendor ON the deal (vendor_assignments, its vendors row) or a roster row whose facts a person
+ * CONFIRMED with the party (transaction_participants.fact_source 'party_confirmed' / 'vendor_seat', m1010). A row the agent only typed
+ * in is "listed, not yet confirmed"; nothing recorded is "not recorded yet", and the composer then asks the agent (the ding task).
+ * No phone, date or firm is composed from anything but those columns. A refused read (m1010 not applied) is a blind spot.
+ */
+async function addClosingPartyFacts(db: Db, brokerageId: string, out: DealContext, deals: Array<Record<string, any>>, vendors: Array<Record<string, any>>, assigns: Array<Record<string, any>>): Promise<void> {
+  const ids = deals.map((d) => String(d.id))
+  const { data: parts, error: pErr } = await db.from("transaction_participants").select("id, transaction_id, name, company, party_role, represents, vendor_id, fact_source, fact_confirmed_at").in("transaction_id", ids)
+  if (pErr) out.blindSpots.push(`closing parties read refused (${pErr.message})`)
+  const { data: setts, error: sErr } = await db.from("transaction_title_escrow").select("id, transaction_id, settlement_agent_kind, settlement_agent_participant_id").eq("brokerage_id", brokerageId).in("transaction_id", ids)
+  if (sErr) out.blindSpots.push(`settlement agent read refused (${sErr.message})`)
+  const rows = (parts ?? []) as Array<Record<string, any>>
+  const confirmed = (p: Record<string, any>) => p.fact_source === "party_confirmed" || p.fact_source === "vendor_seat"
+  const named = (p: Record<string, any>) => `${String(p.name)}${p.company && p.company !== p.name ? ` (${String(p.company)})` : ""}`
+  const REP: Record<string, string> = { buyer: "representing the buyer", seller: "representing the seller", lender: "representing the lender", neutral_settlement_agent: "acting as the settlement agent" }
+  const KIND: Record<string, string> = { attorney: "a closing attorney", title_company: "a title company", escrow_company: "an escrow company", other_authorized_entity: "an authorized settlement company" }
+  for (const d of deals) {
+    const id = String(d.id)
+    const mine = rows.filter((p) => String(p.transaction_id) === id)
+    const push = (fact: DealFact, text: string, answers: boolean, p: Record<string, any> | null, basis: SourcedFact["basis"] = "agent_recorded") =>
+      out.facts.push({ fact, text, source: p ? `transaction_participants:${p.id}.fact_source` : `transactions:${id}`, version: (p?.fact_confirmed_at as string | null) ?? null, scope: "own_deal", basis, answers })
+    const attys = mine.filter((p) => /attorney$/.test(String(p.party_role ?? "")))
+    const okAttys = attys.filter(confirmed)
+    if (okAttys.length) for (const p of okAttys) push("closing_attorney", `The attorney recorded on your file is ${named(p)}${p.represents && REP[p.represents] ? `, ${REP[p.represents]}` : ""}.`, true, p, p.fact_source === "vendor_seat" ? "vendor_seat" : "agent_recorded")
+    else push("closing_attorney", attys.length ? "An attorney is listed on your file, but your agent has not confirmed their details with them yet." : "Your closing attorney is not recorded on your file yet.", false, attys[0] ?? null)
+    const lenderVendor = vendors.find((v) => ["lender", "refinance_lender"].includes(String(v.category ?? "").toLowerCase()) && assigns.some((x) => String(x.transaction_id) === id && x.vendor_id === v.id))
+    const lenderRow = mine.find((p) => p.party_role === "lender" && confirmed(p)) ?? null
+    if (lenderVendor?.name) out.facts.push({ fact: "lender_identity", text: `The lender on your file is ${String(lenderVendor.name)}.`, source: `vendors:${lenderVendor.id}.name`, version: null, scope: "own_deal", basis: "domain_record", answers: true })
+    else if (lenderRow) push("lender_identity", `The lender recorded on your file is ${named(lenderRow)}.`, true, lenderRow)
+    else push("lender_identity", mine.some((p) => p.party_role === "lender") ? "A lender is listed on your file, but your agent has not confirmed it yet." : "Your lender is not recorded on your file yet.", false, mine.find((p) => p.party_role === "lender") ?? null)
+    const st = ((setts ?? []) as Array<Record<string, any>>).find((r) => String(r.transaction_id) === id)
+    const agentRow = st?.settlement_agent_participant_id ? mine.find((p) => p.id === st.settlement_agent_participant_id) ?? null : null
+    if (st?.settlement_agent_kind && agentRow && confirmed(agentRow)) push("settlement_agent", `Your closing is conducted by ${named(agentRow)}, ${KIND[String(st.settlement_agent_kind)] ?? "the settlement agent"}.`, true, agentRow)
+    else push("settlement_agent", st?.settlement_agent_kind ? "Who conducts your closing is listed on your file, but your agent has not confirmed it with them yet." : "Who conducts your closing is not recorded on your file yet.", false, agentRow)
+  }
 }
 
 /** PURE — the client-facing sentence of a recorded reply, composed from its STRUCTURED fields only (a vendor's free-text note is

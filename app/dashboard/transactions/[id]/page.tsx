@@ -14,7 +14,7 @@ import { getTransactionHazardInsuranceAction } from "@/app/actions/transaction-h
 import { getTridDisclosureStatusAction } from "@/app/actions/trid-disclosure-receipt"
 import { listDealReviewNotesAction } from "@/app/actions/deal-review-notes"
 import { TridReceiptSection } from "./trid-receipt-section"
-import { DealOwnershipSection } from "./deal-ownership-section"
+import { DealOwnershipSection } from "./deal-ownership-section"; import { ClosingTeamSection } from "./closing-team-section" // wave 156 (156D) — same line: page lines are cited by number
 import { CommissionTermsPanel } from "@/app/dashboard/financials/agent/components/commission-terms-panel"
 import { LenderInsuranceCheckpointCard } from "./lender-insurance-checkpoint-card"
 import { AiCoordinatorPanel } from "./ai-coordinator-panel"
@@ -548,7 +548,7 @@ export default async function TransactionDetailPage({ params }: PageProps) {
           the Closing Disclosure receipt (TRID from the lender — coaching when the lender is off the platform), and who leads this
           deal with the compliance review notes / coordinator flags. Each reads its own governed door. */}
       {hazardInsuranceView.ok && <LenderInsuranceCheckpointCard transactionId={id} view={hazardInsuranceView} />}
-      <TridReceiptSection transactionId={id} initial={tridStatus} />
+      <TridReceiptSection transactionId={id} initial={tridStatus} />{/* WAVE 156 (156D): who conducts the closing, whom each lawyer represents, who owns each closing document. */}<ClosingTeamSection transactionId={id} />
       <DealOwnershipSection entityType="transaction" entityId={id} initial={dealRolesAndNotes} />
       {/* WAVE 153 (153B): the deal's commission terms — governed pre-close changes, frozen at close (the server decides who may act). */}
       <CommissionTermsPanel transactionId={id} label={(transaction as { property_address?: string | null } | null)?.property_address ?? null} />
