@@ -18,6 +18,7 @@ import {
   repurposeUrlToPodcast,
 } from "@/lib/repurpose/actions"
 import type { OutputFormat, RepurposedOutput } from "@/lib/repurpose/types"
+import { paidDoorRefusalMessage } from "@/lib/vendor-governance/budget-eval"
 
 const CHANNELS: { platform: string; format: OutputFormat; label: string }[] = [
   { platform: "instagram", format: "instagram_reels", label: "Instagram Reels" },
@@ -123,7 +124,7 @@ export function VideoUrlRepurposeCard({ connectedPlatforms }: { connectedPlatfor
         })
         if (!kick.ok) {
           const body = await kick.json().catch(() => ({}))
-          return void toast.error(body.error ?? "Video project created, but generation failed to start. Retry it from your video library.")
+          return void toast.error(paidDoorRefusalMessage({ budgetExceeded: body.budgetExceeded, capExceeded: body.capExceeded, error: body.error }, "Video project created, but generation failed to start. Retry it from your video library.", "the video"))
         }
       } catch {
         return void toast.error("Video project created, but the network request failed. Retry generation from your video library.")

@@ -659,6 +659,23 @@ async function main() {
     check("CONTROL: that finder sees a direct SDK call", /\bconvertSpeech\s*\(/.test("const r = await convertSpeech(key, { voiceId })"))
   }
 
+  section("§F2 ROUND 6 — a budget refusal is READ and SHOWN by every caller of the voice-clone route")
+  {
+    const ev = await load("lib/vendor-governance/budget-eval.ts")
+    const map = ev.paidDoorRefusalMessage as undefined | ((d: unknown, f: string, w: string) => string)
+    const routeReason = "Your plan's monthly vendor budget is used up — the voice was not cloned."
+    check("the ONE mapper exists (lib/vendor-governance/budget-eval.ts paidDoorRefusalMessage, pure)", typeof map === "function")
+    if (map) {
+      check("POSITIVE: a budgetExceeded refusal shows the ROUTE'S OWN reason (this month's vendor budget is spent), not a generic failure", map({ budgetExceeded: true, error: routeReason }, "Voice clone failed", "the voice") === routeReason)
+      check("POSITIVE: a budgetExceeded refusal with no text still says the budget is spent", /vendor budget is used up/.test(map({ budgetExceeded: true }, "Voice clone failed", "the voice")))
+      check("NEGATIVE CONTROL: an ordinary failure is NOT presented as a budget refusal (the route's error, else the fallback)", map({ error: "ElevenLabs refused the sample" }, "Voice clone failed", "the voice") === "ElevenLabs refused the sample" && map({}, "Voice clone failed", "the voice") === "Voice clone failed" && !/budget/.test(map({ budgetExceeded: false }, "Voice clone failed", "the voice")))
+    }
+    const callers = files.filter((f) => /fetch\(\s*["'`]\/api\/elevenlabs\/voice-clone["'`]/.test(code(f)))
+    const reads = callers.filter((f) => { const c = code(f); const at = c.search(/fetch\(\s*["'`]\/api\/elevenlabs\/voice-clone/); return /\.budgetExceeded\b/.test(c.slice(at, at + 1500)) && /paidDoorRefusalMessage\(/.test(c.slice(at, at + 1500)) })
+    check(`every in-tree caller of /api/elevenlabs/voice-clone reads budgetExceeded and maps it through the one mapper (${reads.length}/${callers.length}: ${callers.join(", ")})`, callers.length >= 3 && reads.length === callers.length, { callers, reads })
+    check("CONTROL: the reader finder sees a caller that does NOT read the field", !/\.budgetExceeded\b/.test(`const res = await fetch("/api/elevenlabs/voice-clone", {}); const d = await res.json(); toast.error(d.error)`))
+  }
+
   section("§G ROUND 2 — a per-contact workflow video is never written to a public path")
   {
     const adapter = (await load("lib/workflow/adapters/video.ts")).videoAdapter

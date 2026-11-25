@@ -150,6 +150,8 @@ export interface SynthesizeSpeechResult {
   errorCode?: "no_api_key" | "rate_limit" | "quota" | "auth" | "voice_not_found" | "unknown" | "replay_unavailable"
   /** Wave 156 (156S): true when this is the SAME audio a keyed earlier call produced (no new provider call, no charge). */
   replayed?: boolean
+  /** Wave 156 (156S round 6): the refusal was THIS month's vendor budget (the paid door refused before the provider). */
+  budgetExceeded?: boolean
 }
 
 /**
@@ -203,7 +205,7 @@ export async function synthesizeSpeech(
       if (first) return { success: true, audioBuffer: first, replayed: true }
       return { success: false, errorCode: "replay_unavailable", error: "This audio was already generated and paid for, but its stored copy cannot be served again. Ask to generate it again — that is a new, budget-checked call." }
     }
-    if (!paid.ran) return { success: false, errorCode: "quota", error: paid.reason === "budget_refused" ? "Vendor budget exceeded — TTS paused" : paid.detail }
+    if (!paid.ran) return { success: false, errorCode: "quota", error: paid.reason === "budget_refused" ? "Vendor budget exceeded — TTS paused" : paid.detail, ...(paid.reason === "budget_refused" ? { budgetExceeded: true } : {}) }
     const res = paid.result
 
     if (!res.ok || !res.data) {
@@ -298,7 +300,7 @@ export async function synthesizeSpeechWithTimestamps(
       applyTextNormalization: ELEVENLABS_TEXT_NORMALIZATION,
       languageCode: "language_code" in langField ? langField.language_code : null,
     }), (r) => r.ok && !!r.data?.audioBase64)
-    if (!paid.ran) return { success: false, errorCode: "quota", error: paid.reason === "budget_refused" ? "Vendor budget exceeded — TTS paused" : paid.detail }
+    if (!paid.ran) return { success: false, errorCode: "quota", error: paid.reason === "budget_refused" ? "Vendor budget exceeded — TTS paused" : paid.detail, ...(paid.reason === "budget_refused" ? { budgetExceeded: true } : {}) }
     const res = paid.result
 
     if (!res.ok || !res.data?.audioBase64) {
@@ -344,6 +346,7 @@ export async function synthesizeSpeechStream(input: SynthesizeSpeechInput): Prom
   response?: Response
   error?: string
   errorCode?: SynthesizeSpeechResult["errorCode"]
+  budgetExceeded?: boolean
 }> {
   const apiKey = process.env.ELEVENLABS_API_KEY
   if (!apiKey) {
@@ -389,7 +392,7 @@ export async function synthesizeSpeechStream(input: SynthesizeSpeechInput): Prom
         }),
       }
     ), (r) => r.ok)
-    if (!paid.ran) return { success: false, errorCode: "quota", error: paid.reason === "budget_refused" ? "Vendor budget exceeded — TTS paused" : paid.detail }
+    if (!paid.ran) return { success: false, errorCode: "quota", error: paid.reason === "budget_refused" ? "Vendor budget exceeded — TTS paused" : paid.detail, ...(paid.reason === "budget_refused" ? { budgetExceeded: true } : {}) }
     const response = paid.result
 
     if (!response.ok) {
