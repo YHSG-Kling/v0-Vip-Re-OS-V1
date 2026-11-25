@@ -228,6 +228,19 @@ async function sectionA() {
   check("A3 · the retry re-sends under the SAME idempotency key and Stripe now holds exactly one transfer, recorded on the row",
     keys.length === 2 && !!keys[0] && keys[0] === keys[1] && G.__N.stripe.transfers.length === 1 && T("vendor_payouts")[0]?.stripe_transfer_id === "tr_1", { keys, r: a3b.r })
 
+  const sends = T("agent_action_ledger").filter((r) => r.action === "vendor.payout.transfer")
+  check("A3 · the re-send CARRIES the decision recorded at the first send (the same payout the person authorized) — never a new one",
+    sends.length === 2 && /first sent/.test(String(sends[1]?.detail?.authorized_by ?? "")), sends.map((r) => r.detail?.authorized_by))
+
+  // A6 — the re-send rides the claim its row holds: an earning released meanwhile stops it before Stripe
+  fresh(U_BROKER); G.__N.stripe.modes = ["timeout_before_create"]
+  await pay()
+  const e2 = T("vendor_earnings").find((r) => r.id === E2); if (e2) e2.status = "available"
+  const callsBefore = G.__N.stripe.createCalls
+  const a6 = await pay()
+  check("A6 NEG · a re-send whose row no longer holds its claim (an earning released meanwhile) never reaches Stripe",
+    G.__N.stripe.createCalls === callsBefore && G.__N.stripe.transfers.length === 0, { calls: G.__N.stripe.createCalls, r: a6.r })
+
   // A4 — a definite refusal (positive control: the honest failed path)
   fresh(U_BROKER); G.__N.stripe.modes = ["refuse"]
   const a4 = await pay()
