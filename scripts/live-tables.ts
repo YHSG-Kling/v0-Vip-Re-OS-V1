@@ -1,7 +1,7 @@
 /**
  * scripts/live-tables.ts
  *
- * EVERY relation the live public schema exposes — 810 of them — as a flat sorted list.
+ * EVERY relation the live public schema exposes — 819 of them — as a flat sorted list.
  *
  * This is the oracle for "does this name exist in the database", which SCHEMA_SNAPSHOT cannot be:
  * that file holds only the tables the code QUERIES and the database HAS (`referenced ∩ live`), so a
@@ -20,7 +20,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-11-25
  * source: public.live_schema_json()
- * body-sha256: d9fc7e6e58d425ba07b42f7117d0e87d59a5fe5e3bb1550daa724a6f94f7d038
+ * body-sha256: 24f127e9a21ee07c1ceab7f645db635a06ccf2e2d8d2914f8f332d8ed2fdf011
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -362,6 +362,15 @@ export const LIVE_TABLES: readonly string[] = [
   "form_packet_bundle_items",
   "form_packet_bundles",
   "form_submissions",
+  "fraud_bulletin_derivatives",
+  "fraud_bulletin_reads",
+  "fraud_bulletin_revisions",
+  "fraud_bulletin_sources",
+  "fraud_bulletins",
+  "fraud_case_evidence",
+  "fraud_correction_requests",
+  "fraud_incident_cases",
+  "fraud_warning_subscriptions",
   "gamification_badges",
   "generated_content",
   "generated_documents",

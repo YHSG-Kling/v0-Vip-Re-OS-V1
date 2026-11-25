@@ -78,7 +78,7 @@ import {
   ELEVENLABS_REALISM_VOICE_SETTINGS,
   ELEVENLABS_TEXT_NORMALIZATION,
   elevenLabsModelForLane,
-  estimateAvatarRenderCostUsd,
+  estimateAvatarRenderCostUsd, elevenLabsUsdForChars,
   withNaturalPauses,
 } from "@/lib/video/realism-profile"
 import { presenterTypeForTwin } from "@/lib/did/agent-presenter"
@@ -1911,12 +1911,12 @@ async function dispatchVideoViaDID({
   const pacedScript = withNaturalPauses(renderedScript, avatarTtsModel)
   // Same SDK adapter lib/voice/elevenlabs-tts.ts's buffered path uses
   // (lib/providers/elevenlabs/client.ts) — one TTS egress, same price.
-  const ttsRes = await convertSpeech(elApiKey, {
+  const ttsRes = await (await import("@/lib/voice/elevenlabs-tts")).synthesizeSpeech({ // wave 156 (156S): THE paid TTS door
     voiceId: didProfile.elevenlabs_voice_id,
     text: pacedScript,
     modelId: avatarTtsModel,
     voiceSettings: ELEVENLABS_REALISM_VOICE_SETTINGS,
-    applyTextNormalization: ELEVENLABS_TEXT_NORMALIZATION,
+    brokerageId: params.brokerageId, // budget before the call, a receipt, the characters booked once (text normalization applied inside)
     // `language_code` is DELIBERATELY NEVER sent here (wave 52 research
     // finding, DispatchVideoParams.ttsLanguageCode doc above, reconfirmed
     // for v3 in realism-profile.ts's wave-57 header): ElevenLabs only
@@ -1928,15 +1928,15 @@ async function dispatchVideoViaDID({
     // language, with nothing extra to pass here.
   })
 
-  if (!ttsRes.ok || !ttsRes.data) {
-    return { success: false, providerKey: "did", error: `ElevenLabs TTS error: ${ttsRes.error ?? `HTTP ${ttsRes.status}`}` }
+  if (!ttsRes.success || !ttsRes.audioBuffer) {
+    return { success: false, providerKey: "did", error: `ElevenLabs TTS error: ${ttsRes.error ?? ttsRes.errorCode ?? "unknown"}` }
   }
 
   // For D-ID we need a hosted audio URL — write to Supabase storage.
   const audioPath = `isa-videos/${agentRecordId}/${Date.now()}.mp3`
   const { error: uploadError } = await supabase.storage
     .from("media")
-    .upload(audioPath, new Uint8Array(ttsRes.data), { contentType: "audio/mpeg", upsert: false })
+    .upload(audioPath, new Uint8Array(ttsRes.audioBuffer), { contentType: "audio/mpeg", upsert: false })
   if (uploadError) {
     return { success: false, providerKey: "did", error: `Failed to host audio: ${uploadError.message}` }
   }
@@ -2007,36 +2007,20 @@ async function dispatchVideoViaDID({
         config: { ...DID_TALK_REALISM_CONFIG, driver_expressions: driverExpressions },
       }
 
-  const didRes = await callConnector<{ id?: string }>({
-    connector: "did",
-    baseUrl: "https://api.d-id.com",
-    path: isV4Expressive ? "/expressives" : isVideoSource ? "/clips" : "/talks",
-    method: "POST",
-    auth: { style: "basic", username: didApiKey, password: "" },
-    body: didPayload,
-  })
-
-  if (!didRes.ok) {
-    return { success: false, providerKey: "did", error: `D-ID API error: ${didRes.error ?? `HTTP ${didRes.status}`}` }
-  }
-
-  const didData = didRes.data ?? {}
-
-  void logVendorUsage({
-    vendorName: "did",
-    usageType: "video_renders",
-    unitCount: 1,
-    // WAVE 58: derived from the script (ElevenLabs chars + D-ID seconds at
-    // list rates in lib/video/realism-profile.ts) instead of the former flat
-    // 0.3 guess — a render longer than ~6 s undercounted, a two-line welcome
-    // overcounted, and the ledger feeds the overage invoice (§5).
-    estimatedCost: estimateAvatarRenderCostUsd(pacedScript),
-    systemSource: params.systemSource ?? "dispatch",
-    brokerageId: params.brokerageId,
-    agentId: params.agentId,
-    leadId: params.leadId,
+  // THE PAID DOOR (wave 156, lane 156S) — lib/vendor-governance/paid-egress.ts runPaidEgress around the D-ID submit: the
+  // tenant's vendor budget BEFORE D-ID is reached, an action receipt, the render booked ONCE on success under the send's
+  // idempotency key (a retried send replays the job it already bought), and nothing booked for a refused submit. The TTS
+  // characters are booked by the voice door above, so this books the D-ID leg only (WAVE 58's script-derived estimate,
+  // minus the ElevenLabs share it used to fold in — the ledger feeds the overage invoice, §5, and must not count it twice).
+  const didLedgerKey = params.ledger?.idempotencyKey ?? (params.ledger?.cycle ? `did_dispatch:${params.brokerageId}:${params.contactId ?? params.recipientEmail}:${params.ledger.cycle}` : null)
+  const didPaid = await (await import("@/lib/vendor-governance/paid-egress")).runPaidEgress<import("@/lib/agentic-os/connector-gateway").GatewayResponse<{ id?: string }>>({
+    brokerageId: params.brokerageId, vendor: "did", usageType: "video_renders", action: "video.did.render", units: 1,
+    estimatedCostUsd: Math.max(0, Math.round((estimateAvatarRenderCostUsd(pacedScript) - elevenLabsUsdForChars(pacedScript.length)) * 10000) / 10000),
+    subject: { type: params.contactId ? "contact" : "did_talk", id: params.contactId ?? null, ref: engine },
+    actor: params.userId ? { type: "user", userId: params.userId } : { type: "system" },
+    idempotencyKey: didLedgerKey, systemSource: params.systemSource ?? "dispatch",
     metadata: {
-      did_talk_id: didData.id,
+      agent_id: params.agentId ?? null, lead_id: params.leadId ?? null,
       mode: isV4Expressive ? "expressive" : isVideoSource ? "clip" : "talk",
       recipient_email: params.recipientEmail,
       provider_key: "did",
@@ -2048,8 +2032,24 @@ async function dispatchVideoViaDID({
       ...(keyed.fallbackReason ? { transparent_fallback_reason: keyed.fallbackReason } : {}),
       ...(params.metadata ?? {}),
     },
-  })
+  }, () => callConnector<{ id?: string }>({
+    connector: "did",
+    baseUrl: "https://api.d-id.com",
+    path: isV4Expressive ? "/expressives" : isVideoSource ? "/clips" : "/talks",
+    method: "POST",
+    auth: { style: "basic", username: didApiKey, password: "" },
+    body: didPayload,
+  }), (r) => ({ ok: r.ok && !!r.data?.id, providerRef: r.data?.id ?? null, error: r.ok ? null : (r.error ?? `HTTP ${r.status}`) }))
+  if (!didPaid.ran && didPaid.reason === "budget_refused") {
+    return { success: false, providerKey: "did", error: `Vendor budget exceeded — D-ID render paused (${didPaid.detail})` }
+  }
+  const didRes = didPaid.ran ? didPaid.result : { ok: !!didPaid.providerRef, status: null, data: didPaid.providerRef ? { id: didPaid.providerRef } : null, error: didPaid.providerRef ? null : didPaid.detail }
 
+  if (!didRes.ok) {
+    return { success: false, providerKey: "did", error: `D-ID API error: ${didRes.error ?? `HTTP ${didRes.status}`}` }
+  }
+
+  const didData = didRes.data ?? {}
   return { success: true, providerKey: "did", messageId: didData.id }
 }
 

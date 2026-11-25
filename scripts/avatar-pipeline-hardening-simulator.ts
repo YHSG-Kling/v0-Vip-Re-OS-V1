@@ -327,7 +327,7 @@ function costSection() {
   {
     const dispatch = readStripped("lib/providers/dispatch.ts")
     check("dispatch.ts's D-ID vendor-usage line calls estimateAvatarRenderCostUsd(pacedScript) (no flat estimatedCost: 0.3 remains)",
-      /estimatedCost:\s*estimateAvatarRenderCostUsd\(pacedScript\)/.test(dispatch) && !/estimatedCost:\s*0\.3\b/.test(dispatch))
+      /estimatedCost(?:Usd)?:\s*(?:Math\.max\(0,\s*Math\.round\(\()?estimateAvatarRenderCostUsd\(pacedScript\)/.test(dispatch) /* wave 156 (156S): the paid door books the script-derived D-ID leg */ && !/estimatedCost:\s*0\.3\b/.test(dispatch))
     const short = estimateAvatarRenderCostUsd("Hi Dana, thanks for stopping by the open house today.")
     const long = estimateAvatarRenderCostUsd(Array(40).fill("This neighborhood has walkable schools, two parks and a farmers market every Saturday.").join(" "))
     check("a two-line welcome estimates well under the old flat $0.30 and a ~3.5-minute script well over it (cost scales with the script)",
@@ -1396,7 +1396,7 @@ function sideDoorSection() {
   check("...and the check runs BEFORE the ElevenLabs TTS call (convertSpeech) — a refused render must not still spend TTS cost",
     (() => {
       const gateIdx = dispatch.indexOf("requireConsentForVideoAvatarSource(supabase")
-      const ttsIdx = dispatch.indexOf("const ttsRes = await convertSpeech(")
+      const ttsIdx = [dispatch.indexOf("const ttsRes = await convertSpeech("), dispatch.search(/const ttsRes = await \(await import\("@\/lib\/voice\/elevenlabs-tts"\)\)\.synthesizeSpeech\(/)].find((i) => i > -1) ?? -1 // wave 156 (156S): the TTS leg is the paid voice door now
       return gateIdx > -1 && ttsIdx > -1 && gateIdx < ttsIdx
     })())
   check("a refused render returns success:false with providerKey:\"did\" — the same DispatchResult shape every other refusal in this function uses",

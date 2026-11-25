@@ -1,6 +1,6 @@
 -- m1035 — REAL ESTATE TRUST & FRAUD INTELLIGENCE NETWORK (wave 156, lane 156J; directive 156J, owner decision 10).
 --
--- WRITTEN, NOT APPLIED. Additive and idempotent: nine NEW tables, their indexes, row security and the one session policy.
+-- APPLIED LIVE 2026-11-25 via Supabase MCP (project hrvaqgvukzxfskkcrwbt). Additive and idempotent: nine NEW tables, their indexes, row security and the one session policy.
 -- Nothing existing is altered, dropped or narrowed. The integrator applies it, then runs `npm run schema:regen`
 -- (live-tables, schema-snapshot, schema-fk-map, check-vocabularies) so check-vocabulary-guard holds the CHECKs below
 -- against lib/fraud-network/network.ts (FRAUD_TYPOLOGY_KINDS, FRAUD_CLAIM_CLASSES, … — one vocabulary, CLAUDE.md §6).
