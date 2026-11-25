@@ -1154,6 +1154,194 @@ canary({
   },
 })
 
+// ── provider economics (156G) ────────────────────────────────────────────────────────────────────────────────────────────
+const gB1 = u("b", 81), gU1 = u("a", 101)
+const G_SEAMS: Seams = {
+  override: {
+    "lib/agentic-os/connector-gateway.ts": "export async function callConnector(req){ globalThis.__P.push('gateway', req); return globalThis.__P.gatewayAnswer(req) }; export async function loadProviderHealth(){ return { state: 'healthy', routeAround: false, reason: 'fixture' } }",
+    "lib/vendor-governance/usage-logger.ts": "export async function logVendorUsage(e){ globalThis.__P.push('usage', e); return { success: true } }",
+    "lib/vendor-governance/meter-vendor.ts": "export async function meterVendorSpend(m){ globalThis.__P.push('meter', m); return true }",
+    "lib/cma/comp-supplement-cache.ts": "export async function getCachedProviderPayload(k){ return (globalThis.__P.cache ??= new Map()).get(k) ?? null }; export async function setCachedProviderPayload(k, p){ (globalThis.__P.cache ??= new Map()).set(k, p) }",
+    "lib/connections/resolve-scoped.ts": "export async function resolveScopedConnectionResult(){ return { status: 'not_connected' } }",
+    "lib/vendor-governance/budget-gate.ts": "export async function checkVendorBudget(){ return { allowed: true, degraded: false } }",
+    "lib/identity/get-agent-context.ts": "export async function getAgentContext(){ return { brokerageId: null, userId: null, agentId: null } }",
+  },
+}
+function gWorld(opts: { used?: number } = {}) {
+  const month = new Date().toISOString().slice(0, 7)
+  G.__P.mem = memSupabase({ platform_settings: [{ id: true, provider_request_caps: null }], vendor_usage_tracking: Array.from({ length: opts.used ?? 0 }, (_, i) => ({ id: `v${i}`, vendor_name: "rentcast", units_used: 1, total_cost: 0.074, created_at: `${month}-02T00:00:00.000Z`, request_metadata: {} })) })
+  G.__P.cache = new Map(); resetCalls()
+  G.__P.gatewayAnswer = () => ({ ok: true, status: 200, data: [{ id: "p1", formattedAddress: "x", bedrooms: 3 }], error: null })
+}
+const rentcastCalls = () => logged("gateway").filter((r: any) => r.connector === "rentcast").length
+
+canary({
+  id: "C15", title: "RentCast sold comps and property facts are reused without duplicate paid requests",
+  failure: "sold status or prices are fabricated where unavailable (or the same record is bought twice / a failed call billed)",
+  seams: () => G_SEAMS,
+  async run() {
+    process.env.RENTCAST_API_KEY = "fixture-not-a-key"
+    const rc = await load("lib/property/rentcast.ts")
+    if (!loaded(rc, "lib/property/rentcast.ts", "getRentcastPropertyRecord", "getRentcastSoldRecords")) return
+    try { (await load("lib/property/rentcast-eligibility.ts")).resetRentcastPlatformCapState?.() } catch { /* base */ }
+    const caller = { brokerageId: gB1 }
+    gWorld()
+    const same = "12 Fixture Ln, Testville, TX 70001"
+    await quiet(() => Promise.all([rc.getRentcastPropertyRecord({ ...caller, address: same }), rc.getRentcastPropertyRecord({ ...caller, address: same })]))
+    neg("two CONCURRENT reads of one address make ONE paid request (not two)", rentcastCalls() === 1, rentcastCalls())
+    await quiet(() => rc.getRentcastPropertyRecord({ ...caller, address: same }))
+    pos("a later read of the same address is REUSED from cache — still one request, one ledger row", rentcastCalls() === 1 && logged("usage").length === 1, { calls: rentcastCalls(), usage: logged("usage").length })
+    gWorld(); G.__P.gatewayAnswer = () => ({ ok: false, status: 500, data: null, error: "fixture 500" })
+    const failed = await quiet(() => rc.getRentcastPropertyRecord({ ...caller, address: "99 Failed Rd, Testville, TX 70009" }))
+    neg("a FAILED (500) request books ZERO spend (RentCast bills only a 200)", failed === null && logged("usage").length === 0, logged("usage"))
+    gWorld()
+    G.__P.gatewayAnswer = () => ({ ok: true, status: 200, error: null, data: [
+      { id: "s1", formattedAddress: "1 Sold St, Testville, TX 70001", bedrooms: 3, lastSaleDate: "2026-09-14T00:00:00.000Z", lastSalePrice: 410000 },
+      { id: "s2", formattedAddress: "2 Unknown St, Testville, TX 70001", bedrooms: 4 },
+    ] })
+    const sold: any = await quiet(() => rc.getRentcastSoldRecords({ ...caller, zipCode: "70001", saleDateRangeDays: 180 }))
+    const r1 = sold?.records?.find((r: any) => /1 Sold/.test(r.address ?? r.formattedAddress ?? JSON.stringify(r))), r2 = sold?.records?.find((r: any) => /2 Unknown/.test(JSON.stringify(r)))
+    pos("a recorded sale carries ITS sale date and price as RentCast reports them", r1?.lastSalePrice === 410000 && r1?.lastSaleDate === "2026-09-14", r1)
+    neg("a record with NO sale fields reports null date and null price — nothing fabricated", !!r2 && r2.lastSalePrice === null && r2.lastSaleDate === null, r2)
+    neg("…and no record is labelled 'sold' / given a status it did not carry", !JSON.stringify(r2 ?? {}).match(/"status":"(Sold|sold)"/), r2)
+    const again: any = await quiet(() => rc.getRentcastSoldRecords({ ...caller, zipCode: "70001", saleDateRangeDays: 180 }))
+    pos("the same area's sold records are REUSED (cache hit, one paid request in total)", again?.cacheHit === true && rentcastCalls() === 1, { cacheHit: again?.cacheHit, calls: rentcastCalls() })
+    ctrl("POSITIVE CONTROL: two DIFFERENT addresses do make two requests (the dedup is per record, not a blanket block)", await (async () => { gWorld(); await quiet(() => Promise.all([rc.getRentcastPropertyRecord({ ...caller, address: "1 A St, X, TX 70001" }), rc.getRentcastPropertyRecord({ ...caller, address: "2 B St, X, TX 70001" })])); return rentcastCalls() === 2 })())
+  },
+})
+
+canary({
+  id: "C16", title: "Datafiniti's free count / schema helps decide BEFORE any paid download",
+  failure: "a licensed-but-dormant account makes a paid request",
+  seams: () => G_SEAMS,
+  async run() {
+    const door = await load("lib/lead-pipeline/datafiniti-dataset-door.ts"), dc = await load("lib/external/datafiniti-client.ts"), rail = await load("lib/ai-isa/property-lookup-rail.ts")
+    if (!loaded(door, "lib/lead-pipeline/datafiniti-dataset-door.ts", "runDatafinitiDatasetDoor") || !loaded(rail, "lib/ai-isa/property-lookup-rail.ts", "PROVIDER_ACTIVATION")) return
+    const df: any[] = []
+    const envelope = (payload: unknown) => JSON.stringify({ jsonrpc: "2.0", id: 1, result: { structuredContent: payload } })
+    const transport = async (req: any) => { df.push(req); const name = req.body?.params?.name; if (name === "df_get_schema") return { status: 200, data: envelope({ schema: { province: "string", city: "string", mostRecentStatus: "string" } }), error: null, headers: {} }; if (name === "df_count") return { status: 200, data: envelope({ num_found: 42 }), error: null, headers: {} }; return { status: 200, data: envelope({ records: [{ id: "r1" }], num_found: 1 }), error: null, headers: {} } }
+    const need = { dataType: "property", terms: [{ field: "province", op: "eq", value: "TX" }], uses: ["enrichment"], gapFields: ["mostRecentStatus"], delivery: "download", numRecords: 40 }
+    const dormant: any = await quiet(() => door.runDatafinitiDatasetDoor({ mode: "execute", brokerageId: gB1, route: "platform", need, approval: { approvedBy: gU1, maxCredits: 1000 }, requestId: "r1" }, { client: { transport, env: { DATAFINITI_API_TOKEN: "fixture" } } }))
+    neg("the platform account at its DECLARED activation (dormant, pending rights) makes ZERO calls — not even the free schema — on an approved execute", dormant?.refused != null && dormant?.stage === "rights" && df.length === 0, { stage: dormant?.stage, calls: df.length })
+    const tenant: any = await quiet(() => door.runDatafinitiDatasetDoor({ mode: "execute", brokerageId: gB1, route: "tenant", tenantConnection: { id: "c1", brokerageId: gB1, token: "tenant-fixture", verdict: { state: "pending_owner_licensing", mayIngest: false, reason: "fixture" } }, need, approval: { approvedBy: gU1, maxCredits: 1000 }, requestId: "r2" }, { client: { transport } }))
+    neg("a tenant's own Datafiniti key pending the owner's licensing decision: ZERO calls", tenant?.stage === "rights" && df.length === 0, tenant?.stage)
+    if (typeof dc.countDatafinitiPeople === "function") {
+      const noTok: any = await quiet(() => dc.countDatafinitiPeople({ owner: "tenant", brokerageId: gB1, connectionId: "c3", token: null }, { lastName: "Fixture", province: "TX" }, { transport, env: { DATAFINITI_API_TOKEN: "platform-fixture" } }))
+      neg("a tenant credential with no token never falls back to the platform token (zero calls)", noTok?.ok === false && df.length === 0, noTok)
+    }
+    const permitted = { multi_tenant: "permitted", storage: "permitted", enrichment: "permitted", ai_processing: "permitted", export: "permitted", outreach: "permitted", retentionDays: 30, source: "TEST ONLY" }
+    const active = { ...rail.PROVIDER_ACTIVATION.datafiniti, state: "active" }
+    const pre: any = await quiet(() => door.runDatafinitiDatasetDoor({ mode: "preflight", brokerageId: gB1, route: "platform", need }, { client: { transport, env: { DATAFINITI_API_TOKEN: "fixture" } }, activation: active, rights: permitted }))
+    const names = df.map((r) => r.body?.params?.name)
+    pos("with activation + rights flipped IN THE TEST ONLY, the preflight runs the FREE schema + count first (df_get_schema, df_count) and returns the count (42)", names.join() === "df_get_schema,df_count" && pre?.count === 42, { names, count: pre?.count })
+    neg("…and the preflight downloaded nothing and charged nothing (no df_search / df_start_download; charged 0)", !names.includes("df_start_download") && !names.includes("df_search") && pre?.calls?.charged === 0, pre?.calls)
+    if (typeof rail.decidePrePull === "function") {
+      const fc = rail.decidePrePull({ capability: "owner_contact", materialFields: ["email"], freeCount: { available: true, count: null } })
+      pos("the pre-pull waterfall asks the free count FIRST — no purchase line yet", fc.stage === "free_count" && fc.buy.length === 0, fc)
+      ctrl("POSITIVE CONTROL: a free count of 0 → nothing to buy (the count actually decides)", rail.decidePrePull({ capability: "owner_contact", materialFields: ["email"], freeCount: { available: true, count: 0 } }).stage === "nothing_found")
+    }
+  },
+})
+
+canary({
+  id: "C17", title: "A Versium marginal field append is justified on a matched cohort and FULLY LOADED cost",
+  failure: "a marketing headline rate is treated as a signed contract",
+  seams: () => G_SEAMS,
+  async run() {
+    const econ = await load("lib/vendor-governance/acquisition-economics.ts"), rail = await load("lib/ai-isa/property-lookup-rail.ts")
+    if (!loaded(econ, "lib/vendor-governance/acquisition-economics.ts", "PROVIDER_COMMITMENT_TERMS", "costUnderCommitment", "foldCohortFinance")) return
+    const annual = (econ.PROVIDER_COMMITMENT_TERMS as any[]).find((x) => x.provider === "versium" && x.termMonths === 12)
+    neg("the Versium plan is declared as a PUBLISHED rate with executedQuote: false and its source — never a signed contract", !!annual && annual.executedQuote === false && /versium/.test(String(annual.source)), annual)
+    const low = econ.costUnderCommitment(annual, 1_000)
+    neg("at 1,000 credits/month the $5,000/yr minimum binds: ~$0.42 per credit, NOT the $0.02 headline", low.minimumBinding === true && low.effectiveUnitUsd > 0.4 && low.monthlyUsd === 416.67, low)
+    ctrl("POSITIVE CONTROL: at full use the effective rate IS the plan's $0.02", (() => { const f = econ.costUnderCommitment(annual, 250_000 / 12); return f.effectiveUnitUsd === 0.02 && f.minimumBinding === false })())
+    const unknown = (econ.PROVIDER_COMMITMENT_TERMS as any[]).find((x) => x.provider === "datafiniti")
+    neg("an unpublished overage reads UNKNOWN (null), never $0", !!unknown && econ.costUnderCommitment(unknown, 20_000).monthlyUsd === null)
+    const partial = econ.foldCohortFinance({ subscriptionAllocationUsd: null, billedRequestsUsd: 100, aiToolUsd: null, validationUsd: null, usablePersons: null, promotedLeads: 50, qualifiedContacts: 10, closedOpportunities: null })
+    neg("with no blinded match verification the cost per usable person is NULL and every figure is a lower bound — no fabricated match rate", partial.complete === false && partial.costPerUsablePersonUsd === null && partial.unknowns.length > 0, partial)
+    const full = econ.foldCohortFinance({ subscriptionAllocationUsd: 416.67, billedRequestsUsd: 83.33, aiToolUsd: 50, validationUsd: 50, usablePersons: 400, promotedLeads: 100, qualifiedContacts: 20, closedOpportunities: 2 })
+    pos("on a MATCHED cohort with every cost part known: $600 fully loaded / 400 usable persons = $1.50 per usable person", full.complete === true && full.costPerUsablePersonUsd === 1.5, full)
+    if (typeof rail.decidePrePull === "function") {
+      const sup = rail.decidePrePull({ capability: "owner_contact", materialFields: ["email", "phone"], activation: { versium: { state: "active" }, batchdata: { state: "dormant_survivor" }, peopledata: { state: "active" } }, supplies: { versium: ["email"], batchdata: ["phone"], peopledata: ["phone"] } })
+      pos("the MARGINAL append: the cheapest licensed provider buys only its missing field (versium: email), a narrow supplement the verified gap", sup.stage === "buy" && sup.buy[0]?.provider === "versium" && sup.buy[0]?.fields?.join() === "email", sup.buy)
+      neg("an unlicensed (dormant) provider is never the failover target", !sup.buy.some((b: any) => b.provider === "batchdata"), sup.buy)
+      neg("own verified fresh record → reuse, nothing bought", rail.decidePrePull({ capability: "owner_contact", materialFields: ["email"], held: { email: { verified: true, ageDays: 10 } } }).stage === "reuse_own_record")
+    }
+  },
+})
+
+// ── market intelligence (156I) ───────────────────────────────────────────────────────────────────────────────────────────
+const iB1 = u("b", 91)
+canary({
+  id: "C18", title: "Permitted public intent becomes an age-verified RawData / Raw Lead",
+  failure: "an anonymous Google Trends search (or forum post) identifies a named person",
+  seams: () => ({ override: { "lib/ai/models.ts": "export async function generateTextRouted(){ globalThis.__P.count('model'); return { text: '', usage: {} } }; export async function generateObjectRouted(){ globalThis.__P.count('model'); return { object: {}, usage: {} } }" } }),
+  async run() {
+    const pr = await load("lib/acquisition-plays/public-request.ts"), stmt = await load("lib/acquisition-plays/public-statement.ts")
+    if (!loaded(pr, "lib/acquisition-plays/public-request.ts", "runPublicRequestPlay")) return
+    const now = new Date(), daysAgo = (d: number) => new Date(now.getTime() - d * 86_400_000).toISOString()
+    const ingested: any[] = []
+    const deps = {
+      ingest: async (p: any) => { ingested.push(...p.records.map((r: any) => ({ ...r, __subject: r.envelope?.subjectKind }))); return { inserted: p.records.length, replayed: 0, skipped_territory: 0, skipped_stale: 0, skipped_refused: 0 } },
+      findContact: async () => ({ contactId: null, error: null }), respond: async () => { throw new Error("fixture: no existing contact") },
+      loadKnown: async () => ({ sourceRecordIds: new Set<string>(), personKeys: new Set<string>(), propertyKeys: new Set<string>(), priorProviderResults: new Map(), scope: { brokerageId: iB1, includesPlatformPool: false } }),
+    }
+    const res = (id: string, url: string, text: string, author: string | null = null) => ({ id, url, title: null, text, author, publishedDate: daysAgo(2), highlights: null, extracted: null, publisher: null })
+    const results = [
+      res("r-adult", "https://austin.craigslist.org/hsw/d/austin-wanted-home/7000000001.html", "We are looking to buy a house in Austin this year. Please email me at jane.buyer@example.com with any homes."),
+      res("r-minor", "https://austin.craigslist.org/hsw/d/austin-first-home/7000000002.html", "I'm 16 and looking to buy a house in Austin this year. Email me at teen.buyer@example.com please."),
+      res("r-forum", "https://www.reddit.com/r/Austin/comments/abc123/buying_advice/", "We are looking to buy a house in Austin this year, any advice on neighborhoods?", "u_quiet_handle"),
+      res("r-trend", "https://trends.google.com/trends/explore?geo=US-TX&q=homes%20for%20sale%20austin", "Interest over time for homes for sale austin, Texas."),
+    ]
+    const out: any = await quiet(() => pr.runPublicRequestPlay({ from: () => { throw new Error("fixture: no direct reads") } }, { market: { id: "m-austin", brokerage_id: iB1, name: "Austin", city: "Austin", state: "TX", zip_codes: [] }, hunt: null, results, now }, deps))
+    const persons = ingested.filter((r) => r.__subject === "person")
+    pos("an ADULT's own first-person need with the contact point they published becomes exactly ONE Raw Lead", persons.length === 1 && persons[0].email === "jane.buyer@example.com", persons.map((p) => p.email))
+    neg("the author who says they are 16 is NOT filed as a person (age-verified)", !ingested.some((r) => r.email === "teen.buyer@example.com"), ingested.map((r) => [r.__subject, r.email]))
+    neg("an anonymous Google Trends page NEVER yields a person", !persons.some((p) => /trends\.google/.test(String(p.sourceUrl))))
+    neg("an anonymous forum post never yields a named person (no handle carried as identity)", !persons.some((p) => /reddit\.com/.test(String(p.sourceUrl))) && !ingested.some((r) => r.__subject === "person" && JSON.stringify(r).includes("u_quiet_handle")))
+    neg("no non-person record carries an email or a phone", ingested.filter((r) => r.__subject !== "person").every((r) => !r.email && !r.phone))
+    if (typeof stmt.authorStatesMinor === "function") ctrl("POSITIVE CONTROL: the age screen does not fire on an adult age, a distance or a third party's age", ["I'm 34 and relocating for work", "I'm 5 minutes from downtown", "My son is 16 and we are moving"].every((t) => stmt.authorStatesMinor(t) === false))
+    ctrl("no model was called on the person path", calls("model") === 0 && calls("fetch") === 0)
+    void out
+  },
+})
+
+canary({
+  id: "C19", title: "A real local event or consumer question generates on-brand ORIGINAL content",
+  failure: "an invented event / date, competitor copy, or false viral metrics",
+  seams: () => ({}),
+  async run() {
+    const ti = await load("lib/content-intel/topic-intake.ts")
+    if (!loaded(ti, "lib/content-intel/topic-intake.ts", "intakeTopicIdeas", "classifyTopicExclusion")) return
+    const NOW = new Date(), daysAgo = (d: number) => new Date(NOW.getTime() - d * 86_400_000).toISOString()
+    const db = memSupabase({ content_topic_bank: [], content_topic_sources: [{ id: "src-1", brokerage_id: iB1, is_active: true }] }); G.__P.mem = db
+    const base = { observedAt: NOW.toISOString(), publishedAt: daysAgo(5), rights: "public_read_reworded", sourceId: "src-1" }
+    const joining = { ...base, sourceKind: "competitor_ad", title: "Please welcome our newest agent Sam Rivera to the team!", evidence: { kind: "proxy", metric: "search_relevance_recency", value: 95, unit: "search_relevance_0_100" } }
+    const question = { ...base, sourceKind: "community_post", title: "How do property taxes change after you buy a home in Austin?", geo: { city: "Austin", state: "TX" }, evidence: { kind: "proxy", metric: "x", value: 40, unit: "score_0_100" }, dedupKey: "p156:property-taxes-austin" }
+    const viral = { ...base, sourceKind: "community_post", title: "Everyone is asking about flood insurance in Austin", evidence: { kind: "unknown" } }
+    const r1: any = await quiet(() => ti.intakeTopicIdeas(db, { brokerageId: iB1, ideas: [joining, question, viral], now: NOW }))
+    const reasons = (r1?.excluded ?? []).map((e: any) => e.reason)
+    neg("a competitor's 'welcome our newest agent' post never reaches the topic bank (no competitor copy)", !T(db, "content_topic_bank").some((r) => /welcome|newest agent/i.test(String(r.topic_title))), reasons)
+    neg("an unmeasured 'everyone is asking' claim is refused (no invented viral metric)", reasons.includes("unmeasured_trend_claim"), reasons)
+    pos("a real consumer question is stored ONCE as a topic", r1?.inserted === 1 && T(db, "content_topic_bank").length === 1, r1)
+    const r2: any = await quiet(() => ti.intakeTopicIdeas(db, { brokerageId: iB1, ideas: [{ ...question, observedAt: new Date(NOW.getTime() + 60_000).toISOString() }], now: NOW }))
+    neg("the same question observed again MERGES into the one topic (no duplicate campaign seed)", r2?.inserted === 0 && r2?.merged === 1 && T(db, "content_topic_bank").length === 1, r2)
+    const LE = await load("lib/newsletter/local-events.ts")
+    if (loaded(LE, "lib/newsletter/local-events.ts", "runLocalEventsPass")) {
+      const src = { id: "src-lib", brokerageId: iB1, label: "Springfield Public Library", sourceClass: "library_calendar", access: "publisher_syndication_feed", url: "https://library.springfield.gov/events.ics", rights: { termsNote: "public calendar feed offered for syndication", recordedBy: "u-admin", recordedAt: "2026-11-01T00:00:00Z", licenseRef: null }, territory: { city: "Springfield", state: "IL", zip: null }, lastRunAt: null }
+      const future = new Date(NOW.getTime() + 10 * 86_400_000).toISOString().slice(0, 10)
+      const ev = (over: Record<string, unknown> = {}) => ({ sourceEventKey: "uid-fair", url: "https://library.springfield.gov/events/fall-book-fair", title: "Fall Book Fair", location: { kind: "physical", venue: "Main Library", city: "Springfield", state: "IL", zip: "62701", virtualUrl: null }, start: { date: future, time: "10:00", timeZone: "America/Chicago" }, end: null, status: "scheduled", ...over })
+      const edb = memSupabase({ content_topic_bank: [], content_topic_sources: [{ id: `sys-${iB1}`, brokerage_id: iB1, source_type: "manual", is_active: true, label: "system", source_config: { system_writer: "topic_intake" } }] })
+      const deps = { now: NOW, intake: ti.intakeTopicIdeas, ledger: async (_c: any, run: () => Promise<any>) => run(), inTerritory: async () => (a: any) => a.city === "Springfield", screen: async () => () => null, transports: {} }
+      const bad: any = await quiet(() => LE.runLocalEventsPass(edb, iB1, { ...deps, extraEvents: [{ source: src, events: [ev({ sourceEventKey: "k1", start: { date: null, time: null, timeZone: null } }), ev({ sourceEventKey: "k2", status: "canceled" })] }], onlyExtra: true } as any).catch((e: Error) => ({ threw: e.message })))
+      neg("an event with NO verified date, and a CANCELED event, generate nothing (no invented date / event)", (bad?.verified ?? 0) === 0 && T(edb, "content_topic_bank").length === 0 && !bad?.threw, bad)
+      const good: any = await quiet(() => LE.runLocalEventsPass(edb, iB1, { ...deps, extraEvents: [{ source: src, events: [ev()] }], onlyExtra: true } as any).catch((e: Error) => ({ threw: e.message })))
+      pos("a REAL, dated, in-territory library event is verified and becomes topic(s) carrying its source URL", good?.verified === 1 && T(edb, "content_topic_bank").length > 0 && JSON.stringify(T(edb, "content_topic_bank")).includes("library.springfield.gov"), { verified: good?.verified, n: T(edb, "content_topic_bank").length, threw: good?.threw })
+    }
+    note("'on-brand' first generation is proven at the PROMPT level by test:wave156-i §D (no model is called here); the rendered copy is not covered")
+  },
+})
+
 // ═══ child / parent ═══════════════════════════════════════════════════════════════════════════════════════════════════════
 async function child(id: string) {
   const c = CANARIES.find((x) => x.id === id)
