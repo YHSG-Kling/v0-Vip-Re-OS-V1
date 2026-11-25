@@ -18,7 +18,7 @@
  *    vendor — gateway calls (`callConnector` with a classified connector), raw `fetch` to a classified host, and the
  *    ElevenLabs SDK adapter's exported calls — is found, classified billable / not billable (a GET status read, a provisioning
  *    call with no per-call charge — each with its reason), and attributed to its door. A door PASSES when it reaches the one
- *    paid-egress composition (budget-gate.ts runPaidEgress). Every other billable door must be NAMED below with its reason
+ *    paid-egress composition (paid-egress.ts runPaidEgress). Every other billable door must be NAMED below with its reason
  *    (the denominator is printed); an unnamed miss fails, and a named entry that is no longer a miss fails (stale).
  *    The vendor classification covers every vendor the code itself prices as platform media (meter-vendor.ts
  *    PLATFORM_VENDOR_RATES) and every non-LLM `ai` connector in connector-registry.ts — derived, with a control.
@@ -391,7 +391,7 @@ async function main() {
 
   // ═════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
   section("§D the paid doors — driven with counted provider stubs (no provider is ever reached)")
-  const gate = await load("lib/vendor-governance/budget-gate.ts")
+  const gate = await load("lib/vendor-governance/paid-egress.ts")
   const evalMod = await load("lib/vendor-governance/budget-eval.ts")
   const OVER = "b-over", UNDER = "b-under"
   const budgetOf = (tier: string) => Number(evalMod.vendorBudgetForTier?.(tier) ?? 50)
@@ -405,7 +405,7 @@ async function main() {
   const reset = (fail = false) => { const db = spendWorld(); G.__S.mem = db; G.__S.calls = { elevenlabs: 0, did: 0, image: 0, fetch: 0, search: 0, imageBooked: 0 }; G.__S.fail = fail; return db }
   const spendRows = (db: MemClient, b: string) => db.tables.vendor_usage_tracking.filter((r) => r.brokerage_id === b && r.id !== "spent-1")
   const receipts = (db: MemClient, b: string) => (db.tables.agent_action_ledger ?? []).filter((r) => r.brokerage_id === b)
-  check("the ONE paid-egress composition exists (budget-gate.ts runPaidEgress)", typeof gate.runPaidEgress === "function")
+  check("the ONE paid-egress composition exists (paid-egress.ts runPaidEgress)", typeof gate.runPaidEgress === "function")
 
   const tts = await load("lib/voice/elevenlabs-tts.ts")
   const realFetch = globalThis.fetch
@@ -480,7 +480,7 @@ async function main() {
   }
   if (typeof gate.paidEgressCost === "function") {
     check("the composition never prices a failed call (paidEgressCost ok:false → 0) and prefers the door's own price", gate.paidEgressCost({ estimatedCostUsd: 1 }, { ok: false, costUsd: 5 }) === 0 && gate.paidEgressCost({ estimatedCostUsd: 1 }, { ok: true, costUsd: 0.25 }) === 0.25 && gate.paidEgressCost({ estimatedCostUsd: 1 }, { ok: true }) === 1)
-  } else check("budget-gate.ts paidEgressCost exists", false)
+  } else check("paid-egress.ts paidEgressCost exists", false)
 
   // ═════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
   section("§E honest transport")

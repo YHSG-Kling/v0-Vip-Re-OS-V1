@@ -172,7 +172,7 @@ export async function synthesizeSpeech(
     const modelId = input.modelId ?? DEFAULT_BUFFERED_MODEL_ID
     const langField = languageCodeField(modelId, input.languageCode)
     // THE PAID DOOR (wave 156, lane 156S): budget before the call, a receipt, the spend booked only on success
-    // (lib/vendor-governance/budget-gate.ts runPaidEgress). Over budget → "quota", the provider never reached;
+    // (lib/vendor-governance/paid-egress.ts runPaidEgress). Over budget → "quota", the provider never reached;
     // callers fall back to browser TTS on quota. A call with no tenant is now booked as platform spend.
     const paid = await runTtsDoor(input, "voice_tts", { voice_id: voiceId }, () => convertSpeech(apiKey, {
       voiceId,
@@ -396,7 +396,7 @@ export function audioBufferToDataUrl(buffer: Buffer): string {
 
 /**
  * THE ONE PAID DOOR every ElevenLabs synthesis leg above goes through (wave 156, lane 156S) — the existing
- * lib/vendor-governance/budget-gate.ts runPaidEgress with this vendor's ONE price (estimatePlatformVendorCost
+ * lib/vendor-governance/paid-egress.ts runPaidEgress with this vendor's ONE price (estimatePlatformVendorCost
  * "elevenlabs", per character). Replaces three hand-assembled copies: the buffered and timestamped legs gated + booked
  * only when a tenant was passed, the stream leg gated and never booked; none left a receipt.
  */
@@ -407,7 +407,7 @@ async function runTtsDoor<T>(
   call: () => Promise<T>,
   ok: (r: T) => boolean,
 ) {
-  const { runPaidEgress } = await import("@/lib/vendor-governance/budget-gate")
+  const { runPaidEgress } = await import("@/lib/vendor-governance/paid-egress")
   const { estimatePlatformVendorCost } = await import("@/lib/vendor-governance/meter-vendor")
   const chars = input.text.length
   return runPaidEgress<T>({

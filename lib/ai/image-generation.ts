@@ -602,7 +602,7 @@ function randomSlug(): string {
 /**
  * THE PAID IMAGE DOOR (wave 156, lane 156S). generateImage booked its spend on ai_tool_usage (139C) but never asked the
  * budget: an over-budget tenant's image still reached the model. It now goes through the ONE paid-egress composition
- * (lib/vendor-governance/budget-gate.ts runPaidEgress): the tenant's vendor budget BEFORE the provider is reached (priced
+ * (lib/vendor-governance/paid-egress.ts runPaidEgress): the tenant's vendor budget BEFORE the provider is reached (priced
  * at the DALL-E 3 list price of this size / quality, the dearer of the two legs — the pre-flight never under-asks), an
  * action receipt, and `book: "caller"` — the spend stays on ai_tool_usage exactly as before (generateImageBehindTheDoor's
  * logAIImageUsage, once per input.spend.idempotencyKey). The receipt carries NO idempotency key on purpose: that key names
@@ -611,7 +611,7 @@ function randomSlug(): string {
  * this door — named in docs/operations/WAVE156-RENDER-AND-QUEUE.md.
  */
 export async function generateImage(input: GenerateImageInput): Promise<GenerateImageResult> {
-  const { runPaidEgress } = await import("@/lib/vendor-governance/budget-gate")
+  const { runPaidEgress } = await import("@/lib/vendor-governance/paid-egress")
   const size = input.size ?? DEFAULT_SIZES[input.purpose]
   const quality = input.quality ?? "standard"
   const estimate = priceImageGeneration({ model: "dall-e-3", quality, size }).costUsd

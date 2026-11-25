@@ -82,7 +82,7 @@ console.log("\n═══ 2. The refusal lands BEFORE money is spent ═══")
 {
   const d = code(DID)
   const refusalAt = d.indexOf("!avatarSrc.actorId && !avatarSrc.sourceUrl")
-  // Wave 156 (lane 156S): the vendor budget is asked inside the ONE paid-egress composition (budget-gate.ts runPaidEgress,
+  // Wave 156 (lane 156S): the vendor budget is asked inside the ONE paid-egress composition (paid-egress.ts runPaidEgress,
   // which calls checkVendorBudget before the provider); the gate is located by whichever of the two this tree spells.
   const budgetAt = [d.indexOf("checkVendorBudget"), d.indexOf("runPaidEgress")].filter((i) => i >= 0).sort((a, b) => a - b)[0] ?? -1
   // The SUBMIT, not the helper. `didPost(` alone matches the function's own

@@ -516,11 +516,11 @@ export async function generateVideo(
   // 2. Submit the D-ID job
   // ---------------------------------------------------------------------------
 
-  // THE PAID DOOR (wave 156, lane 156S) — lib/vendor-governance/budget-gate.ts runPaidEgress: the vendor budget
+  // THE PAID DOOR (wave 156, lane 156S) — lib/vendor-governance/paid-egress.ts runPaidEgress: the vendor budget
   // BEFORE the submit (auto-pause when the brokerage is over its monthly platform-vendor ceiling), an action receipt,
   // and the spend (D-ID bills per submitted talk render) booked only once the submit succeeded, under the caller's
   // idempotency key — a retried submit replays the job it already bought.
-  const { runPaidEgress } = await import("@/lib/vendor-governance/budget-gate")
+  const { runPaidEgress } = await import("@/lib/vendor-governance/paid-egress")
   const { estimatePlatformVendorCost } = await import("@/lib/vendor-governance/meter-vendor")
 
   // V4 EXPRESSIVE (owner rule: personalized avatar video rides D-ID's newest
@@ -536,7 +536,7 @@ export async function generateVideo(
   // reason rides the result so the caller records the fallback honestly.
   const keyed = transparentPresenterConfig(isV4Expressive ? "expressives" : "talks", input.transparentBackground === true)
   let talkId: string
-  let paid: import("@/lib/vendor-governance/budget-gate").PaidEgressResult<{ id: string }>
+  let paid: import("@/lib/vendor-governance/paid-egress").PaidEgressResult<{ id: string }>
   try {
     paid = await runPaidEgress<{ id: string }>({
       brokerageId: input.brokerageId, vendor: "did", usageType: "video_render", action: "video.did.render",

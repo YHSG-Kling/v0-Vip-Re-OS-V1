@@ -132,17 +132,17 @@ export async function webSearch(params: {
   /** Only content published in the last N days (Exa startPublishedDate / Tavily days). */
   withinDays?: number
   spend?: WebSearchSpend
-}, deps: { tavily?: TavilyFn; exa?: ExaFn; meter?: typeof meterVendorSpend; egress?: typeof import("@/lib/vendor-governance/budget-gate").runPaidEgress } = {}): Promise<WebSearchResult> {
+}, deps: { tavily?: TavilyFn; exa?: ExaFn; meter?: typeof meterVendorSpend; egress?: typeof import("@/lib/vendor-governance/paid-egress").runPaidEgress } = {}): Promise<WebSearchResult> {
   // deps: injectable searchers + meter for the proof (scripts/cost-completeness-guard.ts) — never set in production.
   const search = () => runWebSearch(params, { tavily: deps.tavily ?? tavilySearch, exa: deps.exa ?? exaSearch })
   if (!params.spend) return search()
   // THE PAID RESEARCH DOOR (wave 156, lane 156S): a TENANT-attributed search asks that tenant's vendor budget BEFORE an
-  // engine is reached and leaves a receipt (lib/vendor-governance/budget-gate.ts runPaidEgress, `book: "caller"` — the
+  // engine is reached and leaves a receipt (lib/vendor-governance/paid-egress.ts runPaidEgress, `book: "caller"` — the
   // spend still books through bookWebSearchSpend below, under the provider that served). A platform-paid search (no
   // tenant) has no tenant ceiling to ask; it runs and books exactly as before.
   const spend = params.spend
   if (spend.brokerageId) {
-    const runPaidEgress = deps.egress ?? (await import("@/lib/vendor-governance/budget-gate")).runPaidEgress
+    const runPaidEgress = deps.egress ?? (await import("@/lib/vendor-governance/paid-egress")).runPaidEgress
     const { TAVILY_CREDITS_PER_SEARCH, TAVILY_CREDIT_USD } = await import("@/lib/vendor-governance/cost-normalizer")
     const paid = await runPaidEgress<WebSearchResult>({
       brokerageId: spend.brokerageId, vendor: params.mode === "research" ? "tavily" : "exa", usageType: "web_search", action: "research.web.search",
