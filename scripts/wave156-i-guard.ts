@@ -61,7 +61,7 @@ const raw = (f: string): string => { const p = join(ROOT, f); return existsSync(
 
 // ── module hooks: "@/x" resolves under ROOT; provider / session seams are counted stubs ─────────────────────────────────────
 const G = globalThis as any
-G.__I = { socrata: [] as string[], arcgis: [] as string[], permitRows: [] as any[], proposals: [] as any[], compCalls: [] as string[], compFixture: null as any, model: 0, svcMem: null as any, gateway: [] as any[], usage: [] as any[] }
+G.__I = { socrata: [] as string[], arcgis: [] as string[], permitRows: [] as any[], proposals: [] as any[], compCalls: [] as string[], compFixture: null as any, model: 0, svcMem: null as any, gateway: [] as any[], usage: [] as any[], gapFill: 0 }
 const realUrl = (p: string) => pathToFileURL(join(ROOT, p)).href
 const OVERRIDE: Record<string, string> = {
   // The two permit portals — COUNTED; no portal is ever reached.
@@ -79,10 +79,14 @@ const OVERRIDE: Record<string, string> = {
   "lib/ai/models.ts": "export async function generateTextRouted(){ globalThis.__I.model++; return { text: 'fixture narrative', usage: {} } }; export async function generateObjectRouted(){ globalThis.__I.model++; return { object: {}, usage: {} } }",
   "lib/cma/state-adjustment-rates.ts": "export async function getStateAdjustmentRates(state, year){ return { state, requestedYear: year, rates: new Map(), vintagesUsed: [], newestVintage: null, oldestVintage: null, readFailed: false, vintageNote: 'fixture: no rate rows', stale: false } }",
 }
+// ROUND 2 §I / ROUND 5 §O — the comp door: §I's COUNTED fixture while one is set; the REAL sourceCompsForCma otherwise (§O drives the
+// real cost path behind the counted RentCast egress). The import is resolved by the hook to the real file (data: parent).
+OVERRIDE["lib/cma/comp-provider.ts"] = `import * as __realComps from ${JSON.stringify(realUrl("lib/cma/comp-provider.ts"))}; export async function sourceCompsForCma(req){ if (globalThis.__I.compFixture) { globalThis.__I.compCalls.push(req.address); return globalThis.__I.compFixture } return __realComps.sourceCompsForCma(req) }`
+// ROUND 5 §O — the AI gap-fill finder, COUNTED and free (no model, no web search; its cost constant is 0 so §O measures RentCast alone).
+OVERRIDE["lib/cma/perplexity-comp-finder.ts"] = "export const PERPLEXITY_COMP_SEARCH_COST_USD = 0; export async function findCompsViaPerplexity(){ globalThis.__I.gapFill++; return { closedComps: [], pendingComps: [], activeComps: [], citations: [], searchQuery: 'fixture', rawAnalysis: '', arvMode: false, dropped: [] } }"
 const REPLACE: Record<string, string> = {
   // ROUND 2 §I — the comp source door, COUNTED (production: lib/cma/comp-provider.ts sourceCompsForCma — RentCast under the 156G
   // eligibility ceiling + single-flight). No provider is reached; the fixture's sold comps carry their sale dates.
-  "lib/cma/comp-provider.ts": "export const REQUIRED_SOLD_COMPS = 3; export async function sourceCompsForCma(req){ globalThis.__I.compCalls.push(req.address); return globalThis.__I.compFixture }",
   // The proposal rail — counted; it files the row on the client it is handed so the next run's dedup read can see it.
   "lib/agents/agent-client-messages.ts": "export async function proposeClientMessage(input, client){ globalThis.__I.proposals.push(input); const { data, error } = await client.from('agent_client_messages').insert({ brokerage_id: input.brokerageId, agent_kind: input.agentKind, entity_type: input.entityType, entity_id: input.entityId, audience: input.audience, subject: input.subject, body: input.body, rationale: input.rationale, status: 'proposed' }).select('id'); return error ? { ok: false, error: error.message } : { ok: true, id: (data ?? [])[0]?.id } }",
 }
@@ -421,6 +425,7 @@ async function sectionI() {
   check("I TX (a non-disclosure state): the CMA says sale prices are not public and come from MLS / provider estimates", (tx.disclaimers ?? []).some((d: string) => /non-disclosure state/.test(d) && /sale date/.test(d)), tx.disclaimers)
   check("I POSITIVE CONTROL: CA (a disclosure state) carries no such caveat", !(ca.disclaimers ?? []).some((d: string) => /non-disclosure state/.test(d)), ca.disclaimers)
   const cav = cma.nonDisclosureSaleCaveat
+  G.__I.compFixture = null
   check("I Missouri is worded county-dependent; an unknown state gets nothing", typeof cav === "function" && /most counties/.test(String(cav("MO"))) && cav("NY") === null && cav(null) === null)
 }
 
@@ -629,9 +634,51 @@ async function sectionN() {
   check("POSITIVE CONTROL: the finder sees a planted call and ignores the same name in a comment", [...planted.matchAll(VENDOR_FNS)].map((m) => m[1]).join() === "getRentcastAvmAndComps")
 }
 
+
+// ══ ROUND 5 ════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// §O a cost that was not incurred is never booked — the CMA's cost estimate moves only for a request RentCast actually billed.
+async function sectionO() {
+  section("§O the CMA's cost estimate counts only billed requests: one paid → one request's cost; ceiling, ineligible, a joined flight, a cache hit → 0")
+  process.env.RENTCAST_API_KEY = process.env.RENTCAST_API_KEY || "fixture-not-a-key"
+  const el = await load("lib/property/rentcast-eligibility.ts")
+  const rc = await load("lib/property/rentcast.ts")
+  const cp = await load("lib/cma/comp-provider.ts")
+  const PER = Number(rc.RENTCAST_USD_PER_REQUEST ?? 0.074) * 100
+  const world = (used: number) => {
+    G.__I.svcMem = memSupabase({
+      platform_settings: [{ id: true, provider_request_caps: null }],
+      vendor_usage_tracking: Array.from({ length: used }, (_, i) => ({ id: `v${i}`, vendor_name: "rentcast", units_used: 1, total_cost: 0.074, created_at: `${new Date().toISOString().slice(0, 7)}-02T00:00:00.000Z`, request_metadata: {} })),
+    })
+    G.__I.gateway = []; G.__I.usage = []
+    try { el.resetRentcastPlatformCapState?.() } catch { /* base */ }
+  }
+  const rcCalls = () => (G.__I.gateway as any[]).filter((r) => r.connector === "rentcast").length
+  const subject = { address: "", city: "Austin", state: "TX", zip: "78701", propertyType: "single_family", sqftLiving: 1800, bedrooms: 3, fullBaths: 2, halfBaths: null, yearBuilt: 2005, conditionGrade: 3 }
+  const cma = (street: string) => cp.sourceCompsForCma({ brokerageId: B1, address: street, city: "Austin", state: "TX", zip: "78701", subject: { ...subject, address: street }, propertyType: "single_family", systemSource: "ai_cma" })
+  const cents = (r: any) => Number(r?.provenance?.estimatedCostCents ?? NaN)
+  world(0)
+  const one = await cma("800 Cost St")
+  check("POSITIVE: the estimate equals the billed requests × one request's cost (here " + rcCalls() + " billed)", rcCalls() >= 1 && Math.abs(cents(one) - rcCalls() * PER) < 0.01, { calls: rcCalls(), cents: cents(one), per: PER })
+  const billedFirst = rcCalls()
+  const again = await cma("800 Cost St")
+  check("NEGATIVE: the same address again is served from cache — 0 requests, 0 added", rcCalls() === billedFirst && cents(again) === 0, { calls: rcCalls() - billedFirst, cents: cents(again) })
+  world(0)
+  const [lead, join] = await Promise.all([cma("900 Twin St"), cma("900 Twin St")])
+  check("NEGATIVE: two concurrent CMAs of one address — the joiner adds 0; together they book exactly what was billed", Math.abs(cents(lead) + cents(join) - rcCalls() * PER) < 0.01 && Math.min(cents(lead), cents(join)) === 0, { calls: rcCalls(), lead: cents(lead), join: cents(join) })
+  world(el.RENTCAST_PLAN_INCLUDED_REQUESTS ?? 1000)
+  const capped = await cma("1000 Cap St")
+  check("NEGATIVE: at the platform ceiling — 0 requests, 0 added", rcCalls() === 0 && cents(capped) === 0, { calls: rcCalls(), cents: cents(capped) })
+  world(0)
+  const key = process.env.RENTCAST_API_KEY; delete process.env.RENTCAST_API_KEY
+  const inel = await cma("1100 Gate St")
+  process.env.RENTCAST_API_KEY = key
+  check("NEGATIVE: an ineligible tenant — 0 requests, 0 added", rcCalls() === 0 && cents(inel) === 0, { calls: rcCalls(), cents: cents(inel) })
+  G.__I.svcMem = null
+}
+
 async function main() {
   console.log(`wave156-i-guard — grounded market intelligence (modules from ${ROOT === WT ? "this tree" : ROOT})`)
-  for (const s of [sectionA, sectionB, sectionC, sectionD, sectionE, sectionF, sectionG, sectionH, sectionI, sectionJ, sectionK, sectionL, sectionM, sectionN]) {
+  for (const s of [sectionA, sectionB, sectionC, sectionD, sectionE, sectionF, sectionG, sectionH, sectionI, sectionJ, sectionK, sectionL, sectionM, sectionN, sectionO]) {
     try { await s() } catch (e) { check(`${s.name} ran without throwing`, false, e instanceof Error ? `${e.message}\n${e.stack?.split("\n").slice(1, 4).join(" | ")}` : String(e)) }
   }
   console.log(`\n${passed} passed, ${failed} failed`)

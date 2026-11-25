@@ -1293,7 +1293,7 @@ export interface RentcastAvmAndComps {
   /** Why not, when not. Null when it is available. */
   avmUnavailableReason: RentcastAvmUnavailableReason | null
   /** The gate's verdict, so a caller can say WHICH question suppressed the call. */
-  eligibility: RentcastEligibility
+  eligibility: RentcastEligibility; /** wave 156 (156I r5): THIS call made a billed request (a 200 from the leader of the single-flight). A cache hit, a joined flight, a refusal, a ceiling stop or an error is false. */ paidRequest?: boolean
 }
 
 /**
@@ -1348,10 +1348,11 @@ export async function getRentcastAvmAndComps(
     if (params.daysOld != null && params.daysOld >= 1) q.daysOld = Math.floor(params.daysOld)
     // Wave 92: cached per (address, comp bounds) for RENTCAST_CACHE_TTL_DAYS.avm — a re-generated
     // CMA, a second agent on the same listing or a retry reads the same row instead of re-paying.
+    let paidRequest = false // wave 156 (156I r5): set only inside the fetcher, which runs for the single-flight leader alone, on a cache miss
     const read = await cachedRentcastRead<RentcastAvmValueResponse>(
       `/avm/value(comps)|${addressCacheKey(params.address)}|${compCount}|${q.maxRadius ?? ""}|${q.daysOld ?? ""}`,
       RENTCAST_CACHE_TTL_DAYS.avm, async () => {
-        const res = await callRentcastGet("/avm/value", q, apiKey)
+        const res = await callRentcastGet("/avm/value", q, apiKey); paidRequest = res.ok
         meterCall({
           brokerageId: params.brokerageId,
           usageType: "comps_lookup",
@@ -1380,8 +1381,8 @@ export async function getRentcastAvmAndComps(
     }
 
     const avm = parseAvmValue(data)
-    if (avm.value == null) return empty("no_estimate", eligibility, comps)
-    return { comps, avm, avmAvailable: true, avmUnavailableReason: null, eligibility }
+    if (avm.value == null) return { ...empty("no_estimate", eligibility, comps), paidRequest }
+    return { comps, avm, avmAvailable: true, avmUnavailableReason: null, eligibility, paidRequest }
   } catch {
     return empty("provider_error", eligibility)
   }
