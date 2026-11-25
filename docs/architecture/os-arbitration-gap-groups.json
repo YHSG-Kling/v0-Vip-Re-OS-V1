@@ -1,7 +1,7 @@
 {
  "generator": "scripts/os-coverage-ledger.ts --write (wave 155, lane 155B1) — GENERATED, do not edit; per-row ledger: coverage/os-arbitration-coverage.json (on demand)",
  "states": {
-  "working": 2892,
+  "working": 2919,
   "owner-held": 73,
   "missing": 59
  },
@@ -184,7 +184,7 @@
    ]
   },
   "autonomousConsequentialWithoutRecovery": {
-   "rows": 323,
+   "rows": 324,
    "note": "recovery is REPORTED per row but is not a judged link (ECC agent-architecture-audit layer 12 cross-check): a failed autonomous run with no retry / sweep / escalation on its path"
   }
  }
