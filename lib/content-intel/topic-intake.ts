@@ -408,7 +408,7 @@ function prepare(idea: TopicIdea, nowMs: number, strip: { n: number }): { reason
   const gate = classifyTopicExclusion({ title, text: idea.angle ?? null, sourceKind: idea.sourceKind })
   if (gate.excluded && gate.reason) return { reason: gate.reason }
   const pd = personalDataProblem(title) ?? personalDataProblem(idea.angle)
-  if (pd) return { reason: "personal_data_in_topic" }
+  if (pd || protectiveTopicIdentifyingDetail(idea)) return { reason: "personal_data_in_topic" } // + wave 156 (156I): protective topics (foot)
   if (idea.rights === "unknown" || !idea.rights) return { reason: "rights_unknown" }
   const integrity = trendIntegrityProblem(idea, title, nowMs)
   if (integrity) return { reason: integrity }
@@ -649,4 +649,32 @@ export async function reevaluateRemovedTopicSource(db: Db, args: { brokerageId: 
     else kept++
   }
   return { ok: errs.length === 0, reevaluated, retired, kept, error: errs.length ? errs.join("; ") : null }
+}
+
+// ═══ WAVE 156 (lane 156I — for lane 156J: a published fraud bulletin feeds the pool ONLY as a generic protective topic) ═══════
+// The general screen above catches an email, a phone number and a profile link. A PROTECTIVE topic (a fraud / safety bulletin)
+// carries a sharper risk: naming an unverified actor. For those kinds the intake also refuses a street address, a web address /
+// domain, a run of five or more digits (an account, routing, case or parcel number), an @handle, and a capitalised two-word name
+// after the first word — so whatever the producer hands in, the stored topic can identify nobody. Refused under the existing
+// reason personal_data_in_topic (whose sentence already names a name and an address). Lane 156J composes the words from its
+// typology catalog; this is the intake's own floor beneath that. Driven by scripts/wave156-i-guard.ts §G.
+const PROTECTIVE_TOPIC_KINDS = /^fraud_/
+const ID_ADDRESS_RE = /\b\d{1,6}\s+(?:[A-Za-z]+\s+){0,3}(?:st|street|ave|avenue|rd|road|dr|drive|ln|lane|blvd|boulevard|ct|court|way|pl|place|cir|circle|pkwy|hwy)\b\.?/i
+const ID_DOMAIN_RE = /\bhttps?:\/\/|\bwww\.|\b[a-z0-9-]+\.(?:com|net|org|io|co|us|info|biz|xyz|app|site|online)\b/i
+const ID_DIGITS_RE = /\d[\d -]{3,}\d/
+const ID_HANDLE_RE = /(?:^|\s)@[A-Za-z0-9_]{2,}/
+const ID_NAME_RE = /\b[A-Z][a-z]+(?:\s+[A-Z]\.)?\s+[A-Z][a-z]+\b/
+/** PURE. Does a protective (fraud / safety) topic carry any detail that could identify a person, a property or an account? */
+export function protectiveTopicIdentifyingDetail(idea: Pick<TopicIdea, "sourceKind" | "title" | "angle">): string | null {
+  if (!PROTECTIVE_TOPIC_KINDS.test(String(idea.sourceKind ?? ""))) return null
+  for (const text of [idea.title, idea.angle ?? ""]) {
+    const t = String(text ?? "")
+    const afterFirstWord = t.replace(/^\s*\S+\s*/, "")
+    if (ID_ADDRESS_RE.test(t)) return "a street address"
+    if (ID_DOMAIN_RE.test(t)) return "a web address"
+    if (ID_DIGITS_RE.test(t.replace(/[\d,]+(?:\.\d+)?\s*%/g, ""))) return "an account, case or parcel number"
+    if (ID_HANDLE_RE.test(t)) return "a handle"
+    if (ID_NAME_RE.test(afterFirstWord)) return "a name"
+  }
+  return null
 }
