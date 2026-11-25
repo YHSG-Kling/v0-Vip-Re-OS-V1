@@ -2339,15 +2339,15 @@ function testWave70SiteVisitorLane() {
     agent_id: null,
   }
   const listingRec = normalizeSiteVisitorRow(listingRow)
+  // WAVE 156 (lane 156F): an anonymous session is ANONYMOUS PAGE INTEREST, never a person. The observation carries
+  // the page and the signals and NOTHING that identifies the browser (no session id, no username, no raw visitor row).
   check("site_visitor_intent → normalizes a qualifying row", listingRec !== null)
-  check("site_visitor_intent → source tagged", listingRec?.source === "site_visitor_intent")
-  check("site_visitor_intent → buyer intent (browsing the tenant's own listings)", listingRec?.intentType === "buyer")
-  check("site_visitor_intent → identity anchored on session id (username)", listingRec?.username === "sess-abc123")
-  check("site_visitor_intent → sourceUrl carries the page", listingRec?.sourceUrl === listingRow.page_url)
+  check("site_visitor_intent → the page is carried (no query string)", listingRec?.pageUrl === listingRow.page_url)
+  check("site_visitor_intent → the observation carries NO session id / username / raw visitor row (anonymous, never a person)", !!listingRec && !JSON.stringify(listingRec).includes("sess-abc123") && !("username" in listingRec) && !("rawPayload" in listingRec))
+  check("site_visitor_intent → a query string (it can carry what a visitor typed) is dropped from the page", normalizeSiteVisitorRow({ ...listingRow, page_url: `${listingRow.page_url}?email=a%40b.test#x` })?.pageUrl === listingRow.page_url)
   check("site_visitor_intent → listing-page URL is detected", !!listingRec?.intentSignals.includes("listing_page_view"))
   check("site_visitor_intent → campaign-referred signal present (utm_source set)", !!listingRec?.intentSignals.includes("campaign_referred"))
   check("site_visitor_intent → long_dwell always present on a qualifying row", !!listingRec?.intentSignals.includes("long_dwell"))
-  check("site_visitor_intent → rawPayload preserves the full visitor row for audit", (listingRec?.rawPayload as any)?.visitor?.session_id === "sess-abc123")
 
   // POSITIVE CONTROL (CLAUDE.md §2): a page with no listing/property/search path must NOT
   // read as a listing-page view — proves the pattern actually discriminates, not a blanket true.
@@ -2370,15 +2370,17 @@ function testWave70SiteVisitorLane() {
   check("site_visitor_intent → no session id → null (not sourceable)", normalizeSiteVisitorRow({ ...listingRow, session_id: null }) === null)
   check("site_visitor_intent → no page url → null (not sourceable)", normalizeSiteVisitorRow({ ...listingRow, page_url: null }) === null)
 
-  // Viability + dedup-key gate (isViableRecord / buildLeadIdentityKey — the shared contract
-  // every lane in this pipeline is gated by, CLAUDE.md §6: one vocabulary per function).
-  check("site_visitor_intent → passes isViableRecord (username present)", !!listingRec && isViableRecord(listingRec))
-  check("site_visitor_intent → identity key anchors on session+page (dedup)", !!listingRec && buildLeadIdentityKey(listingRec) === `user:sess-abc123|src:${listingRow.page_url}`)
+  // WAVE 156 (lane 156F): the observation is NOT a NormalizedScrapedRecord — handed to the RawData gates it has no
+  // identity anchor, so even a caller that forced it through would get no person row and no identity key. Positive
+  // control: the OLD shape (username = session id) DID pass both gates — that is the defect this lane closed.
+  check("site_visitor_intent → the observation clears NO viability gate (no identity anchor — never a raw row)", !!listingRec && !isViableRecord(listingRec as any))
+  check("site_visitor_intent → the observation yields NO lead identity key", !!listingRec && buildLeadIdentityKey(listingRec as any) === null)
+  check("POSITIVE CONTROL: a record anchored on a session id as `username` DOES pass isViableRecord (the gates would have taken a cookie for a person)", isViableRecord({ source: "site_visitor_intent", username: "sess-abc123", sourceUrl: listingRow.page_url } as any))
 
   // Registry wiring — mirrors every other lane's positive controls in this file.
   check("site_visitor_intent → semantics registered (hasScoringEntry, not the silent fallback)", hasScoringEntry("site_visitor_intent"))
   check("site_visitor_intent → buyer-side motivation registered", getSourceSemantics("site_visitor_intent").intentType === "buyer")
-  check("site_visitor_intent → enrichment-first identity policy (anonymous by construction)", getSourceSemantics("site_visitor_intent").identityPolicy === "enrichment_first")
+  check("site_visitor_intent → analytics-only identity policy (anonymous by construction — nothing is enriched; wave 156)", getSourceSemantics("site_visitor_intent").identityPolicy === "analytics_only")
   check("site_visitor_intent → first-party vendor routing ('internal', $0, never a paid call)", SOURCE_VENDOR.site_visitor_intent === "internal")
   check("site_visitor_intent → DISTINCT from every other lane (never merged)", resolveSourceKey("site_visitor_intent") === "site_visitor_intent")
   check("site_visitor_intent → alias 'website_visitor' resolves to the canonical key", resolveSourceKey("website_visitor") === "site_visitor_intent")

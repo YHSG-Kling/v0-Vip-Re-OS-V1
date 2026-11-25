@@ -142,7 +142,7 @@ export function normalizeEmailEngagementSignal(
   // normalizeSiteVisitorRow): only the contact's OWN stated buyer/seller
   // stance carries the intentType, never demographics. 'unknown' when the
   // contact record has not classified them yet — enrichment resolves it, the
-  // same identityPolicy 'enrichment_first' site_visitor_intent uses.
+  // identityPolicy 'enrichment_first' (site_visitor_intent is analytics_only since wave 156).
   const intentType: NormalizedScrapedRecord['intentType'] =
     s.contactType === 'buyer' || s.contactType === 'seller' ? s.contactType : 'unknown'
 

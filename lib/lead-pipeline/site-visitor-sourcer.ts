@@ -1,47 +1,36 @@
 // lib/lead-pipeline/site-visitor-sourcer.ts
 //
-// SITE VISITOR INTENT — wave 70 behavioral-acquisition lane.
+// SITE VISITOR INTENT — wave 70 behavioral-acquisition lane; made ANONYMOUS-BY-CONSTRUCTION in wave 156 (lane 156F).
 //
 // Owner ruling (verbatim, 2026-09-17): "make sure we have covered every area of lead
 // acquisition and enrichment scraping and behavioral scraping opportunities… If we aren't
 // doing this another competitor will."
+// Owner ruling (wave 156): "the anonymous visitor sometimes can be identified using a provider, and if you can't do
+// it, we don't need to include it." — docs/operations/WAVE156-VISITOR-IDENTITY-DECISION.md: no provider qualifies,
+// so the product does not identify anonymous visitors.
 //
-// THE GAP. docs/lead-acquisition-coverage-2026-09.md's matrix covered every OFF-SITE
-// behavioral lane (Zillow/Realtor/Homes.com saved-search + chatter, Nextdoor, Reddit,
-// Facebook, Instagram, Craigslist, Google phrase intent, LinkedIn relocation, OSINT) but
-// nothing turned the tenant's OWN first-party website/portal traffic into an acquisition
-// signal. That data already existed — the pixel (app/api/track/pixel) and dwell beacon
-// (app/api/track/dwell) have been writing `website_visitors` since wave "BUILT, not
-// tidied" fixed their gates — but the only consumer was app/api/track/identify, which
-// LINKS a session to an EXISTING contact/lead and does nothing for a visitor who matches
-// no one yet. An anonymous visitor who reads a listing page for two minutes is exactly the
-// kind of signal every other lane in this pipeline pays a vendor for; here it is already
-// sitting in the database, unread.
+// THE SIGNAL. The tenant's OWN first-party website traffic — the pixel (app/api/track/pixel) and dwell beacon
+// (app/api/track/dwell) write `website_visitors`. A visitor who reads a listing page for two minutes is real
+// interest in that PAGE. It is not a person: the session id is a random value the snippet keeps in the visitor's
+// browser storage, and it names nobody.
 //
-// THE CHEAPEST LANE IN THE MATRIX. $0 marginal cost — no vendor call, no API key, no rate
-// limit. This is why it is the wave-70 build (BatchData/Apify/ZenRows lanes all cost
-// $0.01–$2/record; LinkedIn relocation costs an Apify actor run per pull; this costs
-// nothing beyond a read of a table this repo already writes).
+// WHAT THIS LANE DID UNTIL WAVE 156, AND WHY IT STOPPED. It normalized each qualifying session into a
+// NormalizedScrapedRecord with `username = session_id` for lib/kernel/scraping.ts::ingestRawSourceBatch. The
+// producer read that "username" as an identity signal: the row became a raw_scraped_leads row with subject_kind
+// `person`, lead_type `buyer` and a source score — a Raw Lead for a browser cookie. It could never become a real
+// person except by a guess (an IP / device match), and the product does not guess. The lane now reports an
+// ANONYMOUS AGGREGATE (sessions, listing-page sessions, return sessions, campaign-referred sessions, the pages that
+// held readers) and hands the RawData producer nothing — `records` is always empty, the same family contract
+// lib/lead-pipeline/email-engagement-sourcer.ts keeps since wave 72A.
 //
-// CONTRACT: normalizes qualifying website_visitors rows into NormalizedScrapedRecord[] for
-// lib/kernel/scraping.ts::ingestRawSourceBatch (sourceChannel 'site_visitor_intent',
-// sourceFamily 'site_behavior' — see source-intent-map.ts's SOURCE_MAP entry for scoring).
+// WHERE A VISITOR DOES BECOME KNOWN: only on a first-party act — a form submit that carries an email / phone the
+// tenant already holds (app/api/track/identify/route.ts), a consented capture (lib/lead-intelligence/
+// visitor-email-capture.ts), a login, a chat or help request, a lead-magnet form (captureContact). Those sessions
+// are read by lib/enrichment/first-party-intent-watcher.ts (fp_site_sessions in lib/intent/movement-source-registry.ts).
+//
 // TERRITORY: bounded to the calling market's own brokerage — see the cron call site
-// (app/api/cron/lead-scraping/route.ts), which runs this ONCE per brokerage (the active,
-// subscribed, territory-resolved set from resolveActiveScrapeTerritories()), not once per
-// market row, since website traffic is a brokerage-wide signal, not a per-territory one.
-// DEDUP: isViableRecord + buildLeadIdentityKey (username=session_id + sourceUrl=page_url)
-// let ingestRawSourceBatch's own dedup carry the load — no bespoke dedup here.
-//
-// WAVE 72A AUDIT (owner ruling: "contacts coming in from the tenants website or
-// email come in as contacts not raw leads."): this sourcer was checked against
-// that rule and is COMPLIANT — sourceSiteVisitorIntent's read below already
-// filters `.is('contact_id', null).is('lead_id', null).is('identified_at', null)`,
-// so it only ever sources a session that has NOT resolved to a contact (or a
-// lead) yet. A visitor who IS identified never reaches this pipeline; that
-// linkage happens at app/api/track/identify, outside this file. Contrast with
-// lib/lead-pipeline/email-engagement-sourcer.ts, which the same audit found
-// violating this rule and fixed.
+// (app/api/cron/lead-scraping/route.ts), which runs this ONCE per brokerage.
+// Cost: $0 — a read of a table this repo already writes; no vendor call, ever.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { NormalizedScrapedRecord } from './raw-record-types'
@@ -82,12 +71,20 @@ interface SiteVisitorIntentRow {
   agent_id: string | null
 }
 
-/** PURE: turns one qualifying website_visitors row into a NormalizedScrapedRecord.
- *  Returns null when the row lacks the minimum a scrape record needs (no session or page).
- *  @proofSeam exported so scripts/scraper-simulator.ts can exercise the pure classification
- *  (listing-page detection, return-visit heuristic, viability) without a DB — called in-file
- *  by sourceSiteVisitorIntent, the live entry point app/api/cron/lead-scraping/route.ts calls. */
-export function normalizeSiteVisitorRow(v: SiteVisitorIntentRow): NormalizedScrapedRecord | null {
+/** One anonymous page-interest observation: the page and what the visit looked like — never who. */
+interface AnonymousPageInterest {
+  pageUrl: string
+  propertyPage: boolean
+  intentSignals: string[]
+}
+
+/** PURE — turns one qualifying website_visitors row into an ANONYMOUS page-interest observation: the page (query
+ *  string and fragment dropped — a URL can carry what a visitor typed) and the intent signals. It carries no session
+ *  id, no referrer and no agent id, and it is never a NormalizedScrapedRecord (wave 156 — see the file header).
+ *  Returns null when the row lacks a session or a page (not a qualifying visit).
+ *  @proofSeam scripts/scraper-simulator.ts and scripts/wave156-f-visitor-truth-guard.ts exercise the classification
+ *  without a DB — called in-file by sourceSiteVisitorIntent, the live entry point the lead-scraping cron calls. */
+export function normalizeSiteVisitorRow(v: SiteVisitorIntentRow): AnonymousPageInterest | null {
   const sessionId = (v.session_id ?? '').trim()
   const url = (v.page_url ?? '').trim()
   if (!sessionId || !url) return null
@@ -104,37 +101,52 @@ export function normalizeSiteVisitorRow(v: SiteVisitorIntentRow): NormalizedScra
     if (spanMs > (dwell + 300) * 1000) intentSignals.push('return_visit')
   }
 
+  return { pageUrl: pageWithoutQuery(url), propertyPage, intentSignals }
+}
+
+/** The page a reader was on, without its query string or fragment. */
+function pageWithoutQuery(url: string): string {
+  try {
+    const u = new URL(url)
+    return `${u.origin}${u.pathname}`
+  } catch {
+    return url.split(/[?#]/)[0]
+  }
+}
+
+/** Counts only — no session is listed, so nothing in the result can be followed back to one browser. */
+function aggregateSiteVisitorIntent(interests: AnonymousPageInterest[]) {
+  const pages = new Map<string, number>()
+  let listingPageSessions = 0, returnSessions = 0, campaignReferredSessions = 0
+  for (const i of interests) {
+    pages.set(i.pageUrl, (pages.get(i.pageUrl) ?? 0) + 1)
+    if (i.propertyPage) listingPageSessions++
+    if (i.intentSignals.includes('return_visit')) returnSessions++
+    if (i.intentSignals.includes('campaign_referred')) campaignReferredSessions++
+  }
   return {
-    sourceRecordId: `site_visitor-${sessionId}-${v.last_seen_at ?? v.first_seen_at ?? 'na'}`,
-    source: 'site_visitor_intent',
-    behaviorType: 'site_visitor_intent',
-    intentType: 'buyer',
-    intentSignals,
-    username: sessionId,
-    sourceUrl: url,
-    propertyAddress: null,
-    motivationScore: null,
-    rawPayload: {
-      visitor: v,
-      lookback_hours: SITE_VISITOR_LOOKBACK_HOURS,
-      min_dwell_seconds: SITE_VISITOR_MIN_DWELL_SECONDS,
-      property_page: propertyPage,
-    },
+    sessions: interests.length,
+    listingPageSessions,
+    returnSessions,
+    campaignReferredSessions,
+    topPages: [...pages.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).map(([pageUrl, sessions]) => ({ pageUrl, sessions })),
   }
 }
 
 interface SiteVisitorSourceResult {
+  /** ALWAYS EMPTY (wave 156) — an anonymous session is never handed to the RawData producer. Kept so the cron's
+   *  call shape (the family contract email_engagement_intent also keeps) is unchanged. */
   records: NormalizedScrapedRecord[]
   /** Always 0 — first-party data already collected, no vendor call. */
   cost: number
   rowsExamined: number
+  /** The anonymous aggregate: counts and the pages that held readers — never a session, never a person. */
+  aggregate: ReturnType<typeof aggregateSiteVisitorIntent>
 }
 
-/** LIVE: reads website_visitors for ONE brokerage's still-unidentified, high-dwell sessions
- *  in the lookback window and normalizes them. Never writes — the caller (the lead-scraping
- *  cron) batches these through ingestRawSourceBatch, same as every other sourcer in this file's
- *  family. Fails closed (empty result) on a refused read — never treats "couldn't read" as
- *  "nothing to source" silently: the caller sees rowsExamined stay 0 and can log it. */
+/** LIVE: reads website_visitors for ONE brokerage's still-unidentified, high-dwell sessions in the lookback window
+ *  and reports them as an ANONYMOUS AGGREGATE. Never writes, never yields a raw record. Fails closed (empty result)
+ *  on a refused read — the caller sees rowsExamined stay 0. */
 export async function sourceSiteVisitorIntent(
   svc: Svc,
   brokerageId: string,
@@ -157,13 +169,13 @@ export async function sourceSiteVisitorIntent(
     .gte('time_on_page_seconds', minDwell)
     .limit(200)
 
-  if (error || !data) return { records: [], cost: 0, rowsExamined: 0 }
+  if (error || !data) return { records: [], cost: 0, rowsExamined: 0, aggregate: aggregateSiteVisitorIntent([]) }
 
-  const records: NormalizedScrapedRecord[] = []
+  const interests: AnonymousPageInterest[] = []
   for (const row of data as SiteVisitorIntentRow[]) {
-    const rec = normalizeSiteVisitorRow(row)
-    if (rec) records.push(rec)
+    const interest = normalizeSiteVisitorRow(row)
+    if (interest) interests.push(interest)
   }
 
-  return { records, cost: 0, rowsExamined: data.length }
+  return { records: [], cost: 0, rowsExamined: data.length, aggregate: aggregateSiteVisitorIntent(interests) }
 }

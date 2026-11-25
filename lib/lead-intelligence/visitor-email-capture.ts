@@ -29,6 +29,7 @@
  */
 
 import { persistContactConsent } from "@/lib/kernel/compliance/require-contact-consent"
+import { decideVisitorLink } from "@/lib/lead-intelligence/visitor-link-decision"
 
 type Client = { from: (table: string) => any }
 
@@ -92,15 +93,22 @@ export async function resolveSignalIdentity(client: Client, input: ResolveSignal
   if (!email) return { identified: false, reason: "no_email" }
 
   // Only match within the caller's brokerage.
-  const { data: contact, error: contactErr } = await client
+  // WAVE 156 (lane 156F): two rows, not one — an address two contacts share (a household inbox) is not a person, and
+  // `.limit(1)` used to link the visit to whichever came first. decideVisitorLink suppresses it (no_contact_match).
+  const { data: contactRows, error: contactErr } = await client
     .from("contacts")
     .select("*")
     .eq("brokerage_id", input.brokerageId)
     .ilike("email", ilikeLiteral(email))
-    .limit(1)
-    .maybeSingle()
+    .limit(2)
   if (contactErr) return { identified: false, reason: "read_refused", error: contactErr.message }
-  if (!contact) return { identified: false, reason: "no_contact_match" }
+  const rows = (contactRows ?? []) as Array<Record<string, any>>
+  const verdict = decideVisitorLink([{ ids: rows.map((r) => String(r.id)), refused: false }])
+  if (!verdict.link) {
+    if (verdict.reason !== "no_match") console.warn(`[visitor-email-capture] visitor match suppressed: ${verdict.reason}`)
+    return { identified: false, reason: "no_contact_match" }
+  }
+  const contact = rows[0] as Record<string, any> & { id: string }
 
   const { data: linked, error: identifyErr } = await client
     .from("behavioral_signals")

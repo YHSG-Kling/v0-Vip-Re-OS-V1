@@ -168,6 +168,8 @@ export default function VisitorTrackingPage() {
     if(!f||!f.querySelectorAll)return;
     var n=f.querySelectorAll('input,textarea'),e=null,p=null;
     for(var i=0;i<n.length;i++){
+      var ty=(n[i].type||'').toLowerCase();
+      if(ty==='password'||ty==='hidden')continue;
       var v=(n[i].value||'').trim();
       if(!v)continue;
       var k=((n[i].type||'')+' '+(n[i].name||'')+' '+(n[i].id||'')).toLowerCase();
@@ -245,6 +247,13 @@ export default function VisitorTrackingPage() {
           A session becomes <span className="font-medium text-foreground">Identified</span> when
           someone submits a form on your site using an email or phone number this brokerage
           already has on file. Only that email or phone is sent back, once per session.
+        </p>
+        {/* WAVE 156 (lane 156F): capability truth — docs/operations/WAVE156-VISITOR-IDENTITY-DECISION.md. No provider
+            qualified, so the product does not de-anonymize anyone, and this page says so in words. */}
+        <p className="text-sm text-muted-foreground mt-1">
+          Anonymous sessions stay anonymous. This product does not identify visitors from an IP address, a device,
+          a location or a data provider, and a match that could fit more than one person is not linked. The counts
+          above show which pages hold readers — not who they are.
         </p>
       </div>
 

@@ -390,17 +390,17 @@ export async function GET(request: Request) {
       // BEFORE the budget gate and before any paid rung: a spent budget stops the SPEND, never
       // the free lanes. Each still runs once per brokerage (the *BrokeragesRun sets above).
       // ── SITE VISITOR INTENT — wave 70 behavioral lane, $0 marginal cost ─────
-      // Own first-party website/portal traffic (website_visitors, already written by the
-      // pixel/dwell beacons) — an unidentified, high-dwell visitor is buyer-intent this repo
-      // already collected and never read for acquisition. Runs ONCE per brokerage (see the
-      // siteVisitorBrokeragesRun set above this loop) — brokerage_id passed EXPLICITLY
-      // (never platform pool: this is the tenant's own site, not a scraped third-party page),
-      // so it lands as source_origin='brokerage' immediately, the same shape a
-      // brokerage-triggered scrape would.
+      // Own first-party website/portal traffic (website_visitors, written by the pixel/dwell
+      // beacons). WAVE 156 (lane 156F): an unidentified session is ANONYMOUS PAGE INTEREST,
+      // never a person — `records` is always empty (no Raw Lead for a browser cookie; see the
+      // sourcer's header and docs/operations/WAVE156-VISITOR-IDENTITY-DECISION.md) and the
+      // aggregate (sessions / listing-page / return / campaign-referred counts) is logged.
+      // Runs ONCE per brokerage (siteVisitorBrokeragesRun above); the insert below stays so the
+      // family call shape is unchanged, and it writes nothing.
       if (enabledSources.has("site_visitor_intent") && market.brokerage_id && !siteVisitorBrokeragesRun.has(market.brokerage_id)) {
         siteVisitorBrokeragesRun.add(market.brokerage_id)
         try {
-          const { records, rowsExamined } = await sourceSiteVisitorIntent(supabase, market.brokerage_id)
+          const { records, rowsExamined, aggregate } = await sourceSiteVisitorIntent(supabase, market.brokerage_id)
           const { inserted: siteVisitorInserted } = await insertRawBatch({
             records, marketId: market.id,
             marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes },
@@ -414,7 +414,7 @@ export async function GET(request: Request) {
           })
           results.total_leads_created += siteVisitorInserted
           if (rowsExamined > 0) {
-            console.log(`[Lead Scraping Cron] Site visitor intent ${market.brokerage_id.slice(0, 8)}…: examined=${rowsExamined} inserted=${siteVisitorInserted}`)
+            console.log(`[Lead Scraping Cron] Site visitor intent ${market.brokerage_id.slice(0, 8)}…: examined=${rowsExamined} anonymous sessions=${aggregate.sessions} listing=${aggregate.listingPageSessions} return=${aggregate.returnSessions} inserted=${siteVisitorInserted}`)
           }
         } catch (err) {
           results.errors.push(`Site visitor intent error for brokerage ${market.brokerage_id}: ${err instanceof Error ? err.message : String(err)}`)

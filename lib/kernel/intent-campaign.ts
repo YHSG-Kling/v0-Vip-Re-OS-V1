@@ -207,7 +207,6 @@ export interface TerritoryIntelligenceResult {
   externalBehaviorRawIngested: number
   googleSearchesSampled: number
   propertiesEnriched: number
-  visitorActivitiesLinked: number
   errors: number
   noOpReason: string | null
 }
@@ -227,7 +226,7 @@ export async function runTerritoryIntelligencePhase(
   const supabase = client ?? createServiceClient()
   const result: TerritoryIntelligenceResult = {
     territoriesProcessed: 0, nextdoorRawIngested: 0, externalBehaviorRawIngested: 0,
-    googleSearchesSampled: 0, propertiesEnriched: 0, visitorActivitiesLinked: 0, errors: 0,
+    googleSearchesSampled: 0, propertiesEnriched: 0, errors: 0,
     noOpReason: null,
   }
 
@@ -254,7 +253,7 @@ export async function runTerritoryIntelligencePhase(
 
   const {
     scrapeSocialSignalsWithZenRows, scrapeExternalBehavior, analyzeGoogleSearchIntent,
-    trackExternalActivity, enrichPropertyIntelligence,
+    enrichPropertyIntelligence,
   } = await import("@/app/actions/lead-intelligence")
 
   for (const territory of (resolution.territories as any[]).slice(0, MAX_TERRITORIES_PER_TICK)) {
@@ -297,28 +296,16 @@ export async function runTerritoryIntelligencePhase(
         await collectError({ workflowName: "intent_campaign_territory_intelligence", errorMessage: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined, severity: "low", brokerageId: territory.brokerage_id, context: { phase: "enrich_property", territoryId: territory.id, address: firstAddress } })
       }
 
-      // Attach the newly-discovered off-site listing to visitors this brokerage
-      // ALREADY has a behavioral_signals row for, located in the SAME territory —
-      // connecting on-site browsing to off-site inventory without inventing a
-      // new identity (trackExternalActivity's own contract: an EXISTING visitor).
-      try {
-        const { data: signals } = await supabase
-          .from("behavioral_signals")
-          .select("visitor_id")
-          .eq("brokerage_id", territory.brokerage_id)
-          .ilike("city", location.city)
-          .limit(5)
-        for (const s of (signals ?? []) as Array<{ visitor_id: string }>) {
-          const track = await trackExternalActivity(
-            { visitorId: s.visitor_id, source: "zillow", behaviorType: "off_site_listing_match", propertyAddress: firstAddress, location: location.city, detectedViaZenrows: false },
-            opts,
-          )
-          if ((track as any)?.success) result.visitorActivitiesLinked += 1
-        }
-      } catch (e) {
-        result.errors += 1
-        await collectError({ workflowName: "intent_campaign_territory_intelligence", errorMessage: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined, severity: "low", brokerageId: territory.brokerage_id, context: { phase: "track_external_activity", territoryId: territory.id } })
-      }
+      // TOMBSTONE (wave 156, lane 156F — owner: never simulate visitor identification that is not real). A block stood
+      // here that took up to five of this brokerage's ANONYMOUS website visitors whose behavioral_signals.city matched
+      // the territory city and called trackExternalActivity for each, writing an external_behavior row that said the
+      // visitor had VIEWED this newly-discovered off-site Zillow listing (`property_addresses_viewed: [address]`,
+      // `detected_interest_level: "active"`) and raising their intent score by 10. Nobody observed any such view: the
+      // only link was a shared city, and the visitor's city is not even known (trackBehavior writes "Unknown" because
+      // no IP-geolocation exists). A fabricated behavior attributed to a visitor is a fictional person-level fact.
+      // No survivor by design — the discovered address still feeds the property enrichment above and the raw ingest
+      // in scrapeExternalBehavior; trackExternalActivity stays exported for a caller that actually OBSERVED an
+      // off-site activity for a known visitor (app/actions/lead-intelligence.ts).
     }
 
     try {

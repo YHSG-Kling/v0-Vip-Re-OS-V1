@@ -812,7 +812,7 @@ function stayDarkLayer() {
     ["N3", "trackBehavior", "no consent artifact recorded at collection — unrelated to the wave-65 ruling, unchanged"],
     ["N4", "analyzeGoogleSearchIntent", "wired into the autonomous cron phase; google_search_intelligence still has no dashboard reader"],
     ["N5", "enrichPropertyIntelligence", "wired into the autonomous territory-intelligence cron phase, never a dashboard control"],
-    ["N6", "trackExternalActivity", "wired into the autonomous cron phase (attaches to EXISTING behavioral_signals rows), never a dashboard control"],
+    ["N6", "trackExternalActivity", "no caller since wave 156 (156F retired the cron phase's city-match attribution — a view nobody observed); never a dashboard control"],
   ] as const) {
     check(id, `${fn} is still unreachable from a DASHBOARD control (${why})`,
       !new RegExp(`\\b${fn}\\b`).test(leadImports) && !callsFn(surfaces, fn))
