@@ -490,6 +490,9 @@ async function roundTwo(rail: any) {
     const panel = stripComments(raw("app/dashboard/superadmin/connector-healing/rentcast-cap-panel.tsx"))
     const page = stripComments(raw("app/dashboard/superadmin/connector-healing/page.tsx"))
     check("the console mounts the editor and its not-available-yet text (stripped source)", /<RentcastCapPanel /.test(page) && /getRentcastRequestCapAction\(\)/.test(page) && /setting is not available yet/.test(panel))
+    // Round 3: ONE spelling of the default ceiling — the read-back carries RENTCAST_PLAN_INCLUDED_REQUESTS and the panel prints it.
+    check("the read-back states the DEFAULT ceiling from RENTCAST_PLAN_INCLUDED_REQUESTS (one spelling)", notYet.ok === true && notYet.planIncludedRequests === el.RENTCAST_PLAN_INCLUDED_REQUESTS && typeof el.RENTCAST_PLAN_INCLUDED_REQUESTS === "number", notYet)
+    check("…and the panel prints that prop, never a hard-coded 1,000 (stripped source; blankStrings-free literal scan)", /planIncludedRequests\.toLocaleString\(\)/.test(panel) && !/\b1,?000\b/.test(panel))
     G.__G.seat = null
   } else check("the platform-staff editor actions exist (getRentcastRequestCapAction / setRentcastRequestCapAction)", false)
 

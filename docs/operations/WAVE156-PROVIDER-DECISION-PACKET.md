@@ -106,7 +106,7 @@ then reads as a lower bound.
 | 10,000 | $614 | **$349** | $449 | Growth, $0.0349 / request |
 | 50,000 | $3,014 | $1,549 | **$824** | Scale, $0.0165 / request |
 
-The platform's hard cutoff (§3) defaults to the plan's included requests. At 10,000 a month on Growth, the owner sets
+The platform's hard cutoff (§3) defaults to the plan's included requests (`RENTCAST_PLAN_INCLUDED_REQUESTS`, `lib/property/rentcast-eligibility.ts` — the Foundation 1,000 the repo prices at; the console states its default ceiling from that same constant). At 10,000 a month on Growth, the owner sets
 `monthly_requests` to 10,000, which authorizes 5,000 overage requests ($150). Until that is set, the cutoff stops at 1,000.
 
 ### Versium (email append): the minimum is what you pay [V, modeled in `costUnderCommitment`]

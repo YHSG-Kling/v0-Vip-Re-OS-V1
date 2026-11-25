@@ -178,7 +178,11 @@ export interface CohortFinance {
   unknowns: string[]
 }
 
-/** PURE — the cohort fold. Never divides by zero; never fills an unknown with 0. */
+/**
+ * PURE — the cohort fold. Never divides by zero; never fills an unknown with 0. Product reader: loadAcquisitionEconomics above
+ * (the platform console's cohort figures).
+ * @proofSeam kept exported for scripts/wave156-g-provider-economics-guard.ts §G, which drives the lower-bound and complete cases directly
+ */
 export function foldCohortFinance(i: CohortFinanceInput): CohortFinance {
   const parts: Array<[string, number | null]> = [
     ["subscription allocation (no executed plan on record)", i.subscriptionAllocationUsd],
