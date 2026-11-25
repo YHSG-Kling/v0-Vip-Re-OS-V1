@@ -12,15 +12,15 @@ In one paragraph: seventeen lanes built or corrected the things the owner named 
 |---|---|
 | Repository / branch | `YHSG-Kling/v0-Vip-Re-OS-V1` · `claude/settings-consolidation-ui-0cd7lo` · pull request #49 |
 | Starting commit | `e79a13b8` — local and remote were the same commit when the wave began |
-| Integration commit this report was written against | `db08717e` (237 commits after the start; 499 files changed, 33,441 insertions, 4,771 deletions) |
-| Pushes | first push `4af0af99` (231 commits) after the chain's exit line read 0 on it. CI's production build then failed on that head (see "What CI found"). This revision of the report rides the fix; the pull request records each pushed head and its CI runs |
+| Integration commit this report was written against | `962fa005` (239 commits after the start; 499 files changed, 33,442 insertions, 4,771 deletions) |
+| Pushes | First push `4af0af99` (231 commits) after the chain's exit line read 0 on it; CI then failed on that head in two ways (see "What CI found"). Second push `962fa005` (239 commits) after the chain's exit line read 0 on it (22:25–23:14 UTC). This revision adds two commits — the guard restatement that recording CODE GREEN needed, and the record itself — pushed by the same rule; the pull request records each pushed head and its CI runs |
 | Worktrees | one integration worktree and eighteen lane worktrees, all local to the build container; every lane branch is merged; nothing else holds unmerged work |
-| Unpushed commits | only the commits after `4af0af99` (the build fix, the new rule and this revision), pushed by the same rule: after the chain's own exit line reads 0 on the head |
+| Unpushed commits | only this revision's two commits, until the chain's own exit line reads 0 on their head |
 | Rebuild losses | none: the container was not rebuilt during the wave. The deal-desk commits that preceded the wave are in `e79a13b8`, which was the remote head, with CI green, when the wave began. Until the first push the whole wave existed only in the container; a work-in-progress branch is an owner decision (section 12) |
-| Guard chain | 1,010 steps before the wave, 1,027 after: 17 new `test:wave156-*` steps. An all-steps run on the integrated tree found 11 red steps of 1,027; each was closed at its source (table below) and re-run. The real chain then exited 0 on `4af0af99` (20:40–21:29 UTC, 1,027 steps) and that head was pushed; the chain runs again on every later head before it is pushed |
+| Guard chain | 1,010 steps before the wave, 1,027 after: 17 new `test:wave156-*` steps. An all-steps run on the integrated tree found 11 red steps of 1,027; each was closed at its source (table below) and re-run. The real chain then exited 0 on `4af0af99` (20:40–21:29 UTC, 1,027 steps) and that head was pushed. It exited 0 again on `962fa005` (22:25–23:14 UTC), the second pushed head; the chain runs again on every later head before it is pushed |
 | Type-check | both programs, 0 errors (whole project, one program after the other, during integration and again as the first step of the all-steps run; the real chain repeats it on the head) |
 | Import budget | proxy 23 of 40 · heaviest page 1,272 of 1,300 · union 5,250 of 5,300 — ceilings unchanged |
-| CI | on `4af0af99`: the production build FAILED (fixed, below); the result for the head that carries this file is on the pull request |
+| CI | On `4af0af99`: the production build and the guard workflow FAILED (both fixed, below). On `962fa005`: the production build passed, both halves (run 45719879166); the guard workflow's two runs on that head (45719879155 and 45719862933) were still running when this revision was written, and this revision was held back until both finished green. The result for the head that carries this file is on the pull request |
 
 ### Migrations
 
@@ -79,6 +79,12 @@ The local chain does not run the production build (it needs more memory than the
 - **The guard workflow failed as well**, 48 minutes in, at one check of the recruiting guard: it compared a file with a copy in a control tree that exists only in the build container. Two more checks had the same flaw in another form — the arbiter guard read a baseline from an earlier commit by hash, which CI's shallow checkout does not hold, and one canary derived "modules the wave added" from git history, which in CI returns nothing and passed without checking anything. These were defects in the guards, not in the product. Comparisons against the starting commit now run only where that tree or commit is present and print "not checked here" where it is not; the tier check became a rule that needs no history (the tiers in code are exactly the tiers the live database admits). All 18 wave guards and CI's second guard step were then run in a depth-1 clone with no control trees: all pass.
 - **What this says about the verdict.** A chain that exits 0 is necessary and was not sufficient. The verdict in section 8 holds only for a head whose CI build is also green; the pull request is where that is recorded.
 
+### Recording CODE GREEN
+
+The owner sheet tells the integrator to record CODE GREEN from the chain's exit line or a CI run id. Doing so exposed four checks that could pass only while nothing had been recorded: one read "today none is MET", and three required §R.6 to be unapplied, so they would have turned red the day the owner applies it. Each now asserts the rule it meant: the sheet may say MET, and may say §R.6 is applied, only where the one release rule accepts the evidence. Each was driven on the real sheet: an honest row passes and reads met; a row with no exit line and no run id fails; a live state written met while its blocker is open fails. The first check is stricter than before — a false "MET" used to print NOT MET and pass, and now fails the guard. No ceiling, baseline or vocabulary changed.
+
+The row names `962fa005`, the last head whose results were known when it was written. The commit that carries the row cannot cite its own chain run; it is pushed only after that run's exit line reads 0.
+
 ## 2. Owner corrections report
 
 Each correction the owner gave, what the code did before, what it does now, and the proof. "Driven" means the guard calls the real exported product code against an in-memory database with counted stand-ins for every model, provider, payment and e-sign call. None of it is evidence of a deployment.
@@ -119,7 +125,7 @@ Final results of each lane's guard on the integrated tree:
 | 156L | `test:wave156-l` | 28 passed, 0 failed | 15 / 7 |
 | 156M | `test:wave156-m` | 79 passed, 0 failed | 29 / 24 |
 | 156N | `test:wave156-n` | 43 passed, 0 failed | 20 / 23 |
-| 156O | `test:wave156-o` | 63 passed, 0 failed | 14 / 22 |
+| 156O | `test:wave156-o` | 65 passed, 0 failed | 14 / 22 |
 | 156Q | `test:wave156-q` | 46 passed, 0 failed | 10 / 36 |
 | 156R | `test:wave156-r-seams` | 53 passed, 0 failed | 7 / 26 |
 | 156S | `test:wave156-s` | 125 passed, 0 failed | 29 / 92 |
@@ -200,13 +206,13 @@ A count that moved during integration, and why: the census briefly read 74 owner
 
 **ENGINEERING READY — OWNER ACTIONS REMAIN**
 
-Why this one and not the other two. It is not `ENGINEERING BLOCKED`: every defect and missing door the directive named that could be closed without the owner is closed, each proven by a guard that drives the real product code and is red on its control tree; and by the standing rule a commit reaches the remote branch only when the full guard chain's own exit line reads 0 on it. The chain is not the whole test: the first pushed head passed it and failed CI's production build (section 1), so this verdict holds for a head only when its CI build is green too — the pull request records that. It is not `PREVIEW/PRODUCTION VERIFIED`: nothing was deployed, and no result here was observed on a deployment. What remains in code is listed in section 11. None of it is what stands between this tree and a first preview — the owner's sheet is.
+Why this one and not the other two. It is not `ENGINEERING BLOCKED`: every defect and missing door the directive named that could be closed without the owner is closed, each proven by a guard that drives the real product code and is red on its control tree; and by the standing rule a commit reaches the remote branch only when the full guard chain's own exit line reads 0 on it. The chain is not the whole test: the first pushed head passed it and failed CI's production build (section 1), so this verdict holds for a head only when its CI build is green too. On `962fa005` it is; the pull request records every later head. It is not `PREVIEW/PRODUCTION VERIFIED`: nothing was deployed, and no result here was observed on a deployment. What remains in code is listed in section 11. None of it is what stands between this tree and a first preview — the owner's sheet is.
 
 The five release states, which are distinct and never implied by one another:
 
 | State | Status | Evidence |
 |---|---|---|
-| CODE GREEN | Recorded on the pull request | A file cannot carry the result of the chain that runs on the commit containing it. The commit is pushed only after the chain's exit line reads 0 on that exact commit; pull request #49 shows the pushed head and its CI runs, and the owner sheet's CODE GREEN row is written from those |
+| CODE GREEN | MET on `962fa005` | The chain's exit line read 0 on `962fa005` and CI's production build passed on it (run 45719879166); the owner sheet's CODE GREEN row records both, and the release guard judges that row met. A file cannot carry the result of the chain that runs on the commit containing it, so the row names the last head whose results were known; pull request #49 shows every pushed head and its CI runs |
 | SECURITY READBACK GREEN | NOT MET | Live read 2026-11-25: five private buckets open, listing media has no restrictive policy, §R.6 not applied, four seed seats unlinked |
 | LEGAL/LICENSING READY | NOT MET | No counsel sign-off and no provider license is recorded |
 | PREVIEW LIVE VERIFIED | NOT MET | No deployment exists; no signed-in journey was run |

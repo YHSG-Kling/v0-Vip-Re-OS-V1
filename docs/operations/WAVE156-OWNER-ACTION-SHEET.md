@@ -23,7 +23,7 @@ owner's word. Write a row `MET` only with the evidence its rule names (origin on
 <!-- release-states:start -->
 | State | Status | Date | Origin | Reader | Evidence |
 |---|---|---|---|---|---|
-| CODE GREEN | NOT MET | — | — | — | the integrator records the chain's own exit line or the CI run id after the wave-156 chain |
+| CODE GREEN | MET | 2026-11-25 | ci | integrator | head 962fa005: chain log final line GUARD_EXIT=0 (1,027 steps, 22:25–23:14 UTC); build run 45719879166 green, both halves |
 | SECURITY READBACK GREEN | NOT MET | 2026-11-25 | live_read | lane 156O | read 2026-11-25: five private buckets open, listing-media 0 RESTRICTIVE, §R.6 not applied, 4 seed seats unlinked |
 | LEGAL/LICENSING READY | NOT MET | — | — | — | no counsel sign-off and no provider license recorded |
 | PREVIEW LIVE VERIFIED | NOT MET | — | — | — | no deployment exists |
