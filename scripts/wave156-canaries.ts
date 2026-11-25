@@ -872,13 +872,18 @@ canary({
     pos("…and tenant B's broker cannot insert on tenant A's deal (42501)", cellOf(proposed, "other_tenant_broker", "insert_b1_deal") === "42501")
     ctrl("POSITIVE CONTROL: the same measurement shows the hole the SQL closes — today (live policies) a tenant-A seat CAN insert on tenant B's deal", tenantA.some((s) => cellOf(live, s, "insert_b2_deal") === "1"))
     const packet = raw("docs/operations/WAVE156-R6-DEAL-TABLE-POLICY-PACKET.md")
-    pos("the packet is LABELED local / not applied (Status: NOT APPLIED; 'a local measurement is not proof that production is fixed')", /\*\*Status:\*\*\s*NOT APPLIED/.test(packet) && /local measurement is not proof that production is fixed/i.test(packet))
+    // Two checks here were pinned to a waypoint (the packet says NOT APPLIED; the sheet keeps R6 open): both would turn red
+    // the day the owner applies §R.6 and the line is written from the live read-back. They now assert the RULE: neither
+    // document may read applied unless the one release rule accepts the sheet's R6 line.
+    const sheet = raw("docs/operations/WAVE156-OWNER-ACTION-SHEET.md")
+    const r6Line = /^- R6 status:[^\n]*$/m.exec(sheet)?.[0] ?? ""
+    const r6Lifted = rules.r6AppliedLive(sheet) === true
+    pos(`the packet's measurement is LABELED local ('a local measurement is not proof that production is fixed') and the packet says NOT APPLIED unless the sheet's R6 line passes the live rule (R6 is ${r6Lifted ? "APPLIED LIVE" : "OPEN"} — derived)`, /local measurement is not proof that production is fixed/i.test(packet) && (/\*\*Status:\*\*\s*NOT APPLIED/.test(packet) || r6Lifted))
     const localWords = /PostgreSQL 16\.\d+[^\n.|]*/.exec(packet)?.[0] ?? "PostgreSQL 16 (local)"
     neg("the local measurement written as 'APPLIED LIVE' — with the project id, the 10 rows and the refusals — is REFUSED by the release rule", rules.r6AppliedLive(`- R6 status: APPLIED LIVE 2026-11-25 — ${localWords}: hrvaqgvukzxfskkcrwbt 10 rows, vendor REFUSED`) === false)
     neg("'APPLIED LIVE … simulated' / '… scratch' / '… in-memory canary' are refused too", ["simulated read", "scratch database", "in-memory canary"].every((w) => rules.r6AppliedLive(`- R6 status: APPLIED LIVE 2026-11-25 — ${w}: hrvaqgvukzxfskkcrwbt 10 rows; REFUSED`) === false))
     ctrl("POSITIVE CONTROL: the owner's real live read-back line DOES lift R6", rules.r6AppliedLive("- R6 status: APPLIED LIVE 2026-12-01 — hrvaqgvukzxfskkcrwbt AFTER read-back 10 rows; two-tenant script 5 REFUSED then ROLLBACK") === true)
-    const sheet = raw("docs/operations/WAVE156-OWNER-ACTION-SHEET.md")
-    neg("today the owner sheet keeps R6 OPEN (no live read-back recorded)", /^- R6 status:/m.test(sheet) && rules.r6AppliedLive(sheet) === false)
+    neg("the owner sheet's R6 line reads applied only when the release rule accepts it (a line that says APPLIED LIVE from anything but the live read-back fails here)", r6Line.length > 0 && (r6Lifted || !/\bAPPLIED LIVE\b/.test(r6Line)))
     const lib = await load("lib/platform/go-live-readiness.ts")
     if (loaded(lib, "lib/platform/go-live-readiness.ts", "releaseStateVerdict", "RELEASE_STATES")) {
       const spec = lib.RELEASE_STATES.find((s: any) => s.key === "SECURITY READBACK GREEN")

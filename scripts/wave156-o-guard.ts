@@ -151,8 +151,18 @@ async function sectionsBtoE() {
     !v("SECURITY READBACK GREEN", {}, ["R6"]).met && !v("PREVIEW LIVE VERIFIED", {}, ["SEK"]).met && !v("LEGAL/LICENSING READY", {}, ["LEGAL"]).met && !v("PUBLIC RELEASE AUTHORIZED", {}, [], false).met)
   const sheet = raw("docs/operations/WAVE156-OWNER-ACTION-SHEET.md")
   const table = lib.parseReleaseStateTable(sheet)
-  const verdicts = lib.releaseStateVerdicts(table, ["R6"])
-  check(`B5 the sheet's release-state table names the five states; today none is MET (${verdicts.map((x: any) => `${x.key}: ${x.met ? "MET" : x.why}`).join(" · ")})`, FIVE.every((k) => table.has(k)) && verdicts.every((x: any) => !x.met))
+  // B5 was pinned to a waypoint ("today none is MET"): it could pass only while nobody had recorded a state, so the
+  // integrator recording CODE GREEN — the sheet's own instruction — turned it red. The RULE it meant: the sheet may say MET
+  // only where the one rule accepts the row, under the blockers open today (R6 derived from the sheet's own status line).
+  const r6OpenToday = rules.r6AppliedLive?.(sheet) === true ? [] : ["R6"]
+  const sheetClaims = (md: string, open: string[]) => { const t = lib.parseReleaseStateTable(md); const vs = lib.releaseStateVerdicts(t, open); return { vs, named: FIVE.every((k) => t.has(k)), refused: vs.filter((x: any) => !x.met && t.get(x.key)?.status === "MET").map((x: any) => `${x.key}: ${x.why}`) } }
+  const today = sheetClaims(sheet, r6OpenToday)
+  const verdicts = today.vs
+  check(`B5 the sheet's release-state table names the five states and says MET only where the rule accepts the row (${verdicts.filter((x: any) => x.met).length} of 5 met — derived, never pinned: ${verdicts.map((x: any) => `${x.key}: ${x.met ? "MET" : x.why}`).join(" · ")})`, today.named && today.refused.length === 0, today.refused)
+  const codeRow = (cells: string) => sheet.replace(/^\| CODE GREEN \|[^\n]*$/m, `| CODE GREEN | ${cells} |`)
+  const b5Controls = { simulatedOrigin: sheetClaims(codeRow("MET | 2026-11-25 | simulated | integrator | chain log final line GUARD_EXIT=0"), r6OpenToday).refused.length, noExitLineNoRunId: sheetClaims(codeRow("MET | 2026-11-25 | ci | integrator | everything passed"), r6OpenToday).refused.length, undated: sheetClaims(codeRow("MET | — | ci | integrator | guards run 43986529213 green"), r6OpenToday).refused.length, liveWhileBlocked: sheetClaims(sheet.replace(/^\| SECURITY READBACK GREEN \|[^\n]*$/m, "| SECURITY READBACK GREEN | MET | 2026-11-25 | live_read | owner (SQL editor) | hrvaqgvukzxfskkcrwbt pg_policies storage_bucket_policy_readiness() all scoped |"), ["R6"]).refused.length, honest: sheetClaims(codeRow("MET | 2026-11-25 | ci | integrator | guards run 43986529213 green; chain log final line GUARD_EXIT=0"), r6OpenToday) }
+  check("B5 NEGATIVE CONTROLS — a CODE GREEN row written MET from a simulated origin, with no exit line and no run id, or undated, and a live state written MET while R6 is open, each make the sheet fail; POSITIVE CONTROL — CODE GREEN written MET with the chain's exit line and a CI run id passes and reads MET",
+    b5Controls.simulatedOrigin === 1 && b5Controls.noExitLineNoRunId === 1 && b5Controls.undated === 1 && b5Controls.liveWhileBlocked === 1 && b5Controls.honest.refused.length === 0 && b5Controls.honest.vs.find((x: any) => x.key === "CODE GREEN")?.met === true, { ...b5Controls, honest: b5Controls.honest.refused })
   const forged = sheet.replace(/^\| SECURITY READBACK GREEN \|[^\n]*$/m, "| SECURITY READBACK GREEN | MET | 2026-11-25 | simulated | owner | hrvaqgvukzxfskkcrwbt pg_policies storage_bucket_policy_readiness() all scoped |")
   const forgedV = lib.releaseStateVerdicts(lib.parseReleaseStateTable(forged), []).find((x: any) => x.key === "SECURITY READBACK GREEN")
   const honest = lib.releaseStateVerdicts(lib.parseReleaseStateTable(forged.replace("| simulated |", "| live_read |")), []).find((x: any) => x.key === "SECURITY READBACK GREEN")
@@ -165,7 +175,15 @@ async function sectionsBtoE() {
   check("C1 that measurement written as an APPLIED LIVE line — with the project, the 10 rows and the refusals — is REFUSED",
     typeof rules.r6AppliedLive === "function" && !rules.r6AppliedLive(`- R6 status: APPLIED LIVE 2026-11-25 — ${localWords}: hrvaqgvukzxfskkcrwbt 10 rows, vendor REFUSED`))
   check("C1 POSITIVE CONTROL — the owner's live read-back line lifts it", rules.r6AppliedLive?.("- R6 status: APPLIED LIVE 2026-12-01 — hrvaqgvukzxfskkcrwbt AFTER read-back 10 rows; two-tenant script 5 REFUSED then ROLLBACK") === true)
-  check("C2 the sheet carries the R6 status line and today it keeps R6 OPEN", /^- R6 status:/m.test(sheet) && rules.r6AppliedLive?.(sheet) === false)
+  // C2 was pinned to the same waypoint ("today it keeps R6 OPEN"): it would turn red the day the owner applies §R.6 and the
+  // line is written from the live read-back. The RULE: the line reads applied only when the one rule accepts it.
+  const r6LineHonest = (md: string) => { const line = /^- R6 status:[^\n]*$/m.exec(md)?.[0] ?? ""; const lifted = rules.r6AppliedLive?.(md) === true; return { lifted, ok: line.length > 0 && typeof rules.r6AppliedLive === "function" && (lifted || !/\bAPPLIED LIVE\b/.test(line)) } }
+  const r6Today = r6LineHonest(sheet)
+  check(`C2 the sheet carries the R6 status line, and a line that says APPLIED LIVE is one the rule accepts (R6 is ${r6Today.lifted ? "APPLIED LIVE" : "OPEN"} — derived, never pinned)`, r6Today.ok)
+  const forgedR6 = sheet.replace(/^- R6 status:[^\n]*$/m, `- R6 status: APPLIED LIVE 2026-11-25 — ${localWords}: hrvaqgvukzxfskkcrwbt 10 rows, vendor REFUSED`)
+  const liveR6 = sheet.replace(/^- R6 status:[^\n]*$/m, "- R6 status: APPLIED LIVE 2026-12-01 — hrvaqgvukzxfskkcrwbt AFTER read-back 10 rows; two-tenant script 5 REFUSED then ROLLBACK")
+  check("C2 NEGATIVE CONTROL — the sheet with its R6 line rewritten as APPLIED LIVE from the packet's local measurement fails; a sheet with no R6 line fails; POSITIVE CONTROL — the owner's live read-back line passes and lifts R6",
+    forgedR6 !== sheet && !r6LineHonest(forgedR6).ok && !r6LineHonest(sheet.replace(/^- R6 status:[^\n]*$/m, "")).ok && r6LineHonest(liveR6).ok && r6LineHonest(liveR6).lifted)
   check("C3 test:release-blockers and test:production-readiness both carry R6 as an obligation through the one rule (stripped source)",
     ["scripts/release-blockers-guard.ts", "scripts/production-readiness-guard.ts"].every((f) => { const s = stripComments(raw(f, WT)); return /\{\s*id:\s*"R6"/.test(s) && /\br6AppliedLive\(/.test(s) && /import\s*\{[^}]*\br6AppliedLive\b[^}]*\}\s*from\s*"\.\/release-rules"/.test(s) }))
 
