@@ -1593,7 +1593,7 @@ canary({
       const src = file.endsWith(".json") ? "" : blankComments(fs.readFileSync(file, "utf8"))
       const out: string[] = []
       const res = (spec: string) => spec.startsWith("./") || spec.startsWith("../") ? graph.tryFile(path.resolve(path.dirname(file), spec)) : spec.startsWith("@/components/") ? (graph.tryFile(path.join(ROOT, "app/components", spec.slice(13))) ?? graph.tryFile(path.join(ROOT, spec.slice(2)))) : spec.startsWith("@/") ? graph.tryFile(path.join(ROOT, spec.slice(2))) : null
-      for (const m of src.matchAll(/(?:^|[;\n}])\s*(?:import|export)\s+(type\s+)?([^'"`;]*?\bfrom\s*)?["']([^"']+)["']/g)) { if (m[1]) continue; if (m[2] && /^\{[^}]*\}\s*from\s*$/.test(m[2].trim()) && m[2].slice(m[2].indexOf("{") + 1, m[2].lastIndexOf("}")).split(",").map((s) => s.trim()).filter(Boolean).every((p) => p.startsWith("type "))) continue; const r = res(m[3]); if (r) out.push(r) }
+      for (const m of src.matchAll(/(?:^|[;\n}])\s*(?:import|export)\s+(type\s+)?([^'"`;]*?\bfrom\s*)?["']([^"']+)["']/g)) { if (m[1]) continue; if (m[2] && /^\{[^}]*\}\s*from\s*$/.test(m[2].trim()) && m[2].slice(m[2].indexOf("{") + 1, m[2].lastIndexOf("}")).split(",").map((s: string) => s.trim()).filter(Boolean).every((p: string) => p.startsWith("type "))) continue; const r = res(m[3]); if (r) out.push(r) }
       for (const m of src.matchAll(/\b(?:import|require)\s*\(\s*["']([^"']+)["']\s*\)/g)) { const r = res(m[1]); if (r) out.push(r) }
       return out
     }
@@ -1709,7 +1709,7 @@ canary({
     }
     const vp = await load("app/actions/vendor-payments.ts")
     if (!loaded(vp, "app/actions/vendor-payments.ts", "initiateVendorPayout")) return
-    const pay = () => drive(() => vp.initiateVendorPayout({ vendorId: nV1, amount: 2500, method: "stripe" }))
+    const pay = () => drive<any>(() => vp.initiateVendorPayout({ vendorId: nV1, amount: 2500, method: "stripe" }))
     const earning = (id: string) => T(G.__P.mem, "vendor_earnings").find((r) => r.id === id)?.status
     fresh(); S().modes = ["timeout_after_create"]
     const a = await pay(), b = await pay()
