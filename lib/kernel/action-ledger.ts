@@ -1382,7 +1382,7 @@ export const SINK_CLASSES = ["credentials", "paid_acquisition", "outbound_send",
 export type SinkClass = (typeof SINK_CLASSES)[number]
 /** The classes whose execution RELEASES money / authority and so needs one accountable decision (principle 11: IRREVERSIBLE is never
  *  autonomous). Outbound sends, spend inside an envelope and credential reads stay policy-permitted (routine work never waits). */
-export const RELEASE_SINK_CLASSES = ["payout", "cda_release"] as const satisfies readonly SinkClass[]
+const RELEASE_SINK_CLASSES = ["payout", "cda_release"] as const satisfies readonly SinkClass[] // module-private: its one reader is sinkRule above (no second spelling exists)
 /** THE ONE MAP from a sink door's channel to its class — each sink function names its channel (`<class>_sink`). */
 const SINK_CHANNEL_CLASS: Readonly<Record<string, SinkClass>> = {
   credential_sink: "credentials", paid_acquisition_sink: "paid_acquisition", ad_budget_sink: "ad_budget", accounting_sink: "financial_ledger",
