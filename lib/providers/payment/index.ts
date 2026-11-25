@@ -87,8 +87,12 @@ async function resolveCallAccount(
 function stripeReq<T = any>(
   secretKey: string,
   path: string,
-  opts: { method?: "GET" | "POST"; form?: Record<string, string>; stripeAccount?: string } = {},
+  opts: { method?: "GET" | "POST"; form?: Record<string, string>; stripeAccount?: string; idempotencyKey?: string; query?: Record<string, string> } = {},
 ): Promise<GatewayResponse<T>> {
+  const headers: Record<string, string> = {
+    ...(opts.stripeAccount ? { "Stripe-Account": opts.stripeAccount } : {}),
+    ...(opts.idempotencyKey ? { "Idempotency-Key": opts.idempotencyKey } : {}),
+  }
   return callConnector<T>({
     connector: "stripe",
     baseUrl: STRIPE_BASE,
@@ -96,7 +100,8 @@ function stripeReq<T = any>(
     method: opts.method ?? (opts.form ? "POST" : "GET"),
     auth: { style: "bearer", token: secretKey },
     ...(opts.form ? { body: opts.form, bodyType: "form" as const } : {}),
-    ...(opts.stripeAccount ? { headers: { "Stripe-Account": opts.stripeAccount } } : {}),
+    ...(opts.query ? { query: opts.query } : {}),
+    ...(Object.keys(headers).length ? { headers } : {}),
   })
 }
 
@@ -134,6 +139,12 @@ export interface CreateTransferParams {
   transactionId?: string
   /** Flat metadata carried onto the Stripe object. Form-encoded as metadata[k]. */
   metadata?: Record<string, string>
+  /** WAVE 156 (156N, C26): sent as the `Idempotency-Key` header. The SAME key on a retry makes Stripe hand back the transfer
+   *  the first attempt created instead of creating a second one, so a payout retried after a lost answer pays once. */
+  idempotencyKey?: string
+  /** WAVE 156 (156N, C26): Stripe's `transfer_group`, set to the payout row's id so `findTransferForPayout` can find the
+   *  transfer from our side when the answer to the create call was lost. */
+  transferGroup?: string
 }
 
 export interface CreateTransferResult {
@@ -142,6 +153,10 @@ export interface CreateTransferResult {
   amount?: number
   error?: string
   mock?: boolean
+  /** WAVE 156 (156N, C26), on a failure only: `refused` = provably nothing was created (refused before the call, or a 4xx
+   *  definite refusal from Stripe); `unknown` = the call may have landed (no answer, a timeout, a 5xx, a 409 or 429). An
+   *  `unknown` failure is never read as "no money moved": the caller reconciles before releasing anything. */
+  outcome?: "refused" | "unknown"
 }
 
 /**
@@ -167,12 +182,12 @@ export interface CreateTransferResult {
 export async function createTransfer(params: CreateTransferParams, on: StripeCallScope): Promise<CreateTransferResult> {
   const resolved = await resolveCallAccount(on)
   if (!resolved.ok) {
-    return { success: false, error: resolved.error, mock: resolved.notConfigured }
+    return { success: false, error: resolved.error, mock: resolved.notConfigured, outcome: "refused" }
   }
   const { secretKey, connectedAccountId, mode } = resolved.account
 
   const unreachable = destinationRefusal(resolved.account, params.destinationAccountId)
-  if (unreachable) return { success: false, error: unreachable }
+  if (unreachable) return { success: false, error: unreachable, outcome: "refused" }
 
   const form: Record<string, string> = {
     amount: Math.round(params.amount * 100).toString(),
@@ -181,9 +196,11 @@ export async function createTransfer(params: CreateTransferParams, on: StripeCal
     description: params.description || "Commission transfer",
   }
   for (const [k, v] of Object.entries(params.metadata ?? {})) form[`metadata[${k}]`] = v
+  if (params.transferGroup) form.transfer_group = params.transferGroup
 
   const res = await stripeReq<{ id: string; amount: number }>(secretKey, "v1/transfers", {
     form,
+    ...(params.idempotencyKey ? { idempotencyKey: params.idempotencyKey } : {}),
     // A `connect`-mode tenant banks through an acct_… under the platform's Connect
     // platform: the platform's key signs and the header addresses the tenant. Omit
     // it and the same key debits the PLATFORM's balance instead — the substitution
@@ -191,7 +208,7 @@ export async function createTransfer(params: CreateTransferParams, on: StripeCal
     ...(mode === "connect" && connectedAccountId ? { stripeAccount: connectedAccountId } : {}),
   })
   if (!res.ok || !res.data) {
-    return { success: false, error: res.error || `Stripe transfer error (${res.status ?? "—"})` }
+    return { success: false, error: res.error || `Stripe transfer error (${res.status ?? "—"})`, outcome: transferFailureOutcome(res.status) }
   }
   return { success: true, transferId: res.data.id, amount: res.data.amount / 100 }
 }
@@ -639,3 +656,61 @@ export async function getStripeBalance(): Promise<StripeBalanceResult> {
 // already wired. If a treasury sweep is ever genuinely wanted it is an
 // operator/admin decision with its own gate and its own ledger row, not a
 // revival of this.
+
+// ═══════════════════════════════════════════════════════════════════════════
+// WAVE 156 (lane 156N, canary C26) — A TRANSFER WHOSE ANSWER WAS LOST IS FOUND BEFORE ANOTHER IS SENT
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The payout writer (app/actions/vendor-payments.ts :: initiateVendorPayout) used to read ANY failed create as "no money
+// moved": it marked the payout 'failed' and gave the earnings back. A timeout or a 5xx after Stripe had created the transfer
+// therefore released earnings that HAD been paid, and the vendor's next request paid them again. Two halves close it:
+// `transferFailureOutcome` says which failures are provably refusals, and `findTransferForPayout` asks Stripe, on the same
+// account and connected-account header the create used, whether a transfer for this payout exists.
+
+/** PURE: a Stripe failure status → whether the create provably did not happen. A 4xx is Stripe refusing the request
+ *  (nothing was created), EXCEPT 409 (an idempotent request still in flight) and 429 (rate limited). No status (network
+ *  error, timeout) and any 5xx are UNKNOWN: the transfer may exist. */
+export function transferFailureOutcome(status: number | null | undefined): "refused" | "unknown" {
+  if (typeof status !== "number") return "unknown"
+  if (status >= 400 && status < 500 && status !== 409 && status !== 429) return "refused"
+  return "unknown"
+}
+
+export interface FindTransferResult {
+  /** false = the lookup itself could not be completed; the caller must treat the transfer as possibly existing. */
+  ok: boolean
+  /** The transfer this payout created, when one exists. */
+  transfer?: { id: string; amount: number; destination: string | null }
+  error?: string
+}
+
+/**
+ * Find the transfer a payout created, on the payer's account: transfers to `destinationAccountId` created since a day before
+ * `createdSince`, matched by `transfer_group` (set by every create since wave 156) or `metadata.payoutId` (set by every create
+ * before it). Read-only. Pages are bounded; a lookup that cannot see every candidate answers ok:false and never "none",
+ * because "none" is what licenses a second transfer.
+ */
+export async function findTransferForPayout(
+  params: { payoutId: string; destinationAccountId: string; createdSince?: string | null },
+  on: StripeCallScope,
+): Promise<FindTransferResult> {
+  const resolved = await resolveCallAccount(on)
+  if (!resolved.ok) return { ok: false, error: resolved.error }
+  const { secretKey, connectedAccountId, mode } = resolved.account
+  const since = params.createdSince ? Math.floor(Date.parse(params.createdSince) / 1000) - 86_400 : NaN
+  let startingAfter: string | null = null
+  for (let page = 0; page < 5; page++) {
+    const query: Record<string, string> = { destination: params.destinationAccountId, limit: "100" }
+    if (Number.isFinite(since)) query["created[gte]"] = String(since)
+    if (startingAfter) query.starting_after = startingAfter
+    const res = await stripeReq<{ data?: Array<{ id: string; amount: number; destination?: string | null; transfer_group?: string | null; metadata?: Record<string, string> | null }>; has_more?: boolean }>(
+      secretKey, "v1/transfers", { method: "GET", query, ...(mode === "connect" && connectedAccountId ? { stripeAccount: connectedAccountId } : {}) },
+    )
+    if (!res.ok || !res.data || !Array.isArray(res.data.data)) return { ok: false, error: res.error || `Stripe transfer lookup error (${res.status ?? "—"})` }
+    const hit = res.data.data.find((t) => t.transfer_group === params.payoutId || t.metadata?.payoutId === params.payoutId)
+    if (hit) return { ok: true, transfer: { id: hit.id, amount: hit.amount / 100, destination: hit.destination ?? null } }
+    if (!res.data.has_more || res.data.data.length === 0) return { ok: true }
+    startingAfter = res.data.data[res.data.data.length - 1].id
+  }
+  return { ok: false, error: "Too many transfers to that account to rule this payout out; not assuming it was never sent." }
+}
