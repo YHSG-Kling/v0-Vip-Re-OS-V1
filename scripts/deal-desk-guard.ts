@@ -1316,6 +1316,16 @@ async function sectionH() {
     toolBad.length === 0 && tools.every((b) => b.length > 0) && /\brequireDealDesk\(\s*transactionId\s*,\s*seat\s*\)/.test(helper) && !/^export\s+async\s+function\s+deskDealForTool\b/m.test(chat), { toolBad })
   check("…control: the tool rule catches a tool that writes the model's transaction_id", /transaction_id:\s*transaction_id\b/.test(`.insert({ transaction_id: transaction_id ?? undefined })`))
 
+  // ── the owner packet carries the MEASURED block, unaltered ──
+  if (ROOT === WT) {
+    const pk = raw("docs/operations/WAVE156-R6-DEAL-TABLE-POLICY-PACKET.md", WT)
+    const at = pk.indexOf("```sql"), blk = at < 0 ? "" : pk.slice(at + 6, pk.indexOf("```", at + 6))
+    const m = blk.includes("begin;") && blk.includes("commit;") ? blk.slice(blk.indexOf("begin;"), blk.indexOf("commit;") + 7) : ""
+    const sha = createHash("sha256").update(m.replace(/\s+/g, " ").trim()).digest("hex")
+    check("the wave 156 §R.6 owner packet's statements ARE the measured block (same fingerprint as OWNER-SQL.md §R.6), it says it is NOT APPLIED, and it ends its two-tenant check in ROLLBACK",
+      sha === PG_MEASURED.proposedSqlSha256 && /NOT APPLIED/.test(pk) && /rollback;\s*\n\s*```/.test(pk), { sha: sha.slice(0, 16) })
+  }
+
   // ── requireDealDesk itself, DRIVEN ──
   const rg = await load(ROLE_GUARD)
   if (typeof rg.requireDealDesk !== "function") check("lib/transactions/role-guard.ts exports requireDealDesk (the session-bound deal desk)", false, Object.keys(rg))

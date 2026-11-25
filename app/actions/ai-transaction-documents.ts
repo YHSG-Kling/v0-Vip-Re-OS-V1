@@ -533,7 +533,7 @@ export async function shareDocumentAnalysisWithClient(params: {
     transaction_id: desk.transactionId,
     contact_id: params.contactId,
     agent_id: d.agent_id ?? wc.agentId ?? params.agentId,
-    brokerage_id: desk.brokerageId,
+    brokerage_id: wc.brokerageId, // the write seam's tenant — the same one the desk was asked with
     direction: "agent_to_client",
     body: `AI Document Review — ${params.documentLabel}\n\n${params.analysisText}`,
     created_at: new Date().toISOString(),

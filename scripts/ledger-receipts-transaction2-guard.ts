@@ -278,7 +278,7 @@ async function main() {
     { file: "app/actions/kernel-bridges.ts", fn: "generateNetSheetPdf", args: [{ contactId: ID(3), propertyAddress: "1 Fixture Way", scenarios: [] }] },
     { file: "app/actions/market-insights.ts", fn: "generateMarketInsights", args: [] },
     { file: "app/actions/marketing/lead-magnet-copy.ts", fn: "generateLeadMagnetCopyAction", args: [{ magnetType: "generic_form" }] },
-    { file: "app/actions/repair-negotiation-copilot.ts", fn: "repairNegotiationCoPilot", args: [{ transactionId: ID(28), side: "buyer" }] },
+    { file: "app/actions/repair-negotiation-copilot.ts", fn: "repairNegotiationCoPilot", args: [{ transactionId: ID(2), side: "buyer" }] }, // wave 156 (156E): the deal desk runs before the receipt — a deal the seat works (the fixture broker, ID(2))
     { file: "app/actions/title-portal.ts", fn: "sendTitleMessageToAgent", args: [{ transactionId: ID(2), message: "hi" }] },
     { file: "app/actions/transaction-inspections.ts", fn: "uploadInspectionReportAction", args: [{ inspectionId: ID(29), transactionId: ID(2), reportUrl: "docref://x", fileName: "r.pdf" }] },
     { file: "app/actions/transaction-stage-machine.ts", fn: "markTransactionLost", args: [{ transactionId: ID(30), brokerageId: B1, lostReason: "r", category: "c", earnestMoneyOutcome: "returned" }] },
