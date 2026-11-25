@@ -46,8 +46,8 @@ async function testBatchdata(): Promise<TestResponse> {
 }
 
 async function testApify(): Promise<TestResponse> {
-  const key = process.env.APIFY_API_KEY
-  if (!key) return { ok: false, message: "APIFY_API_KEY not set" }
+  const key = (await import("@/lib/env/aliases")).apifyToken() // wave 156 (156G): the survivor spelling the product reads (APIFY_API_TOKEN, alias APIFY_TOKEN) — was APIFY_API_KEY, which only this test read
+  if (!key) return { ok: false, message: "APIFY_API_TOKEN not set" }
   const res = await callConnector({
     connector: "apify", baseUrl: "https://api.apify.com", path: "/v2/users/me", method: "GET",
     query: { token: key }, auth: { style: "none" },

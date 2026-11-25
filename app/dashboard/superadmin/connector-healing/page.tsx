@@ -33,8 +33,9 @@ import { simulateProviderPilot } from "@/lib/providers/provider-pilot"
 // what it has spent, and what a tenant may bring of its own.
 import { deriveTenantProviderConnectionState } from "@/lib/providers/tenant-provider-connections"
 import { loadAcquisitionEconomics, PROVIDER_COMMITMENT_TERMS, costUnderCommitment } from "@/lib/vendor-governance/acquisition-economics"
-import { getAcquisitionCapsAction } from "@/app/actions/superadmin/platform-controls"
+import { getAcquisitionCapsAction, getRentcastRequestCapAction } from "@/app/actions/superadmin/platform-controls"
 import { AcquisitionCapsPanel } from "./acquisition-caps-panel"
+import { RentcastCapPanel } from "./rentcast-cap-panel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { redirect } from "next/navigation"
 import { AlertTriangle, CheckCircle2, XCircle, ExternalLink } from "lucide-react"
@@ -86,8 +87,8 @@ export default async function ConnectorHealingPage() {
 
   // Wave 151 (151F): the owner's acquisition caps + month-to-date platform spend (gated action), and the measured economics
   // over the last 90 days — a refused read is a caveat on the page, never a zero.
-  const [capsRes, economics] = await Promise.all([
-    getAcquisitionCapsAction(),
+  const [capsRes, rentcastCap, economics] = await Promise.all([
+    getAcquisitionCapsAction(), getRentcastRequestCapAction(),
     loadAcquisitionEconomics(createServiceClient(), {
       sinceIso: new Date(Date.now() - 90 * 86_400_000).toISOString(),
       duplicateUnitUsd: PROVIDER_FIELD_SCORECARD.find((r) => r.provider === "batchdata" && r.capability === "motivated_seller_list")?.unitUsd ?? null,
@@ -484,6 +485,15 @@ export default async function ConnectorHealingPage() {
       {/* ── PLATFORM ACQUISITION BUDGET (wave 151F) — the owner's caps; null = stop before spend, no default ─────────── */}
       <section className="space-y-3">
         <h2 className="text-lg font-medium">Platform acquisition budget (owner caps)</h2>
+        {/* Wave 156 (156G round 2): the platform's own RentCast ceiling — RentCast has no hard cap of its own. */}
+        <Card>
+          <CardContent className="space-y-2 p-4">
+            <h3 className="text-sm font-medium">RentCast request ceiling (the platform&apos;s own hard cutoff)</h3>
+            {rentcastCap.ok
+              ? <RentcastCapPanel applied={rentcastCap.applied} setting={rentcastCap.setting} verdict={rentcastCap.verdict} windowStart={rentcastCap.windowStart} windowEnd={rentcastCap.windowEnd} />
+              : <p className="text-sm text-destructive">RentCast ceiling unreadable: {rentcastCap.error} — every RentCast request refuses while it cannot be read.</p>}
+          </CardContent>
+        </Card>
         <Card>
           <CardContent className="p-4">
             {capsRes.ok

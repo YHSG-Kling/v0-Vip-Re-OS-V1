@@ -580,18 +580,18 @@ export async function processEnrichmentQueue(
       // the persona builder without demographics for every address-bearing lead. REVERSED in lane
       // 83A (owner verbatim, wave 83: "we need the richer demographics for raw leads and leads,
       // etc") — see DEMOGRAPHICS_AFTER_CONTACT_MATCH at Step 5b below.
-      const { resolveBatchDataAccess, resolveContactProviderRoute, runVersiumContactLeg } = await import('@/lib/ai-isa/property-lookup-rail')
+      const { resolveBatchDataAccess, resolveContactProviderRoute, runVersiumContactLeg, licensedContactRoute } = await import('@/lib/ai-isa/property-lookup-rail')
       const propertyStreet = (entity.address as string | null) ?? (entity.mailing_address as string | null) ?? null
       const entityCity = (entity.city as string | null) ?? (entity.mailing_city as string | null) ?? null
       const entityState = (entity.state as string | null) ?? (entity.mailing_state as string | null) ?? null
       const entityZip = (entity.zip_code as string | null) ?? (entity.mailing_zip as string | null) ?? null
-      const route = resolveContactProviderRoute({
+      const route = licensedContactRoute(resolveContactProviderRoute({ // wave 156 (156G): the platform-paid route walks LICENSED providers only (dormant survivors are never a failover target)
         hasName: !!(entity.first_name || entity.last_name),
         hasPropertyAddress: !!propertyStreet,
         hasEmailOrPhone: !!(entity.email || entity.phone),
         hasProfileUrl: false,
         hasLocation: !!((entityCity && entityState) || entityZip),
-      })
+      }))
       console.info('[enrichment-orchestrator] owner-contact route:', route.providers.join(' → ') || 'none', '—', route.reason)
 
       // The CONTACT-POINTS answer, whichever provider gave it (the name is historical — BatchData was

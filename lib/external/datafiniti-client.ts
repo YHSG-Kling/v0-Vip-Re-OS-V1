@@ -80,6 +80,15 @@ export interface DatafinitiPeopleRecord {
   dateAdded?: string; dateUpdated?: string
   sourceURLs?: string[]; domains?: string[]
   licenses?: Array<{ type?: string; value?: string }>
+  // Wave 156 (156G round 2): added to the People Data schema in the November 2026 release log ("The People Data Schema now
+  // includes broker, identity, and website fields" — docs.datafiniti.co/november-2026, fetched 2026-11-25). The page names the
+  // fields and gives no types, so the types below are the conservative reading (counts / prices as numbers, the date as an
+  // ISO string) and every field is optional; middleName was already declared above. Nothing here is guessed beyond that.
+  currentListingCount?: number
+  maxListingPrice?: number
+  minListingPrice?: number
+  recentlySoldCount?: number
+  salesHistoryDateSeen?: string | string[]
   [field: string]: unknown
 }
 

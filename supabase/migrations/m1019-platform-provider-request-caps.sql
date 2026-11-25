@@ -9,10 +9,12 @@
 -- SURVIVOR EXTENDED (no new table): one jsonb column on the platform_settings SINGLETON, beside acquisition_budget_caps (m976)
 -- and self_healing_ceilings (m753) — the same idiom. Reader: lib/property/rentcast-eligibility.ts reserveRentcastPlatformRequest,
 -- asked immediately before every real RentCast egress (the REST door in lib/property/rentcast.ts and the MCP tool door in
--- lib/external/rentcast-ai-tools.ts). No writer is added by this lane: the owner sets it by SQL until the platform console
--- grows an editor (INTEGRATOR REQUEST in the 156G report).
+-- lib/external/rentcast-ai-tools.ts) and before the billed connector-health probe (lib/agentic-os/connector-probe.ts). The
+-- editor is the platform console (app/dashboard/superadmin/connector-healing, setRentcastRequestCapAction).
 --
--- Shape: { "rentcast": { "monthly_requests": <integer ≥ 0>, "set_by": <users.id>, "set_at": <iso> } }
+-- Shape: { "rentcast": { "monthly_requests": <integer ≥ 1 or null>, "billing_anchor_day": <1–31 or null>, "set_by": <users.id>, "set_at": <iso> } }
+-- (billing_anchor_day = the RentCast plan's activation day; null = the calendar month in UTC. Writer: app/actions/superadmin/
+-- platform-controls.ts setRentcastRequestCapAction — superadmin-gated, audited, receipted; validator validateRentcastCapEdit.)
 --
 -- NULL (or no rentcast.monthly_requests) = the requests INCLUDED in the plan the repo prices RentCast at (Foundation, 1,000 —
 -- RENTCAST_PLAN_INCLUDED_REQUESTS), i.e. ZERO paid overage until the owner authorizes some. Before this is applied the reader

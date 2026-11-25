@@ -383,7 +383,7 @@ add("propdata", "secret", [
   ["REALTOR_API_KEY", "Legacy platform-sync stub (as above).", "UNIMPLEMENTED"],
   ["REDFIN_API_KEY", "Legacy platform-sync stub (as above).", "UNIMPLEMENTED"],
   ["TRULIA_API_KEY", "Legacy platform-sync stub (as above).", "UNIMPLEMENTED"],
-  ["PDL_API_KEY", "Second spelling of PEOPLEDATA_API_KEY listed by the tenancy matrix and the settings page (app/actions/services-config.ts:50). Nothing reads it.", "ALIAS", { alias: "PEOPLEDATA_API_KEY", via: "app/actions/services-config.ts env_key (UI status only)" }],
+  ["PDL_API_KEY", "RETIRED second spelling of PEOPLEDATA_API_KEY (wave 156, lane 156G): the settings page (app/actions/services-config.ts) now tests PEOPLEDATA_API_KEY, the name the client reads. Nothing reads PDL_API_KEY; lib/providers/tenancy-matrix.ts still LISTS it beside the survivor. Inert — set PEOPLEDATA_API_KEY.", "RETIRED"],
 ])
 add("propdata", "config", [
   ["BATCHDATA_MCP_URL", "BatchData MCP endpoint (the funded MCP route; launch-degraded without it).", "DEGRADED"],
@@ -404,7 +404,7 @@ add("research", "secret", [
   ["NEWSAPI_AI_KEY", "NewsAPI.ai key."],
   ["APIFY_API_TOKEN", "Apify token (the survivor spelling, lib/env/aliases.ts apifyToken)."],
   ["APIFY_TOKEN", "Deprecated spelling of APIFY_API_TOKEN (lib/env/aliases.ts:66, warns once).", "ALIAS", { alias: "APIFY_API_TOKEN" }],
-  ["APIFY_API_KEY", "Third spelling, read ONLY by the admin provider-test route (app/api/admin/system/providers/test/route.ts:49) — that test reports 'not set' while APIFY_API_TOKEN is set. Set the survivor.", "ALIAS", { alias: "APIFY_API_TOKEN" }],
+  ["APIFY_API_KEY", "RETIRED third spelling (wave 156, lane 156G): the admin provider-test route now reads apifyToken() (lib/env/aliases.ts — APIFY_API_TOKEN, alias APIFY_TOKEN) like the product. Nothing reads APIFY_API_KEY. Inert — set APIFY_API_TOKEN.", "RETIRED"],
   ["ZENROWS_API_KEY", "ZenRows scraping key."],
   ["ZYTE_API_KEY", "Zyte API key."],
   ["DATAFINITI_API_TOKEN", "Datafiniti People Data bearer token (platform account, wave 153 lane 153M). DORMANT PENDING RIGHTS — leave unset until the owner's licensing decision; a tenant's own token lives in platform_credentials, never here.", "OPTIONAL", { via: "lib/external/datafiniti-client.ts DATAFINITI_PLATFORM_TOKEN_ENV (computed key)" }],

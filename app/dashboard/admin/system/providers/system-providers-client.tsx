@@ -66,7 +66,7 @@ const PROVIDERS = [
     id: "apify",
     label: "Apify",
     description: "Web scraping orchestration for raw lead collection from public sources.",
-    envKey: "APIFY_API_KEY",
+    envKey: "APIFY_API_TOKEN",
     docsUrl: "https://apify.com/",
   },
   {

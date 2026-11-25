@@ -1134,7 +1134,7 @@ async function enrichWithPeopleData(fields: {
       })
     : null
   const versiumAnswered = !!versium?.answered && versium.emails.length > 0
-  const enrichmentResult = skipPeopleData || versiumAnswered
+  const enrichmentResult = skipPeopleData || versiumAnswered || !(await import('@/lib/ai-isa/property-lookup-rail')).isPlatformProviderLicensed('peopledata') // wave 156 (156G): the platform PeopleData failover runs only where the platform holds a license (dormant → no call, $0)
     ? { data: null }
     : await skipTraceWithPeopleData({
         name:  [fields.first_name, fields.last_name].filter(Boolean).join(' ') || undefined,

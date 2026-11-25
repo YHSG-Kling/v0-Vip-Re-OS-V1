@@ -73,14 +73,20 @@ G.__G = {
   mem: memSupabase({}) as MemClient,
   gateway: [] as any[], gatewayAnswer: (_req: any) => ({ ok: true, status: 200, data: [{ id: "p1", formattedAddress: "x", bedrooms: 3 }], error: null }),
   usage: [] as any[], meter: [] as any[], cache: new Map<string, unknown>(), mcp: [] as any[], mcpOk: true,
+  paid: [] as any[], seat: null as string | null,
 }
 process.env.RENTCAST_API_KEY = "fixture-not-a-key"
 const realUrl = (p: string) => pathToFileURL(join(ROOT, p)).href
 const OVERRIDE: Record<string, string> = {
   "lib/supabase/service.ts": "export function createServiceClient(){ return globalThis.__G.mem }",
-  "lib/supabase/server.ts": "export async function createClient(){ return globalThis.__G.mem }",
+  "lib/supabase/server.ts": "export async function createClient(){ const m = globalThis.__G.mem; m.auth = { getUser: async () => ({ data: { user: globalThis.__G.seat ? { id: globalThis.__G.seat, email: 'seat@example.test', user_metadata: {} } : null }, error: null }) }; return m }",
+  // Round 2 (§I): the paid person-data transports — COUNTED; a provider is never reached.
+  "lib/external/peopledata-client.ts": "export async function skipTraceWithPeopleData(p){ globalThis.__G.paid.push({ provider: 'peopledata', p }); return { data: null, cost: 0 } }",
+  "lib/external/batchdata-client.ts": "export async function skipTraceBatchDataV3Batch(rows){ globalThis.__G.paid.push({ provider: 'batchdata', rows }); return { matches: [], cost: 0 } }",
+  "lib/enrichment/reverse-skip-trace.ts": "export async function reverseSkipTracePerson(p){ globalThis.__G.paid.push({ provider: 'batchdata_reverse', p }); return { status: 'no_match', provider: null, phones: [], emails: [], person: null, costUsd: 0, reason: 'fixture' } }",
+  "lib/external/osint-free.ts": "export async function runFreeOsintLane(){ return { lane: 'osint_free', cost: 0, reachable: true, answered: [], facts: { lat: null, lng: null, areaMedianHomeValueZip: null }, connectors: [], unavailable: [] } }",
   "lib/agentic-os/connector-gateway.ts": "export async function callConnector(req){ globalThis.__G.gateway.push(req); return globalThis.__G.gatewayAnswer(req) }; export async function loadProviderHealth(){ return { state: 'healthy', routeAround: false, reason: 'fixture' } }",
-  "lib/vendor-governance/usage-logger.ts": "export async function logVendorUsage(e){ globalThis.__G.usage.push(e); return { ok: true } }",
+  "lib/vendor-governance/usage-logger.ts": "export async function logVendorUsage(e){ globalThis.__G.usage.push(e); return { success: true } }",
   "lib/vendor-governance/meter-vendor.ts": "export async function meterVendorSpend(m){ globalThis.__G.meter.push(m); return true }",
   "lib/cma/comp-supplement-cache.ts": "export async function getCachedProviderPayload(k){ return globalThis.__G.cache.get(k) ?? null }; export async function setCachedProviderPayload(k, p){ globalThis.__G.cache.set(k, p) }",
   "lib/connections/resolve-scoped.ts": "export async function resolveScopedConnectionResult(){ return { status: 'not_connected' } }",
@@ -332,8 +338,181 @@ async function main() {
   check("the capability matrix shows no 'ready' route without live evidence", readyWithout.length === 0, readyWithout.map((m) => m.provider))
   check("positive control: the matrix rows are real (rentcast / versium / datafiniti present, Datafiniti awaiting license)", ["rentcast", "versium", "datafiniti"].every((p) => matrix.some((m) => m.provider === p)) && /awaiting/.test(matrix.find((m) => m.provider === "datafiniti")?.honestState ?? ""))
 
+  await roundTwo(rail)
+
   console.log(`\n${passed} passed, ${failed} failed`)
   if (failed) { console.log(fails.map((f) => `  - ${f}`).join("\n")); process.exit(1) }
 }
 
 main().catch((e) => { console.error(e); console.log(`\n${passed} passed, ${failed + 1} failed (threw)`); process.exit(1) })
+
+// ═══ ROUND 2 (integrator follow-up, 2026-11-25) ═══════════════════════════════════════════════════════════════════════
+// §I  failover to platform-DORMANT providers makes zero paid calls (driven through processEnrichmentQueue); the tenant-owned
+//     route stays the tenant's. RED AT BASE: the drain called PeopleData / BatchData on the platform key.
+// §J  the connector-health probe's RentCast /markets call reserves against the ceiling and books on success only.
+// §K  the billing window: optional anchor day (days 29–31 in short months, leap years, year wrap), driven through the cutoff.
+// §L  the platform-staff editor: a tenant admin is refused; staff sets it (validated, audited, receipted); the cutoff reads it;
+//     before m1019 the read says "not applied" and the write refuses with that sentence.
+// §M  env names: services-config tests PEOPLEDATA_API_KEY; the provider test route reads apifyToken() (APIFY_API_TOKEN).
+// §N  the five newly published Datafiniti People fields are typed (middleName was already declared).
+async function roundTwo(rail: any) {
+  const ledgerAt = (iso: string, n: number) => Array.from({ length: n }, (_, i) => ({ id: `w${iso}${i}`, vendor_name: "rentcast", units_used: 1, total_cost: 0.074, created_at: iso, request_metadata: {} }))
+
+  section("§I failover to platform-dormant providers: zero paid calls; tenant-owned stays the tenant's")
+  process.env.BATCHDATA_API_KEY = "fixture"; process.env.PEOPLEDATA_API_KEY = "fixture"; delete process.env.VERSIUM_API_KEY
+  const orch = await load("lib/lead-pipeline/enrichment-orchestrator.ts")
+  const LEAD = "c0000001-0000-4000-8000-000000000156", Q = "d0000001-0000-4000-8000-000000000156"
+  const drain = async (lead: Record<string, unknown>) => {
+    const svc = memSupabase({
+      lead_enrichment_queue: [{ id: Q, lead_id: LEAD, contact_id: null, brokerage_id: B1, status: "pending", enrichment_type: "skip_trace", trigger_type: "lead_captured", retry_count: 0, max_retries: 3, queued_at: "2026-11-20T00:00:00.000Z" }],
+      leads: [{ id: LEAD, brokerage_id: B1, enrichment_profile: {}, email: null, phone: null, ...lead }],
+      vendor_usage_tracking: [], automation_errors: [], lifecycle_events: [], notifications: [], platform_settings: [{ id: true }], agent_action_ledger: [],
+    })
+    G.__G.mem = svc; G.__G.paid = []; G.__G.gateway = []
+    try { await orch.processEnrichmentQueue(B1, { supabase: svc }) } catch { /* a drain never throws; the counter is the proof */ }
+    return { paid: [...G.__G.paid], versium: (G.__G.gateway as any[]).filter((r) => r.connector === "versium").length, queue: svc.tables.lead_enrichment_queue[0] }
+  }
+  const nameOnly = await drain({ first_name: "Pat", last_name: "Fixture", city: "Austin", state: "TX" })
+  check("a name-only lead (Versium unconfigured): the platform PeopleData failover (dormant_survivor) makes NO paid call", nameOnly.paid.length === 0, nameOnly.paid.map((p) => p.provider))
+  const withAddr = await drain({ first_name: "Pat", last_name: "Fixture", address: "1 Fixture Ln", city: "Austin", state: "TX", zip_code: "78701" })
+  check("a lead with a property address: neither the BatchData skip trace nor the PeopleData failover is called (both dormant)", withAddr.paid.length === 0, withAddr.paid.map((p) => p.provider))
+  check("…and the queue row is settled, not left 'processing' (the held route is a terminal answer)", nameOnly.queue?.status !== "processing" && withAddr.queue?.status !== "processing", [nameOnly.queue?.status, withAddr.queue?.status])
+  process.env.VERSIUM_API_KEY = "fixture-not-a-key"
+  const versiumRun = await drain({ first_name: "Pat", last_name: "Fixture", city: "Austin", state: "TX" })
+  check("positive control: the SAME drain reaches the paid step — the ACTIVE provider (Versium) is asked", versiumRun.versium >= 1 && versiumRun.paid.length === 0, { versium: versiumRun.versium, paid: versiumRun.paid.map((p) => p.provider) })
+  delete process.env.VERSIUM_API_KEY
+  if (typeof rail.licensedContactRoute === "function") {
+    const route = { capability: "owner_contact", providers: ["versium", "batchdata", "peopledata"], reason: "fixture" }
+    const held = rail.licensedContactRoute(route)
+    check("licensedContactRoute at the declared activation keeps Versium only and names the held providers", held.providers.join() === "versium" && /batchdata \(dormant_survivor\)/.test(held.reason) && /peopledata \(dormant_survivor\)/.test(held.reason), held)
+    const lic = rail.licensedContactRoute(route, { versium: { state: "active" }, batchdata: { state: "active" }, peopledata: { state: "active" } })
+    check("positive control: once licensed, the providers are back on the route in the same order", lic.providers.join() === "versium,batchdata,peopledata", lic)
+  } else check("licensedContactRoute exists", false)
+  const tpc = await load("lib/providers/tenant-provider-connections.ts")
+  check("the TENANT-owned BatchData door stays open (its own account and key — connectable, not license-held)", tpc.deriveTenantProviderConnectionState("batchdata", null).state === "unconfigured")
+  check("…while a platform-dormant-PENDING-RIGHTS provider stays held for tenants too (Datafiniti — positive control of the distinction)", tpc.deriveTenantProviderConnectionState("datafiniti", null).state === "pending_owner_licensing")
+  const pp = stripComments(raw("lib/lead-pipeline/pipeline-processor.ts"))
+  const at = pp.indexOf("const enrichmentResult =")
+  check("the raw-record promotion's PeopleData failover asks isPlatformProviderLicensed('peopledata') before skipTraceWithPeopleData (stripped)", at > 0 && /isPlatformProviderLicensed\('peopledata'\)/.test(pp.slice(at, pp.indexOf("skipTraceWithPeopleData(", at))))
+
+  section("§J the connector-health probe's RentCast call is counted and booked on success only")
+  const probe = await load("lib/agentic-os/connector-probe.ts")
+  let fetches = 0, status = 200
+  const realFetch = globalThis.fetch
+  globalThis.fetch = (async () => { fetches++; return new Response(JSON.stringify({ saleData: {}, id: "x" }), { status, headers: { "content-type": "application/json" } }) }) as typeof fetch
+  try {
+    const included = (await load("lib/property/rentcast-eligibility.ts")).RENTCAST_PLAN_INCLUDED_REQUESTS ?? 1000
+    await world({ used: included }); fetches = 0
+    const capped = await probe.probeConnector("rentcast", { apiKey: "k" }, { zip: "78701" })
+    check("at the ceiling the billed RentCast probe is NOT run (null → credential-posture health), zero egress", capped === null && fetches === 0, { capped, fetches })
+    await world(); fetches = 0; status = 200
+    const okRun = await probe.probeConnector("rentcast", { apiKey: "k" }, { zip: "78701" })
+    const booked = (G.__G.usage as any[]).filter((u) => u.usageType === "health_probe")
+    check("under the ceiling it runs once and books ONE platform-paid row (health_probe, no tenant)", okRun?.status === "ok" && fetches === 1 && booked.length === 1 && booked[0].platformPaid === true && booked[0].brokerageId === null, { status: okRun?.status, fetches, booked })
+    await world(); fetches = 0; status = 500
+    await probe.probeConnector("rentcast", { apiKey: "k" }, { zip: "78701" })
+    check("a failed probe (500) books nothing (RentCast does not bill an error)", fetches === 1 && (G.__G.usage as any[]).length === 0, G.__G.usage)
+    await world(); fetches = 0; status = 200
+    await probe.probeConnector("elevenlabs", { apiKey: "k" })
+    check("positive control: a free (non-billed) probe is untouched — runs, books nothing", fetches === 1 && (G.__G.usage as any[]).length === 0)
+  } finally { globalThis.fetch = realFetch }
+
+  section("§K the billing window — optional anchor day (calendar month by default)")
+  const el = await load("lib/property/rentcast-eligibility.ts")
+  const W = el.rentcastBillingWindow as undefined | ((now: Date, a: number | null) => { start: Date; end: Date })
+  if (typeof W === "function") {
+    const w = (now: string, a: number | null) => { const r = W(new Date(now), a); return `${r.start.toISOString().slice(0, 10)}→${r.end.toISOString().slice(0, 10)}` }
+    const cases: Array<[string, number | null, string, string]> = [
+      ["2026-11-25T12:00:00Z", null, "2026-11-01→2026-12-01", "no anchor = the calendar month in UTC"],
+      ["2026-11-25T12:00:00Z", 1, "2026-11-01→2026-12-01", "anchor 1 = the calendar month"],
+      ["2026-02-15T00:00:00Z", 31, "2026-01-31→2026-02-28", "anchor 31 in February: the period started Jan 31 and ends on Feb 28 (Feb's last day)"],
+      ["2026-02-28T05:00:00Z", 31, "2026-02-28→2026-03-31", "anchor 31 on Feb 28: a new period starts on the short month's last day"],
+      ["2026-04-30T00:00:00Z", 31, "2026-04-30→2026-05-31", "anchor 31 in April (30 days) starts on Apr 30"],
+      ["2028-02-29T10:00:00Z", 30, "2028-02-29→2028-03-30", "anchor 30 in a LEAP February starts on Feb 29"],
+      ["2027-02-28T00:00:00Z", 29, "2027-02-28→2027-03-29", "anchor 29 in a non-leap February starts on Feb 28"],
+      ["2027-03-28T23:59:59Z", 29, "2027-02-28→2027-03-29", "the day before the anchor still belongs to the previous period"],
+      ["2026-01-10T00:00:00Z", 15, "2025-12-15→2026-01-15", "year wrap: Jan 10 with anchor 15 counts from Dec 15"],
+      ["2026-11-25T00:00:00Z", 0, "2026-11-01→2026-12-01", "an invalid anchor (0) is ignored → calendar month"],
+      ["2026-11-25T00:00:00Z", 32, "2026-11-01→2026-12-01", "an invalid anchor (32) is ignored → calendar month"],
+    ]
+    for (const [now, a, want, label] of cases) check(`window: ${label}`, w(now, a) === want, w(now, a))
+    const NOW = new Date("2026-11-25T12:00:00Z")
+    const seed = (setting: unknown) => { G.__G.mem = memSupabase({ platform_settings: [{ id: true, provider_request_caps: setting }], vendor_usage_tracking: [...ledgerAt("2026-11-10T00:00:00.000Z", 3), ...ledgerAt("2026-11-20T00:00:00.000Z", 2)] }); el.resetRentcastPlatformCapState?.() }
+    seed({ rentcast: { monthly_requests: 4, billing_anchor_day: 15 } })
+    const anchored = await el.reserveRentcastPlatformRequest({ now: NOW })
+    check("driven: anchor 15 counts only the 2 requests since Nov 15 → under a ceiling of 4, allowed", anchored.allowed === true && anchored.verdict.used === 2, anchored.verdict)
+    seed({ rentcast: { monthly_requests: 4 } })
+    const calendar = await el.reserveRentcastPlatformRequest({ now: NOW })
+    check("positive control: the same ledger by calendar month counts 5 → refused at 4", calendar.allowed === false && calendar.verdict.used === 5, calendar.verdict)
+  } else check("rentcastBillingWindow exists", false)
+
+  section("§L the platform-staff editor for provider_request_caps")
+  const STAFF = "a0000009-0000-4000-8000-000000000156", TADMIN = "a0000010-0000-4000-8000-000000000156"
+  const pc = await load("app/actions/superadmin/platform-controls.ts")
+  const editorWorld = (opts: { missing?: boolean; used?: number } = {}) => {
+    G.__G.mem = memSupabase({
+      users: [{ id: STAFF, brokerage_id: B1, user_type: "broker", platform_role: "superadmin", email: "staff@example.test" }, { id: TADMIN, brokerage_id: B1, user_type: "broker_admin", platform_role: null, email: "admin@example.test" }],
+      platform_settings: [{ id: true, ...(opts.missing ? {} : { provider_request_caps: { batchdata: { monthly_requests: 9 } } }) }],
+      vendor_usage_tracking: ledgerRows(opts.used ?? 0), agent_action_ledger: [], superadmin_audit_log: [], platform_capability_overrides: [],
+    }, opts.missing ? { missingColumns: { platform_settings: ["provider_request_caps"] } } : {})
+    el.resetRentcastPlatformCapState?.()
+  }
+  if (typeof pc.setRentcastRequestCapAction === "function" && typeof pc.getRentcastRequestCapAction === "function") {
+    editorWorld({ used: 7 }); G.__G.seat = TADMIN
+    const refused = await pc.setRentcastRequestCapAction({ monthly_requests: 50 })
+    const readRefused = await pc.getRentcastRequestCapAction()
+    check("a TENANT ADMIN is refused (write and read) — the platform gate decides first", refused.ok === false && readRefused.ok === false && G.__G.mem.tables.platform_settings[0].provider_request_caps?.rentcast === undefined, { refused, readRefused })
+    G.__G.seat = STAFF
+    const bad: Array<[Record<string, unknown>, string]> = [[{ monthly_requests: 0 }, "0"], [{ monthly_requests: -1 }, "-1"], [{ monthly_requests: "1.5" }, "1.5"], [{ monthly_requests: "ten" }, "text"], [{ billing_anchor_day: 0 }, "anchor 0"], [{ billing_anchor_day: 32 }, "anchor 32"]]
+    for (const [input, label] of bad) {
+      const r = await pc.setRentcastRequestCapAction(input)
+      check(`staff input refused by the validator: ${label}`, r.ok === false && G.__G.mem.tables.platform_settings[0].provider_request_caps?.rentcast === undefined, r)
+    }
+    const set = await pc.setRentcastRequestCapAction({ monthly_requests: "7", billing_anchor_day: "31" })
+    const stored = G.__G.mem.tables.platform_settings[0].provider_request_caps
+    check("platform staff (superadmin) sets it: stored as integers, set_by = the staff user", set.ok === true && stored?.rentcast?.monthly_requests === 7 && stored?.rentcast?.billing_anchor_day === 31 && stored?.rentcast?.set_by === STAFF, { set, stored })
+    check("…other providers' entries in the jsonb are kept", stored?.batchdata?.monthly_requests === 9)
+    const led = (G.__G.mem.tables.agent_action_ledger ?? []) as any[]
+    const done = led.filter((r) => r.status === "executed"), refusedRows = led.filter((r) => r.status === "failed")
+    check("…receipted on agent_action_ledger (who, what, outcome): ONE executed platform.provider_caps.set by the staff user", done.length === 1 && done[0].action === "platform.provider_caps.set" && done[0].actor_user_id === STAFF, led.map((r) => ({ a: r.action, u: r.actor_user_id, s: r.status })))
+    check("…and every validator refusal left a FAILED receipt (a refused write is evidence too), none executed", refusedRows.length === bad.length && refusedRows.every((r) => r.action === "platform.provider_caps.set"), refusedRows.length)
+    const audit = (G.__G.mem.tables.superadmin_audit_log ?? []) as any[]
+    check("…and audited in superadmin_audit_log with before → after (and set_at = when)", audit.length === 1 && audit[0].action === "provider_request_caps.set" && audit[0].details?.after?.monthly_requests === 7 && typeof audit[0].details?.after?.set_at === "string", audit)
+    const cut = await el.reserveRentcastPlatformRequest()
+    check("THE CUTOFF READS THE NEW VALUE: 7 used of the new ceiling 7 → refused, capSource owner_setting", cut.allowed === false && cut.verdict.cap === 7 && cut.verdict.capSource === "owner_setting", cut.verdict)
+    const read = await pc.getRentcastRequestCapAction()
+    check("…and the page's read-back shows it (applied, 7, anchor 31, the live verdict)", read.ok === true && read.applied === true && read.setting?.monthly_requests === 7 && read.setting?.billing_anchor_day === 31 && read.verdict.allowed === false, read)
+    editorWorld({ missing: true }); G.__G.seat = STAFF
+    const notYet = await pc.getRentcastRequestCapAction()
+    const notYetSet = await pc.setRentcastRequestCapAction({ monthly_requests: 10 })
+    check("before m1019 is applied: the read says applied:false (the page shows 'not available yet') and does not fail", notYet.ok === true && notYet.applied === false && notYet.verdict.capSource === "plan_included_requests", notYet)
+    check("…and the write refuses with that sentence, writing nothing", notYetSet.ok === false && /not available yet/.test(notYetSet.error), notYetSet)
+    const panel = stripComments(raw("app/dashboard/superadmin/connector-healing/rentcast-cap-panel.tsx"))
+    const page = stripComments(raw("app/dashboard/superadmin/connector-healing/page.tsx"))
+    check("the console mounts the editor and its not-available-yet text (stripped source)", /<RentcastCapPanel /.test(page) && /getRentcastRequestCapAction\(\)/.test(page) && /setting is not available yet/.test(panel))
+    G.__G.seat = null
+  } else check("the platform-staff editor actions exist (getRentcastRequestCapAction / setRentcastRequestCapAction)", false)
+
+  section("§M env names match what the product reads")
+  const sc = stripComments(raw("app/actions/services-config.ts"))
+  check("services-config tests PEOPLEDATA_API_KEY (the name peopledata-client reads), never PDL_API_KEY", /env_key: "PEOPLEDATA_API_KEY"/.test(sc) && !/PDL_API_KEY/.test(sc))
+  const pdlClient = stripComments(raw("lib/external/peopledata-client.ts"))
+  check("positive control: the client really reads PEOPLEDATA_API_KEY", /process\.env\.PEOPLEDATA_API_KEY/.test(pdlClient))
+  const rt = stripComments(raw("app/api/admin/system/providers/test/route.ts"))
+  check("the provider test route reads apifyToken(), never APIFY_API_KEY", /apifyToken\(\)/.test(rt) && !/APIFY_API_KEY/.test(rt))
+  delete process.env.APIFY_API_KEY; process.env.APIFY_API_TOKEN = "fixture"
+  G.__G.mem = memSupabase({}); G.__G.gateway = []; G.__G.gatewayAnswer = () => ({ ok: true, status: 200, data: {}, error: null })
+  const route = await load("app/api/admin/system/providers/test/route.ts")
+  const apify = await (await route.POST(new Request("http://x/api", { method: "POST", body: JSON.stringify({ provider: "apify" }), headers: { "content-type": "application/json" } }) as never)).json()
+  check("driven: with only APIFY_API_TOKEN set the Apify test runs (not 'not set')", apify.ok === true && (G.__G.gateway as any[]).some((r) => r.connector === "apify"), apify)
+  const opsData = raw("scripts/operations-docs-data.ts")
+  check("operations-docs-data records PDL_API_KEY and APIFY_API_KEY as RETIRED (nothing reads them)", /\["PDL_API_KEY", "RETIRED[^\n]*"RETIRED"\]/.test(opsData) && /\["APIFY_API_KEY", "RETIRED[^\n]*"RETIRED"\]/.test(opsData))
+
+  section("§N the newly published Datafiniti People fields are typed")
+  const dfc = stripComments(raw("lib/external/datafiniti-client.ts"))
+  const rec = dfc.slice(dfc.indexOf("export interface DatafinitiPeopleRecord"), dfc.indexOf("export interface DatafinitiSearchResult"))
+  for (const f of ["currentListingCount", "maxListingPrice", "minListingPrice", "recentlySoldCount", "salesHistoryDateSeen", "middleName"]) {
+    check(`DatafinitiPeopleRecord declares ${f} as optional`, new RegExp(`\\b${f}\\?:`).test(rec))
+  }
+  check("positive control: the record slice is the real interface (it declares firstName)", /firstName\?:/.test(rec))
+}

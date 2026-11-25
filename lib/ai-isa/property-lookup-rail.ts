@@ -1882,3 +1882,28 @@ export function decidePrePull(n: PrePullNeed): PrePullDecision {
   }
   return out("buy", reasons, buy, gap)
 }
+
+/** PURE — is a PLATFORM route to this provider licensed for paid activation? A provider outside PROVIDER_ACTIVATION
+ *  (maps, events) is not a data provider this gate judges and stays routable. Wave 156 (156G, round 2). */
+export function isPlatformProviderLicensed(provider: string, activation: Partial<Record<string, { state: string }>> = PROVIDER_ACTIVATION as unknown as Record<string, { state: string }>): boolean {
+  const a = activation[provider]
+  return !a || a.state === "active"
+}
+
+/**
+ * PURE — the owner-contact route a PLATFORM-PAID drain may actually walk (wave 156, lane 156G round 2): the same order
+ * resolveContactProviderRoute chose, minus every provider the platform keeps dormant (dormant_survivor with its doors
+ * owner_confirmation_pending, or dormant_pending_rights) — "provider fails over only where license permits". A tenant that
+ * connected ITS OWN account and key reaches that provider through lib/providers/tenant-provider-connections.ts (its own
+ * terms, its own bill), never through this platform route, so nothing here closes a tenant-owned door. Fail closed: a
+ * route with no licensed provider left is empty and buys nothing.
+ */
+export function licensedContactRoute(route: ContactProviderRoute, activation: Partial<Record<string, { state: string }>> = PROVIDER_ACTIVATION as unknown as Record<string, { state: string }>): ContactProviderRoute {
+  const held = route.providers.filter((p) => !isPlatformProviderLicensed(p, activation))
+  if (held.length === 0) return route
+  return {
+    capability: route.capability,
+    providers: route.providers.filter((p) => isPlatformProviderLicensed(p, activation)),
+    reason: `${route.reason} — platform route held for ${held.map((p) => `${p} (${activation[p]?.state})`).join(", ")}: not licensed for paid activation, never a failover target`,
+  }
+}

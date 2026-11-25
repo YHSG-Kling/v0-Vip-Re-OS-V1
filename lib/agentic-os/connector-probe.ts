@@ -312,9 +312,23 @@ export async function probeConnector(
   let drifted = false
   let error: string | null = null
 
+  // Wave 156 (156G round 2): a BILLED probe (RentCast bills every successful request, its /markets health call included)
+  // reserves against the platform's own RentCast ceiling first and is booked on success only — never an unmetered paid
+  // request. Over the ceiling the probe is NOT run and returns null (the caller falls back to credential-posture health,
+  // exactly as for a connector with no probe — never a fabricated status).
+  const billed = BILLED_PROBE_PROVIDERS.has(provider)
+  let slot: { settle: (ok: boolean) => void } | null = null
+  if (billed) {
+    const r = await (await import("@/lib/property/rentcast-eligibility")).reserveRentcastPlatformRequest()
+    if (!r.allowed) return null
+    slot = r
+  }
+
   try {
     const res = await fetch(req.url, { headers: req.headers, signal: AbortSignal.timeout(10_000) })
     httpStatus = res.status
+    slot?.settle(res.ok)
+    if (billed && res.ok) await bookBilledProbe(provider)
     if (res.ok) {
       const json = (await res.json().catch(() => ({}))) as Record<string, unknown>
       const adapted = adaptResponse(json, spec.shape)
@@ -326,6 +340,7 @@ export async function probeConnector(
   } catch (err) {
     networkError = true
     error = err instanceof Error ? err.message : String(err)
+    if (httpStatus === null) slot?.settle(false)
   }
 
   // shapeHealthy(drift) is stricter than !drifted (an aliased-but-present field still
@@ -347,5 +362,21 @@ export async function probeConnector(
     drift,
     checkedAt,
     error: status === "ok" ? null : error,
+  }
+}
+
+// ─── Wave 156 (156G round 2): probes that cost money ──────────────────────────────────────────────────────────────────
+/** Providers whose health call is a BILLED request (RentCast: "every successful API request" — billing-and-pricing, read
+ *  2026-11-25). Each reserves against the platform's RentCast ceiling and is booked on success only. */
+const BILLED_PROBE_PROVIDERS: ReadonlySet<string> = new Set(["rentcast"])
+
+/** Book one successful billed probe on the ONE cost ledger — platform-paid (no tenant), at the same per-request constant. */
+async function bookBilledProbe(provider: string): Promise<void> {
+  try {
+    const [{ logVendorUsage }, { RENTCAST_USD_PER_REQUEST }] = await Promise.all([import("@/lib/vendor-governance/usage-logger"), import("@/lib/property/rentcast")])
+    const r = await logVendorUsage({ vendorName: provider, usageType: "health_probe", unitCount: 1, estimatedCost: RENTCAST_USD_PER_REQUEST, systemSource: "connector_health", brokerageId: null, platformPaid: true, metadata: { endpoint: "/markets" } })
+    if (!r.success) console.warn(`[connector-probe] ${provider} health probe NOT booked: ${r.error ?? "refused"}`)
+  } catch (e) {
+    console.warn(`[connector-probe] ${provider} health probe booking threw: ${e instanceof Error ? e.message : String(e)}`)
   }
 }

@@ -47,7 +47,7 @@ const SERVICE_DEFAULTS = [
     type: "Contact Enrichment",
     description: "Person data enrichment",
     config_keys: ["api_key"],
-    env_key: "PDL_API_KEY",
+    env_key: "PEOPLEDATA_API_KEY", // wave 156 (156G): the name lib/external/peopledata-client.ts reads (was PDL_API_KEY, which nothing reads)
   },
   {
     id: "batchdata",
