@@ -145,6 +145,10 @@ const STUBS: Record<string, string> = {
   "./rentcast-eligibility":
     "export const resolveRentcastEligibility = (...a) => globalThis.__RENT.resolveRentcastEligibility(...a);" +
     "export const rentcastBudgetBlocked = async () => ({ blocked: false, degraded: false });" +
+    // Wave 156 (156G): the gate module also owns the platform's RentCast hard cutoff, which every request now reserves
+    // against. This lane's fixtures are far below any ceiling, so the stub admits — the cutoff's own proof is
+    // scripts/wave156-g-provider-economics-guard.ts §C.
+    "export const reserveRentcastPlatformRequest = async () => ({ allowed: true, verdict: { allowed: true }, settle: () => {} });" +
     "export const RENTCAST_ELIGIBILITY_REASONS = []",
   "@/lib/idxbroker-client":
     "export const IDXBrokerClient = { forBrokerage: (...a) => globalThis.__RENT.idxForBrokerage(...a) };" +

@@ -97,7 +97,10 @@ async function main() {
     const sharedKey = /cachedRentcastRead<RentcastMarketsResponse>\(\s*`\/markets\|\$\{zip\}`,\s*RENTCAST_CACHE_TTL_DAYS\.markets,\s*async \(\) => \{\s*const res = await callRentcastGet\("\/markets"[\s\S]{0,80}meterCall\(/
     check("getRentcastMarketStats rides the platform cache keyed by ZIP only (no tenant in the key) and meters ONLY inside the miss fetcher", sharedKey.test(fn) && (fn.match(/meterCall\(/g) ?? []).length === 1)
     const cache = rc.slice(rc.indexOf("async function cachedRentcastRead"), rc.indexOf("async function cachedRentcastRead") + 1400)
-    check("…and the cache answers a hit BEFORE the fetcher runs (memory, then the shared store), storing only a success", cache.indexOf("getCachedProviderPayload") > 0 && cache.indexOf("getCachedProviderPayload") < cache.indexOf("await fetcher()") && /fresh\.ok && fresh\.data != null/.test(cache))
+    // Wave 156 (156G): a miss now reaches the fetcher through rentcastSingleFlight (concurrent misses on one key share one
+    // request); the rule is unchanged — the shared store is asked BEFORE the fetcher is reached, either way it is spelled.
+    const fetchAt = [cache.indexOf("await fetcher()"), cache.indexOf("rentcastSingleFlight(key, fetcher)")].filter((i) => i >= 0).sort((a, b) => a - b)[0] ?? -1
+    check("…and the cache answers a hit BEFORE the fetcher runs (memory, then the shared store), storing only a success", cache.indexOf("getCachedProviderPayload") > 0 && fetchAt > 0 && cache.indexOf("getCachedProviderPayload") < fetchAt && /fresh\.ok && fresh\.data != null/.test(cache))
     const mutant = fn.replace("const read = await cachedRentcastRead", "meterCall({}); const read = await cachedRentcastRead")
     check("POSITIVE CONTROL: a meter outside the fetcher is caught", (mutant.match(/meterCall\(/g) ?? []).length !== 1)
   }

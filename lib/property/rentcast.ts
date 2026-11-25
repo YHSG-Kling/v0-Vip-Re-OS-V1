@@ -403,7 +403,7 @@ function rememberInMemory(key: string, data: unknown): void {
  * week of "no data". The shared store is best-effort by construction (lib/cma/comp-supplement-
  * cache.ts): an unreadable or unwritable store degrades to "make the request", never to a refusal.
  */
-async function cachedRentcastReadUnshared<T>(
+async function cachedRentcastRead<T>(
   key: string,
   maxAgeDays: number,
   fetcher: () => Promise<{ ok: boolean; data: T | null }>,
@@ -420,12 +420,12 @@ async function cachedRentcastReadUnshared<T>(
       return { ok: true, data: hit, cacheHit: true }
     }
   }
-  const fresh = await fetcher()
+  const { fresh, joined } = await rentcastSingleFlight(key, fetcher)
   if (fresh.ok && fresh.data != null) {
     rememberInMemory(key, fresh.data)
     if (store) void store.setCachedProviderPayload(`rentcast:${key}`, fresh.data, Math.round(RENTCAST_USD_PER_REQUEST * 100)).catch(() => null)
   }
-  return { ...fresh, cacheHit: false }
+  return { ...fresh, cacheHit: joined }
 }
 
 // ---------------------------------------------------------------------------
@@ -1411,7 +1411,7 @@ export async function getRentcastComps(
 //    (RentCast supplies no cap of its own) BEFORE the typed façade reaches the network, and release the reservation when
 //    the vendor did not answer 200 (an unbilled request). A refusal resolves the façade's own never-throws shape
 //    ({ ok: false, status: null }) so every reader's existing honest-empty path runs and nothing is metered.
-// 2. THE SAME PROPERTY IS NEVER BOUGHT TWICE AT ONCE. `cachedRentcastRead` is single-flight per cache key: concurrent
+// 2. THE SAME PROPERTY IS NEVER BOUGHT TWICE AT ONCE. `cachedRentcastRead` asks rentcastSingleFlight on a miss: concurrent
 //    reads of one address share ONE in-flight request (one meter row), then the read-through cache serves the window.
 //    (A store that cannot be read still degrades to "make the request" — rentcast.ts's documented cache contract.)
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1434,17 +1434,13 @@ const callRentcastGetById: typeof uncappedRentcastGetById = async (pathTemplate,
   return res
 }
 
-const rentcastInflight = new Map<string, Promise<{ ok: boolean; data: unknown; cacheHit: boolean }>>()
+const rentcastInflight = new Map<string, Promise<{ ok: boolean; data: unknown }>>()
 
-async function cachedRentcastRead<T>(
-  key: string,
-  maxAgeDays: number,
-  fetcher: () => Promise<{ ok: boolean; data: T | null }>,
-): Promise<{ ok: boolean; data: T | null; cacheHit: boolean }> {
+/** Concurrent misses on ONE cache key share ONE in-flight request; a joiner made no request (reported as a cache hit). */
+async function rentcastSingleFlight<T>(key: string, fetcher: () => Promise<{ ok: boolean; data: T | null }>): Promise<{ fresh: { ok: boolean; data: T | null }; joined: boolean }> {
   const pending = rentcastInflight.get(key)
-  // A joined read made no request of its own — it is reported as a cache hit (nothing was bought for it).
-  if (pending) return pending.then((r) => ({ ok: r.ok, data: r.data as T | null, cacheHit: true }))
-  const p = cachedRentcastReadUnshared<T>(key, maxAgeDays, fetcher)
-  rentcastInflight.set(key, p as Promise<{ ok: boolean; data: unknown; cacheHit: boolean }>)
-  try { return await p } finally { rentcastInflight.delete(key) }
+  if (pending) return { fresh: (await pending) as { ok: boolean; data: T | null }, joined: true }
+  const p = fetcher()
+  rentcastInflight.set(key, p)
+  try { return { fresh: await p, joined: false } } finally { rentcastInflight.delete(key) }
 }
