@@ -158,13 +158,13 @@ async function isProviderConnected(
   if (domain === "social") {
     const { data } = await svc
       .from("social_media_accounts")
-      .select("account_name, is_active")
+      .select("account_name, is_active, token_expires_at")
       .eq("platform", provider)
       .eq("user_id", actor.userId)
       .eq("is_active", true)
       .limit(1)
       .maybeSingle()
-    return { connected: !!data, detail: (data?.account_name as string) ?? null }
+    const expired = !!data?.token_expires_at && Date.parse(String(data.token_expires_at)) <= Date.now(); return { connected: !!data && !expired, detail: expired ? "token expired — reconnect" : (data?.account_name as string) ?? null } // wave 156 (156N): an expired token is not a usable connection
   }
 
   if (!actor.ownerId) return { connected: false, detail: null }

@@ -77,6 +77,9 @@ interface SinkClass {
 }
 interface Door { why: string; gate: RegExp }
 const door = (why: string, gate: RegExp): Door => ({ why, gate })
+/** The vendor-payout door's gate (restated wave 156, lane 156N): the vendor verified in the caller's tenant, THEN a claim — made
+ *  (claimAvailableEarnings) or proven still held by the payout row (confirmClaimedEarnings) — before the seam. Controls below. */
+const PAYOUT_DOOR_GATE = /\bverifyVendorInCallerBrokerage\s*\([\s\S]*?\b(?:claimAvailableEarnings|confirmClaimedEarnings)\s*\(/
 /** Bypasses per class MEASURED at the wave-155 base e88c1baa (before lane 155R8) — a ceiling, never a target: a class may only go down. */
 const BYPASSES_AT_BASE: Record<string, number> = { credentials: 27, paid_acquisition: 5, outbound_send: 11, ad_budget: 1, financial_ledger: 1, commission_edit: 5, esign: 6, cda_release: 0, payout: 1 }
 
@@ -192,7 +195,7 @@ const CLASSES: SinkClass[] = [
     seam: /\bcreateTransfer\s*\(|\bpayment_initiated_at\s*:(?!\s*(?:string\b|\(|null\b))/, seamView: "calls",
     allowed: (f) => f === "lib/kernel/financial.ts" || f === "lib/providers/payment/index.ts",
     known: {
-      "app/actions/vendor-payments.ts": door("SECOND DOOR (155R8): initiateVendorPayout → createTransfer — session tenant, vendor-in-brokerage, earnings-in-brokerage and Connect onboarding before the transfer, which runs inside its OWN decision record (ledgerToolCall). BOUND (owner task, wave 155): the caller is the vendor's OWN seat or a tenant commerce admin, and the amount is the vendor's available earnings, claimed once before the transfer (claimAvailableEarnings) — never the caller's number", /\bverifyVendorInCallerBrokerage\s*\([\s\S]*?\bclaimAvailableEarnings\s*\(/),
+      "app/actions/vendor-payments.ts": door("SECOND DOOR (155R8): initiateVendorPayout → createTransfer — session tenant, vendor-in-brokerage, earnings-in-brokerage and Connect onboarding before the transfer, which runs inside its OWN decision record (ledgerToolCall). BOUND (owner task, wave 155): the caller is the vendor's OWN seat or a tenant commerce admin, and the amount is the vendor's available earnings, claimed once before the transfer (claimAvailableEarnings) — never the caller's number. WAVE 156 (156N, C26): the ONE seam now lives in the send helper shared with the reconcile re-send, gated there by the vendor verification and the CLAIM the payout row holds (confirmClaimedEarnings: made by claimAvailableEarnings on a first send, still standing on a re-send) — a claim made or proven, never none", PAYOUT_DOOR_GATE),
     },
   },
 ]
@@ -319,6 +322,13 @@ const GATED = "export async function payX(p: P) {\n  if (!(await verifyVendorInC
 const UNGATED = "export async function payX(p: P) {\n  await createTransfer(p)\n  await verifyVendorInCallerBrokerage(p.v)\n}\nexport async function other() { await verifyVendorInCallerBrokerage(1) }\n"
 check("POSITIVE CONTROL · the door finder proves a gate that precedes the seam in its own function", doorProof(GATED, /\bcreateTransfer\s*\(/, /\bverifyVendorInCallerBrokerage\s*\(/, "calls").proven)
 check("NEGATIVE CONTROL · the door finder REJECTS a seam that precedes its gate (and a gate in ANOTHER function does not count)", !doorProof(UNGATED, /\bcreateTransfer\s*\(/, /\bverifyVendorInCallerBrokerage\s*\(/, "calls").proven)
+// The payout gate, restated (156N): a re-send that proves its row's claim passes; a seam behind the verification alone (no claim made
+// or proven), or a claim proven BEFORE the verification, does not.
+check("POSITIVE CONTROL · the payout gate admits verify → confirmClaimedEarnings → seam (the reconcile re-send's shape)",
+  doorProof("async function send(a) {\n  if (!(await verifyVendorInCallerBrokerage(a.v, a.b))) return\n  const c = await confirmClaimedEarnings(svc, a)\n  await createTransfer(a)\n}\n", /\bcreateTransfer\s*\(/, PAYOUT_DOOR_GATE, "calls").proven)
+check("NEGATIVE CONTROL · the payout gate refuses a seam behind the verification alone, and a claim proven before the verification",
+  !doorProof("async function send(a) {\n  if (!(await verifyVendorInCallerBrokerage(a.v, a.b))) return\n  await createTransfer(a)\n}\n", /\bcreateTransfer\s*\(/, PAYOUT_DOOR_GATE, "calls").proven
+  && !doorProof("async function send(a) {\n  await confirmClaimedEarnings(svc, a)\n  await verifyVendorInCallerBrokerage(a.v, a.b)\n  await createTransfer(a)\n}\n", /\bcreateTransfer\s*\(/, PAYOUT_DOOR_GATE, "calls").proven)
 
 // ══ F — RUNTIME CANARIES (wave 155, lane 155R8; eval SCOPE-001 / SCOPE-002 / SCOPE-003 / INJECT-005) ══════════════════════════
 // ALL SIMULATED. The REAL sink functions run against an in-memory client (scripts/in-memory-supabase.ts) through the node:module

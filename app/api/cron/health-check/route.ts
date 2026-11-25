@@ -352,7 +352,7 @@ export async function POST(request: NextRequest) {
           // Check integration_credentials
           const { data: creds } = await supabase
             .from("integration_credentials")
-            .select("*")
+            .select("id") // wave 156 (156N): an existence check — the sealed api_key / api_secret never leave the database for it
             .eq("brokerage_id", service.brokerage_id)
             .ilike("provider_name", `%${serviceKey}%`)
             .eq("is_active", true)
