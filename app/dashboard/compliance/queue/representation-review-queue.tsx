@@ -7,6 +7,7 @@
  */
 
 import { useEffect, useState } from "react"
+import Link from "next/link"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { listRepresentationReviewQueueAction } from "@/app/actions/compliance/representation-review"
@@ -36,7 +37,10 @@ export function RepresentationReviewQueue() {
                 </div>
                 {it.blockers.slice(0, 3).map((b, i) => <p key={i} className="text-xs text-muted-foreground mt-1">{b}</p>)}
               </div>
-              <Button size="sm" variant="outline" onClick={() => setOpen(open === key ? null : key)}>{open === key ? "Close" : "Open review"}</Button>
+              <div className="flex flex-col items-end gap-1 shrink-0">
+                <Button size="sm" variant="outline" onClick={() => setOpen(open === key ? null : key)}>{open === key ? "Close" : "Open review"}</Button>
+                <Link href={`/dashboard/compliance/queue/review/${it.record}/${it.subjectId}`} className="text-xs text-blue-600 hover:underline">Full page →</Link>
+              </div>
             </div>
             {open === key && <div className="mt-3"><RepresentationReviewPanel record={it.record} subjectId={it.subjectId} /></div>}
           </li>

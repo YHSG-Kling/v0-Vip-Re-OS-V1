@@ -128,9 +128,14 @@ export async function getRepresentationReviewAction(input: Subject) {
   const d = await currentDecision(g.svc, g.actor.brokerageId, input)
   if (!d.ok) return { success: false as const, error: `The review could not run: ${d.error}` }
   const { documentOpenHref } = await import("@/lib/storage/signed-doc-url")
-  const { ATTESTABLE_TERMS } = await import("@/lib/kernel/compliance/representation-gate")
+  const { ATTESTABLE_TERMS, REPAIR_PATHS, REPRESENTATION_REVIEWER_AUTHORITY } = await import("@/lib/kernel/compliance/representation-gate")
   const documents = (d.decision.evidence.documents ?? []).map((doc) => ({ ...doc, openHref: documentOpenHref(doc.storageUrl) }))
-  return { success: true as const, decision: { ...d.decision, evidence: { ...d.decision.evidence, documents } }, mayDecide: g.mayDecide, attestableTerms: [...ATTESTABLE_TERMS[input.record]] }
+  // The screen renders each reason's repair FROM the repair table and says who may approve FROM the authority constant —
+  // one source for both, never a second spelling on the client.
+  const repairs = Object.fromEntries([...new Set(d.decision.blockingReasons.map((r) => r.code))].map((code) => [code, REPAIR_PATHS[code]]))
+  const ROLE_LABEL: Record<string, string> = { compliance_reviewer: "a compliance officer", tenant_admin: "an account admin (broker, broker owner, broker admin, admin — or a solo agent who owns the account)" }
+  const whoMayApprove = `Approval: ${REPRESENTATION_REVIEWER_AUTHORITY.roles.map((r) => ROLE_LABEL[r] ?? r).join(" or ")}. Never: ${REPRESENTATION_REVIEWER_AUTHORITY.never.join(", ")}.`
+  return { success: true as const, decision: { ...d.decision, evidence: { ...d.decision.evidence, documents } }, mayDecide: g.mayDecide, attestableTerms: [...ATTESTABLE_TERMS[input.record]], repairs, whoMayApprove }
 }
 
 /** A reviewer accepts (or holds) THIS evidence. Approval continues only the authorized downstream transition. */
@@ -184,9 +189,11 @@ export async function recordRepresentationReview(input: Subject & { decision: "a
       const turn = await runListingComplianceLoop(g.svc as never, { brokerageId: B, listingId: input.subjectId, trigger: "compliance_review_recorded", actorUserId: g.actor.userId })
       return { success: true, decision: "approve", continued: { listing: turn.outcome, stage: turn.stage, reason: turn.reason } }
     }
-    const { submitOfferToCompliance } = await import("@/app/actions/buyer-offer/submit-to-compliance")
-    const sub = await submitOfferToCompliance({ offerId: input.subjectId, userId: g.actor.userId })
-    return { success: true, decision: "approve", continued: { transaction_id: sub.transaction_id ?? null, error: sub.success ? null : sub.error ?? null } }
+    // Through the offer's own loop (round 3): the ONE chokepoint creates the transaction AND the packet walks
+    // compliance_approved → fully_executed on the ladder, exactly as an approval-free pass used to.
+    const { runOfferComplianceLoop } = await import("@/lib/transactions/offer-compliance-loop")
+    const turn = await runOfferComplianceLoop(g.svc as never, { brokerageId: B, offerId: input.subjectId, trigger: "compliance_review_recorded", actorUserId: g.actor.userId })
+    return { success: true, decision: "approve", continued: { offer: turn.outcome, transaction_id: turn.transactionId ?? null, error: turn.outcome === "advanced" ? null : turn.reason ?? null } }
   })
 }
 

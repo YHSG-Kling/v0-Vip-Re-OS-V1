@@ -14,7 +14,7 @@
  * classifications only — an accepted COUNTER document that is not fully signed is not part of the scan unless the brokerage
  * happened to list counter_offer, so the executed contract can be promoted with its counter unsigned — 144C.
  */
-import { CANARY_EMAIL_DOMAIN, CANARY_TAG, LIVE, canary, canaryClient, cleanupCanary, nowIso, setSvc, uuid } from "./_harness"
+import { CANARY_EMAIL_DOMAIN, CANARY_TAG, LIVE, canary, canaryClient, cleanupCanary, nowIso, setSessionUser, setSvc, uuid } from "./_harness"
 
 export async function run() {
   const c = canary("Counter: original + accepted counter (+addenda) → all signatures → compliance of the COMPLETE packet → ONE transaction · versions kept · accepted sequence governs · email ≠ acceptance")
@@ -65,10 +65,12 @@ export async function run() {
   c.rule("144C", "THE CONTRACT IS THE ACCEPTED SEQUENCE, NOT THE LATEST DRAFT (ruling 2 + lane 144C): offer → a REJECTED counter, an ACCEPTED sibling counter (both signed) → a later unsigned counter-back — the contract is the original + the accepted sibling; the rejected counter and the counter-back are REPORTED (every version kept); a second executed branch is refused by name (a person says which was accepted); a chain that already became a transaction is reported, so the gate refuses a second one", !!seq && Object.values(seq).every(Boolean), seq ? `landed rule: ${JSON.stringify(seq)}` : "HEAD: no accepted-sequence rule in lib/offers/governing-terms-rule.ts (the checkpoints scan the submitted row's paperwork only)")
 
   // ── 2 · THE COMPLIANCE SCAN COVERS THE COMPLETE PACKET (original + accepted counter) ──
-  const B = uuid(), AG_U = uuid(), AG = uuid(), BUYER = uuid(), ROOT = uuid(), CTR = uuid(), DOC_C = uuid(), DOC_O = uuid()
+  const B = uuid(), AG_U = uuid(), AG = uuid(), CO_U = uuid(), BUYER = uuid(), ROOT = uuid(), CTR = uuid(), DOC_C = uuid(), DOC_O = uuid()
   const svc = canaryClient({
     brokerages: [{ id: B, name: `${CANARY_TAG} Counter Brokerage`, plan_tier: "brokerage", slug: `${CANARY_TAG}-counter`, state: "FL" }],
-    users: [{ id: AG_U, email: `agent@${CANARY_EMAIL_DOMAIN}`, user_type: "agent", brokerage_id: B, first_name: "Canary", last_name: "Agent", team_id: null }],
+    users: [{ id: AG_U, email: `agent@${CANARY_EMAIL_DOMAIN}`, user_type: "agent", brokerage_id: B, first_name: "Canary", last_name: "Agent", team_id: null },
+      // wave 156 (156B): the reviewer who accepts the executed contract (review authority: compliance_officer).
+      { id: CO_U, email: `compliance@${CANARY_EMAIL_DOMAIN}`, user_type: "compliance_officer", brokerage_id: B, first_name: "Canary", last_name: "Officer", team_id: null }],
     agents: [{ id: AG, user_id: AG_U, brokerage_id: B, first_name: "Canary", last_name: "Agent", is_active: true }],
     contacts: [{ id: BUYER, brokerage_id: B, agent_id: AG, first_name: "Bo", last_name: "Buyer", email: `buyer@${CANARY_EMAIL_DOMAIN}`, contact_type: "buyer", status: "active", notes: CANARY_TAG }],
     offers: [
@@ -81,9 +83,12 @@ export async function run() {
     brokerage_required_documents: [{ id: uuid(), brokerage_id: B, classification: "signed_contract", scope_type: "brokerage", scope_id: B, block_on_missing: true, is_required: true, deal_type: "buyer", state_code: null, description: null, template_form_id: null }],
     documents: [
       // The original purchase contract: complete.
-      { id: DOC_O, brokerage_id: B, contact_id: BUYER, listing_id: null, document_type: "signed_contract", classification: "signed_contract", status: "uploaded", signature_completeness: { signatures: [{ signer_role: "buyer", signed: true }, { signer_role: "seller", signed: true }], initials: [{ signer_role: "buyer", all_required_initials_present: true }, { signer_role: "seller", all_required_initials_present: true }] }, metadata: { linked_offer_id: CTR }, content: null },
+      // wave 156 (156B): both papers are SCANNED (completed, high confidence, their terms read) — the review compares what they say.
+      { id: DOC_O, brokerage_id: B, contact_id: BUYER, listing_id: null, document_type: "signed_contract", classification: "signed_contract", status: "uploaded", signature_completeness: { signatures: [{ signer_role: "buyer", signed: true }, { signer_role: "seller", signed: true }], initials: [{ signer_role: "buyer", all_required_initials_present: true }, { signer_role: "seller", all_required_initials_present: true }] }, metadata: { linked_offer_id: CTR }, content: null,
+        scanned_at: nowIso(), scan_error: null, classification_confidence: "high", extracted_fields: { price: 400_000, earnest_money_amount: 10_000, property_address: `7 Counter Ct, Pensacola, FL 32501 ${CANARY_TAG}` } },
       // The ACCEPTED COUNTER document: the seller's signature is MISSING on the paper.
-      { id: DOC_C, brokerage_id: B, contact_id: BUYER, listing_id: null, document_type: "counter_offer", classification: "counter_offer", status: "uploaded", signature_completeness: { signatures: [{ signer_role: "buyer", signed: true }, { signer_role: "seller", signed: false }], initials: [{ signer_role: "buyer", all_required_initials_present: true }, { signer_role: "seller", all_required_initials_present: false }] }, metadata: { linked_offer_id: CTR }, content: null },
+      { id: DOC_C, brokerage_id: B, contact_id: BUYER, listing_id: null, document_type: "counter_offer", classification: "counter_offer", status: "uploaded", signature_completeness: { signatures: [{ signer_role: "buyer", signed: true }, { signer_role: "seller", signed: false }], initials: [{ signer_role: "buyer", all_required_initials_present: true }, { signer_role: "seller", all_required_initials_present: false }] }, metadata: { linked_offer_id: CTR }, content: null,
+        scanned_at: nowIso(), scan_error: null, classification_confidence: "high", extracted_fields: { counter_price: 405_000, earnest_money_amount: 10_000, property_address: `7 Counter Ct, Pensacola, FL 32501 ${CANARY_TAG}` } },
     ],
   })
   setSvc(svc)
@@ -97,9 +102,19 @@ export async function run() {
     // The seller signs the counter paper → the packet is complete.
     const docC = (svc.tables.documents ?? []).find((d) => d.id === DOC_C)
     if (docC) docC.signature_completeness = { signatures: [{ signer_role: "buyer", signed: true }, { signer_role: "seller", signed: true }], initials: [{ signer_role: "buyer", all_required_initials_present: true }, { signer_role: "seller", all_required_initials_present: true }] }
-    const second = txs().length ? first : await runOfferComplianceLoop(svc as never, { brokerageId: B, offerId: CTR, trigger: "document_uploaded" })
+    // RESTATED FOR THE OWNER'S WAVE-156 RULING (2026-11-25, lane 156B: "a signature is not compliance"): the complete packet is
+    // REVIEW PENDING (nothing created) until a person with review authority accepts the compared evidence through the real review
+    // door; that approval continues the loop, which creates the ONE transaction at the accepted counter's terms.
+    const pending = txs().length ? first : await runOfferComplianceLoop(svc as never, { brokerageId: B, offerId: CTR, trigger: "document_uploaded" })
+    const pendingTxs = txs().length
+    setSessionUser(svc as never, CO_U)
+    const reviewDoor = await import("../../app/actions/compliance/representation-review")
+    const opened = await reviewDoor.getRepresentationReviewAction({ record: "purchase_offer", subjectId: CTR })
+    const approval = await reviewDoor.recordRepresentationReview({ record: "purchase_offer", subjectId: CTR, decision: "approve", evidenceHash: opened.success ? opened.decision.evidenceHash : "" })
+    setSessionUser(svc as never, null)
+    const second = { outcome: (approval as { continued?: { offer?: string } }).continued?.offer ?? "not_continued", reason: (approval as { error?: string }).error ?? (approval as { continued?: { error?: string | null } }).continued?.error ?? null }
     const tx = txs()[0]
-    c.rule("144C", "COMPLETE PACKET → EXECUTED CONTRACT → ONE TRANSACTION at the ACCEPTED terms: once every signature and initial on the original AND the counter is present, compliance passes and exactly ONE transaction exists, priced at the accepted counter's $405,000 (never the original's $400,000), linked to the counter; the ORIGINAL offer row still exists unchanged (the counter never replaces it)", txs().length === 1 && Number(tx?.purchase_price) === 405_000 && (svc.tables.offers ?? []).some((o) => o.id === ROOT && o.offer_price === 400_000), `outcome ${second.outcome}; transactions ${txs().length}; price ${tx?.purchase_price}; ${(second.reason ?? "").slice(0, 120)}`)
+    c.rule("144C", "COMPLETE PACKET → REVIEW → EXECUTED CONTRACT → ONE TRANSACTION at the ACCEPTED terms (wave-156 ruling): once every signature and initial on the original AND the counter is present the review is PENDING with nothing created; the compliance officer's approval of that evidence hash continues the loop and exactly ONE transaction exists, priced at the accepted counter's $405,000 (never the original's $400,000), linked to the counter; the ORIGINAL offer row still exists unchanged (the counter never replaces it)", pending.outcome === "awaiting_review" && pendingTxs === 0 && approval.success && txs().length === 1 && Number(tx?.purchase_price) === 405_000 && tx?.offer_id === CTR && (svc.tables.offers ?? []).some((o) => o.id === ROOT && o.offer_price === 400_000 && !o.transaction_id), `pending ${pending.outcome}/${pendingTxs}; approved ${approval.success}; outcome ${second.outcome}; transactions ${txs().length}; price ${tx?.purchase_price}; ${(second.reason ?? "").slice(0, 120)}`)
     const third = await runOfferComplianceLoop(svc as never, { brokerageId: B, offerId: CTR, trigger: "document_uploaded" })
     c.rule("144C", "IDEMPOTENT: the loop on a converted counter creates nothing more — ONE transaction for the executed contract", txs().length === 1 && third.outcome !== "advanced", `${third.outcome}; transactions ${txs().length}`)
   } finally {

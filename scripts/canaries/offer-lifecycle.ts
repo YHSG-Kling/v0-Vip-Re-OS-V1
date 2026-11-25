@@ -1,7 +1,9 @@
 /**
  * scripts/canaries/offer-lifecycle.ts — OFFER canary (wave 142, lane 142J):
  *   in-house and OUTSIDE-PROPERTY offers (no internal listing id) → required buyer/seller signatures → compliance
- *   detects a missing contract / initials → corrections + approval → the transaction exists ONLY after clearance
+ *   detects a missing contract / initials → corrections → the review (wave 156, owner 2026-11-25: the executed contract is COMPARED
+ *   to the offer and a person with review authority accepts it — a signature alone is not compliance) → approval → the transaction
+ *   exists ONLY after clearance
  * through the survivors at HEAD: lib/transactions/offer-execution-state.ts (offerExecutionPath / isOfferFullyExecuted /
  * shouldAutoExecuteOffer — the ONE predicate), lib/buyer-offer/offer-lifecycle.ts (OFFER_EVENT / OFFER_AUDIT_EVENT —
  * two disjoint vocabularies the compiler holds apart), lib/transactions/offer-bridge.ts (assertOfferReadyForTransaction
@@ -16,18 +18,20 @@
  * In-memory only: offers holds 0 live rows (2026-10-19). The sessionless automation presents CRON_SECRET exactly as a
  * provider webhook would; no session exists (the canary client's auth answers "nobody signed in").
  */
-import { CANARY_EMAIL_DOMAIN, CANARY_TAG, LIVE, canary, canaryClient, cleanupCanary, nowIso, setSvc, uuid } from "./_harness"
+import { CANARY_EMAIL_DOMAIN, CANARY_TAG, LIVE, canary, canaryClient, cleanupCanary, nowIso, setSessionUser, setSvc, uuid } from "./_harness"
 import { hooksFor, readRepo, strippedRepo } from "./_registry"
 
 export async function run() {
   const c = canary("Offer: outside-property + in-house → buyer/seller signatures → compliance catches missing forms/initials → corrections + approval → transaction only after clearance")
   if (LIVE) return c.report([], 0, "refused in CANARY_LIVE mode: in-memory only — offers holds 0 live rows and the loop pages real TCs")
-  const B = uuid(), B2 = uuid(), AG_U = uuid(), AG = uuid(), TC_U = uuid(), BUYER = uuid(), O = uuid(), O_IN = uuid(), L = uuid()
+  const B = uuid(), B2 = uuid(), AG_U = uuid(), AG = uuid(), TC_U = uuid(), CO_U = uuid(), BUYER = uuid(), O = uuid(), O_IN = uuid(), L = uuid()
   const svc = canaryClient({
     brokerages: [{ id: B, name: `${CANARY_TAG} Brokerage`, plan_tier: "brokerage", slug: `${CANARY_TAG}-offer`, state: "FL" }, { id: B2, name: `${CANARY_TAG} Other`, plan_tier: "team", slug: `${CANARY_TAG}-offer2` }],
     users: [
       { id: AG_U, email: `agent@${CANARY_EMAIL_DOMAIN}`, user_type: "agent", brokerage_id: B, first_name: "Canary", last_name: "Agent", team_id: null },
       { id: TC_U, email: `tc@${CANARY_EMAIL_DOMAIN}`, user_type: "tc", brokerage_id: B, first_name: "Canary", last_name: "Coordinator" },
+      // wave 156 (156B): the reviewer who accepts the executed contract (review authority: compliance_officer).
+      { id: CO_U, email: `compliance@${CANARY_EMAIL_DOMAIN}`, user_type: "compliance_officer", brokerage_id: B, first_name: "Canary", last_name: "Officer" },
     ],
     agents: [{ id: AG, user_id: AG_U, brokerage_id: B, first_name: "Canary", last_name: "Agent", is_active: true }],
     contacts: [{ id: BUYER, brokerage_id: B, agent_id: AG, first_name: "Bo", last_name: "Buyer", email: `buyer@${CANARY_EMAIL_DOMAIN}`, contact_type: "buyer", status: "active", notes: CANARY_TAG }],
@@ -97,15 +101,29 @@ export async function run() {
     c.step("INTEGRATOR FINDING, asserted as it stands: the Deal Coordinator bus handoff (offer_docs_ready) is published deal_coordinator → deal_coordinator, a route validSignalRoute REFUSES — no signal lands and the refusal is swallowed (lib/transactions/auto-execute-offer.ts:92 → lib/kernel/manager-signals.ts:63); the feed never learns compliance is not clear", !deal && !validSignalRoute("deal_coordinator", "deal_coordinator") && validSignalRoute("compliance_officer", "deal_coordinator"), deal ? "a signal landed (the route was fixed — re-anchor this step to assert the handoff)" : "0 offer_docs_ready signals; route refused by rule")
     // THE CORRECTION: the signed contract is uploaded and scanned — buyer initials missing on one page.
     const DOC = uuid()
-    ;(svc.tables.documents ??= []).push({ id: DOC, brokerage_id: B, contact_id: BUYER, listing_id: null, document_type: "signed_contract", classification: "signed_contract", status: "uploaded", signature_completeness: { signatures: [{ signer_role: "buyer", signed: true }, { signer_role: "seller", signed: true }], initials: [{ signer_role: "buyer", all_required_initials_present: false }, { signer_role: "seller", all_required_initials_present: true }] }, metadata: { linked_offer_id: O }, content: null })
+    // wave 156 (156B): the upload is SCANNED (completed, high confidence, its terms read) — the review compares what it says.
+    ;(svc.tables.documents ??= []).push({ id: DOC, brokerage_id: B, contact_id: BUYER, listing_id: null, document_type: "signed_contract", classification: "signed_contract", status: "uploaded", signature_completeness: { signatures: [{ signer_role: "buyer", signed: true }, { signer_role: "seller", signed: true }], initials: [{ signer_role: "buyer", all_required_initials_present: false }, { signer_role: "seller", all_required_initials_present: true }] }, metadata: { linked_offer_id: O }, content: null,
+      scanned_at: nowIso(), scan_error: null, classification_confidence: "high", extracted_fields: { price: 400000, earnest_money_amount: 5000, property_address: `9 Outside Rd, Pensacola, FL 32501 ${CANARY_TAG}` } })
     const initials = await runOfferComplianceLoop(svc as never, { brokerageId: B, offerId: O, trigger: "document_uploaded" })
     c.step("correction round 1: the contract is on file but the BUYER INITIALS are blank → still BLOCKED, the refusal naming the initials; no transaction", initials.outcome === "blocked" && /initial/i.test(initials.reason ?? "") && !(svc.tables.transactions ?? []).length, (initials.reason ?? "").slice(0, 200))
     const doc = (svc.tables.documents ?? []).find((d) => d.id === DOC)
     if (doc) doc.signature_completeness = { signatures: [{ signer_role: "buyer", signed: true }, { signer_role: "seller", signed: true }], initials: [{ signer_role: "buyer", all_required_initials_present: true }, { signer_role: "seller", all_required_initials_present: true }] }
-    passed = await runOfferComplianceLoop(svc as never, { brokerageId: B, offerId: O, trigger: "document_uploaded" })
+    // RESTATED FOR THE OWNER'S WAVE-156 RULING (2026-11-25, lane 156B: "a signature is not compliance"). Until wave 156 every
+    // signature and initial present → compliance passed BY ITSELF and the transaction was created. Now the executed contract is
+    // COMPARED to the offer (lib/kernel/compliance/representation-gate.ts) and a person with review authority accepts THAT evidence:
+    // round 2 is REVIEW PENDING (no stamp, no transaction); the reviewer's approval through the real door continues the chokepoint.
+    const pending = await runOfferComplianceLoop(svc as never, { brokerageId: B, offerId: O, trigger: "document_uploaded" })
+    c.step("correction round 2 (wave-156 ruling): every signature and initial present and every compared term agreeing → the REVIEW IS PENDING — compliance is NOT stamped, no compliance-passed activity, NO transaction; the offer's gate state reads awaiting_review", pending.outcome !== "advanced" && !pending.transactionId && !(svc.tables.transactions ?? []).filter((t) => t.brokerage_id === B).length && !offer()?.compliance_passed_at && !(await checkCompliancePassed(O)).passed && gateState().state === "awaiting_review", JSON.stringify({ outcome: pending.outcome, reason: (pending.reason ?? "").slice(0, 160), gate: gateState().state }).slice(0, 240))
+    setSessionUser(svc as never, CO_U)
+    const reviewDoor = await import("../../app/actions/compliance/representation-review")
+    const opened = await reviewDoor.getRepresentationReviewAction({ record: "purchase_offer", subjectId: O })
+    const approval = await reviewDoor.recordRepresentationReview({ record: "purchase_offer", subjectId: O, decision: "approve", evidenceHash: opened.success ? opened.decision.evidenceHash : "" })
+    setSessionUser(svc as never, null)
+    const continuedTx = ((approval as { continued?: { transaction_id?: string | null } }).continued?.transaction_id) ?? null
+    passed = { outcome: continuedTx ? "advanced" : "blocked", transactionId: continuedTx, reason: (approval as { error?: string }).error ?? (approval as { continued?: { error?: string | null } }).continued?.error ?? null } as typeof blocked
     const tx = (svc.tables.transactions ?? []).find((t) => t.id === passed.transactionId)
     const compliance = await checkCompliancePassed(O)
-    c.step("correction round 2: every signature and initial present → compliance PASSES (offers.compliance_passed_at stamped AND the buyer.offer.compliance.passed activity recorded) → the canonical TRANSACTION is created under the tenant and linked back to the offer; the offer's gate state reads passed", passed.outcome === "advanced" && !!passed.transactionId && !!tx && tx.brokerage_id === B && offer()?.transaction_id === passed.transactionId && !!offer()?.compliance_passed_at && compliance.passed && gateState().state === "passed", JSON.stringify({ outcome: passed.outcome, tx: passed.transactionId, reason: passed.reason }).slice(0, 240))
+    c.step("the compliance officer's approval of THAT evidence hash (the real review door) continues the ONE chokepoint: compliance PASSES (offers.compliance_passed_at stamped AND the buyer.offer.compliance.passed activity recorded) → the canonical TRANSACTION is created under the tenant and linked back to the offer", opened.success && opened.mayDecide && approval.success && passed.outcome === "advanced" && !!passed.transactionId && !!tx && tx.brokerage_id === B && offer()?.transaction_id === passed.transactionId && !!offer()?.compliance_passed_at && compliance.passed, JSON.stringify({ opened: opened.success ? opened.decision.verdict : opened.error, outcome: passed.outcome, tx: passed.transactionId, reason: passed.reason }).slice(0, 240))
     const again = await runOfferComplianceLoop(svc as never, { brokerageId: B, offerId: O, trigger: "document_uploaded" })
     c.step("idempotent: the loop on a converted offer is outside_window ('already converted') — ONE transaction, never a second", again.outcome === "outside_window" && again.transactionId === passed.transactionId && (svc.tables.transactions ?? []).filter((t) => t.brokerage_id === B).length === 1, again.reason ?? "")
   } finally {
