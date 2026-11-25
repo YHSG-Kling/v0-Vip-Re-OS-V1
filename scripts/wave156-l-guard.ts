@@ -365,7 +365,7 @@ async function main() {
 
   section("§E · no client component reaches a module the browser bundle cannot compile")
   const polyfilled = nextClientPolyfills(ROOT)
-  check("Next's client polyfill list is read from the installed next (webpack-config.js), never retyped", polyfilled.has("buffer") && polyfilled.size > 5, [...polyfilled])
+  check("Next's client polyfill list is read from the installed next (webpack-config.js), never retyped", polyfilled.has("zlib") && polyfilled.size > 5, [...polyfilled])
   check("Node's builtin list comes from node:module builtinModules (fs, crypto, child_process are on it)", BUILTINS.has("fs") && BUILTINS.has("crypto") && BUILTINS.has("child_process"))
   {
     const dir = fixture({
