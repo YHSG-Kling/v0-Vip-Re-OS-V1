@@ -19,6 +19,12 @@
  *     row security refuses the update silently (red at base: it reported success with nothing written); a wrong-tenant CDA writes
  *     nothing; the door gate asks the shared requireDealDesk (one helper).
  *
+ * §D  ROUND 2 — CREDENTIAL READERS: every `.select` of a sealed column (the stores DERIVED from SECRET_STORE_COLUMNS, the list
+ *     the reseal walks) sits in a file that opens through the envelope; presence-bit reads are named; denominator printed; control.
+ * §E  ROUND 2 — SOCIAL: every access-token read in the publisher cron pins the post's tenant (stripped source, control); the
+ *     connection center is DRIVEN — an expired, a disconnected and a never-connected platform never read "connected".
+ *     BLIND SPOTS: §D judges by FILE (a file that opens one column is assumed to open all it reads); dynamic table names and
+ *     reads through an RPC are invisible. §E's publish cron is source-checked, not driven (its seams are many).
  * RED AT BASE: W156N_ROOT=<base tree> runs the same checks against the starting commit.
  * BLIND SPOTS (published): Stripe is a stub — the real Idempotency-Key semantics (24 h key lifetime, 409 while in flight) are
  * modeled, not exercised; the list-by-destination lookup is modeled on the documented v1/transfers filters (not verified live).
@@ -26,7 +32,7 @@
  * the purpose into evaluateOutboundCompliance (integrator request) — §B drives the gate directly. The CDA wrong-PARENT write is
  * held by the source rule (every update pins the admitted deal); only the wrong-tenant and the silent-refusal cases are driven.
  */
-import { existsSync, readFileSync, statSync } from "node:fs"
+import { existsSync, readFileSync, statSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 import { registerHooks } from "node:module"
@@ -114,7 +120,7 @@ const BY_SPEC: Record<string, string> = {
   "@/lib/providers/payment": [
     "export const createTransfer = (a) => globalThis.__N.createTransfer(a)",
     "export const findTransferForPayout = (p) => globalThis.__N.findTransferForPayout(p)",
-    "export const createCheckoutSession = async () => ({ success: false }); export const retrieveCheckoutSession = async () => ({ success: false })",
+    "export const createCheckoutSession = async () => ({ success: false }); export const retrieveCheckoutSession = async () => ({ success: false }); export const createConnectedAccount = async () => ({ success: false }); export const createAccountLink = async () => ({ success: false })",
   ].join("\n"),
   "@/lib/stripe": "export const stripe = new Proxy({}, { get() { throw new Error('stripe is a seam in this proof — never called') } })",
   "@/lib/kernel/emit": "export const emitKernelEvent = async () => ({ inserted: true }); export const asWriteResult = () => ({ error: null })",
@@ -329,9 +335,89 @@ async function sectionC() {
   check("NEG · another tenant's CDA: refused and nothing is written", foreign.r?.success === false && writes === 0 && T("closing_disclosure_agreement").find((r) => r.id === CDA_X)?.manual_override_by == null, { r: foreign.r, writes })
 }
 
+// ═══ §D — credential readers (ROUND 2) ═══════════════════════════════════════════════════════════════════════════════════
+
+function walk(dir: string, out: string[] = []): string[] {
+  let ents: ReturnType<typeof readdirSync> = []
+  try { ents = readdirSync(join(ROOT, dir), { withFileTypes: true }) as any } catch { return out }
+  for (const e of ents as any[]) {
+    const rel = `${dir}/${e.name}`
+    if (e.isDirectory()) { if (e.name !== "node_modules" && !e.name.startsWith(".")) walk(rel, out) }
+    else if (/\.(ts|tsx)$/.test(e.name)) out.push(rel)
+  }
+  return out
+}
+/** The sealed columns, DERIVED from SECRET_STORE_COLUMNS (lib/security/credential-rotation.ts — the list the reseal walks). */
+function secretStores(): Record<string, string[]> {
+  const s = stripComments(raw("lib/security/credential-rotation.ts"))
+  const at = s.indexOf("export const SECRET_STORE_COLUMNS")
+  const block = at < 0 ? "" : s.slice(at, s.indexOf("\n]", at) + 2)
+  const out: Record<string, string[]> = {}
+  for (const m of block.matchAll(/table:\s*"(\w+)",\s*columns:\s*\[([^\]]*)\]/g)) out[m[1]] = [...m[2].matchAll(/"(\w+)"/g)].map((x) => x[1])
+  return out
+}
+/** Every `.from("<store>").select("…")` naming a sealed column or `*`, in stripped source; `opens` = the file opens through the envelope. */
+function secretReads(files: Array<{ rel: string; src: string }>, stores: Record<string, string[]>) {
+  const OPEN = /\b(decryptSecret|decryptSecretFields|secretFromConfig|openConfigSecrets)\(/
+  const out: Array<{ at: string; table: string; cols: string; opens: boolean }> = []
+  for (const f of files) {
+    for (const m of f.src.matchAll(new RegExp(`\\.from\\(\\s*"(${Object.keys(stores).join("|")})"\\s*\\)\\s*\\.select\\(\\s*([\`"'])([\\s\\S]*?)\\2`, "g"))) {
+      const t = m[1], sel = m[3]
+      const named = sel.trim() === "*" ? ["*"] : stores[t].filter((c) => new RegExp(`\\b${c}\\b`).test(sel))
+      if (named.length) out.push({ at: `${f.rel}:${f.src.slice(0, m.index).split("\n").length}`, table: t, cols: named.join(","), opens: OPEN.test(f.src) })
+    }
+  }
+  return out
+}
+async function sectionD() {
+  section("§D · credential readers — every read of a sealed column opens it through the ONE envelope (lib/security/secret-crypto.ts)")
+  const stores = secretStores()
+  check("the sealed columns are DERIVED from SECRET_STORE_COLUMNS (4 stores)", Object.keys(stores).length >= 4 && (stores.platform_credentials ?? []).includes("access_token"), stores)
+  const files = [...walk("app"), ...walk("lib")].map((rel) => ({ rel, src: stripComments(raw(rel)) }))
+  const reads = secretReads(files, stores)
+  // A PRESENCE BIT is not a reader: the row's sealed value is tested for non-null and never used (named with why).
+  const PRESENCE_ONLY = new Set(["app/actions/tenant-connections.ts"])
+  const direct = reads.filter((r) => !r.opens && !PRESENCE_ONLY.has(r.at.split(":")[0]))
+  console.log(`    denominator: ${reads.length} sealed-column reads in ${new Set(reads.map((r) => r.at.split(":")[0])).size} files; presence-only: ${[...PRESENCE_ONLY].join(", ")}; direct: ${direct.length}`)
+  check("no file reads a sealed credential column without opening it through the envelope (presence bits named)", reads.length >= 20 && direct.length === 0, direct)
+  const ctl = secretReads([{ rel: "x.ts", src: 'const { data } = await svc.from("social_media_accounts").select("*").eq("id", id)\nuse(data)' }], stores)
+  check("POSITIVE CONTROL: the finder flags a select(\"*\") of a sealed store in a file that opens nothing", ctl.length === 1 && !ctl[0].opens, ctl)
+}
+
+// ═══ §E — social tokens and the connected badge (ROUND 2) ════════════════════════════════════════════════════════════════
+async function sectionE() {
+  section("§E · a social post uses only its own tenant's token; a platform with no usable connection never reads connected")
+  const cron = stripComments(raw("app/api/cron/publish-social-posts/route.ts"))
+  // The chain after the select: its own line's tail plus every following line that continues it with `.`.
+  const tokenReads = (src: string) => [...src.matchAll(/\.from\("social_media_accounts"\)\s*\.select\("[^"]*access_token[^"]*"\)/g)].map((m) => {
+    const lines = src.slice((m.index ?? 0) + m[0].length).split("\n"); const chain = [lines[0]]
+    for (const l of lines.slice(1)) { if (/^\s*\./.test(l)) chain.push(l); else break }
+    return chain.join("\n")
+  })
+  const reads = tokenReads(cron)
+  check(`every token read in the publisher cron pins the post's tenant (${reads.length} reads)`, reads.length >= 2 && reads.every((r) => /\.eq\("brokerage_id",\s*post\.brokerage_id\)/.test(r)), reads.map((r) => r.slice(0, 120)))
+  const spec = tokenReads('x.from("social_media_accounts")\n  .select("platform, access_token")\n  .eq("id", post.social_account_id)\n  .maybeSingle()\n\nconst y = 1')
+  check("POSITIVE CONTROL: the rule sees a token read keyed by the account id alone as unpinned", spec.length === 1 && !/brokerage_id/.test(spec[0]), spec)
+
+  const cc = await quiet(() => load("app/actions/connections/connection-center.ts"))
+  const past = "2026-01-01T00:00:00.000Z", future = "2099-01-01T00:00:00.000Z"
+  fresh(U_AGENT, { social_media_accounts: [
+    { id: u("6", 1), brokerage_id: B1, user_id: U_AGENT, agent_id: AG_A, platform: "meta", account_name: "Expired page", is_active: true, token_expires_at: past },
+    { id: u("6", 2), brokerage_id: B1, user_id: U_AGENT, agent_id: AG_A, platform: "linkedin", account_name: "Live profile", is_active: true, token_expires_at: future },
+    { id: u("6", 3), brokerage_id: B1, user_id: U_AGENT, agent_id: AG_A, platform: "twitter", account_name: "Disconnected", is_active: false, token_expires_at: future },
+  ], agent_api_credentials: [], platform_credentials: [] })
+  const r = await drive(() => cc.getConnectionCenter())
+  const social = (r.r?.domains ?? []).find((d: any) => d.domain === "social")?.providers ?? []
+  const st = (p: string) => social.find((x: any) => x.provider === p)
+  check("the connection center answers for the social transports", social.length >= 3, r.r ?? r.threw)
+  check("NEG · an EXPIRED token does not read connected (and says why)", st("meta")?.connected === false && /expired/.test(String(st("meta")?.detail ?? "")), st("meta"))
+  check("NEG · a disconnected account and a platform never connected (pinterest) do not read connected", st("twitter")?.connected === false && st("pinterest")?.connected === false, { tw: st("twitter"), pin: st("pinterest") })
+  check("POSITIVE · a live connection reads connected", st("linkedin")?.connected === true, st("linkedin"))
+}
+
 async function main() {
   console.log(`wave156-n-guard — ROOT=${ROOT}`)
-  for (const [name, fn] of [["§A", sectionA], ["§B", sectionB], ["§C", sectionC]] as Array<[string, () => Promise<void>]>) {
+  for (const [name, fn] of [["§A", sectionA], ["§B", sectionB], ["§C", sectionC], ["§D", sectionD], ["§E", sectionE]] as Array<[string, () => Promise<void>]>) {
     try { await fn() } catch (e) { check(`${name} ran to completion`, false, (e as Error)?.stack?.split("\n").slice(0, 4).join(" | ")) }
   }
   console.log(`\n${passed} passed, ${failed} failed`)
