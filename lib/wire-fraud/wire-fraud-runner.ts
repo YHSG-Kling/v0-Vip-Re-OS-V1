@@ -18,10 +18,10 @@ export interface WireFraudRunInput {
   /** The agent to alert (users.id). */
   agentUserId?: string | null
   wire: WireFraudInput
-  escalate?: boolean
+  escalate?: boolean; /** 156J: the deal, its agent (agents.id) and the idempotency unit for a bulletin-matched verification task. */ transactionId?: string | null; agentId?: string | null; subjectRef?: string | null
 }
 
-export interface WireFraudRunResult { verdict: WireFraudVerdict; escalated: boolean; notificationId?: string }
+export interface WireFraudRunResult { verdict: WireFraudVerdict; escalated: boolean; notificationId?: string; bulletinMatch?: { matched: string[]; indicatorMatch: boolean; taskId: string | null; error: string | null } }
 
 export async function runWireFraudSentinel(input: WireFraudRunInput, client?: Svc): Promise<WireFraudRunResult> {
   const svc = client ?? createServiceClient()
@@ -54,5 +54,20 @@ export async function runWireFraudSentinel(input: WireFraudRunInput, client?: Sv
     escalated = !!notificationId || sig.ok
   } catch { /* escalation best-effort — the verdict still returns */ }
 
-  return { verdict, escalated, notificationId }
+  // 156J — ACTIONABLE SAFETY: compare the red flags to PUBLISHED fraud bulletins. A match PROPOSES one high-priority
+  // independent-verification task (call back on a trusted, independently obtained number). It never blocks, denies or
+  // scores anyone; the deal, its vendors and its people are not touched (scripts/wave156-j-guard.ts §F).
+  let bulletinMatch: WireFraudRunResult["bulletinMatch"]
+  if (input.subjectRef) {
+    try {
+      const { proposeWireVerificationTasks } = await import("@/lib/fraud-network/network")
+      bulletinMatch = await proposeWireVerificationTasks(svc, {
+        brokerageId: input.brokerageId, flags: verdict.flags, senderEmail: input.wire.senderEmail ?? null,
+        transactionId: input.transactionId ?? null, contactId: input.contactId, agentId: input.agentId ?? null, subjectRef: input.subjectRef,
+      })
+      if (bulletinMatch.error) console.error("[wire-fraud-runner] bulletin match:", bulletinMatch.error)
+    } catch (e) { console.error("[wire-fraud-runner] bulletin match threw:", e instanceof Error ? e.message : String(e)) }
+  }
+
+  return { verdict, escalated, notificationId, bulletinMatch }
 }

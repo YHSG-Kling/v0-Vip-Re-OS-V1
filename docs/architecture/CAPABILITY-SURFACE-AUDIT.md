@@ -32,7 +32,7 @@ Owner ruling 18 (2026-10-29): *"All capabilities at all levels … Validate each
 | settings · people · support | B6 | · | B27 P4 S1 | B14 | B21 P2 | B3 | B4 | B5 P1 | B2 | B3 |
 | (journey) agents & vendors | · | · | B1 | B1 | B1 | B1 | · | · | · | S1 |
 | (journey) transactions & closing | · | · | · | · | · | · | · | · | · | S1 |
-| (unclassified) | · | B2 | · | · | · | · | · | · | · | · |
+| (unclassified) | · | B2 | B1 | · | B1 | · | · | · | · | · |
 
 ## Expected-coverage gaps (ruling 18) and their owners
 
@@ -444,11 +444,12 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | website · landing pages · lead magnets | /widget/[brokerageSlug] `/widget/[brokerageSlug]` | `app/widget/[brokerageSlug]/page.tsx` | fetch /api/widget/session · fetch /api/track/visitor | BUILT |
 | website · landing pages · lead magnets | /widget/chat `/widget/chat` | `app/widget/chat/page.tsx` | fetch /api/widget/session · fetch /api/widget/intake | BUILT |
 
-### tenant admins (223)
+### tenant admins (224)
 
 | domain | surface | page | action behind it | verdict |
 |---|---|---|---|---|
 | (journey) agents & vendors | ↳ from Twin Studio `/dashboard/agent/ai-identity` | `app/dashboard/agent/ai-identity/page.tsx` | app/actions/ai-identity.ts (getAIIdentityProfile, getParentAIIdentityProfile, saveAIIdentityProfile, …) · lib/auth/resolve-user-role.ts | BUILT |
+| (unclassified) | ↳ from Help & Support `/dashboard/fraud-network` | `app/dashboard/fraud-network/page.tsx` | app/actions/fraud-network.ts (getFraudNetworkViewer, submitFraudIncident, listMyFraudCases, …) · lib/fraud-network/network.ts | BUILT |
 | agent referral · recruiting · agreements · gamification | ↳ from Leaderboard `/dashboard/challenges` | `app/dashboard/challenges/page.tsx` | app/actions/challenges.ts (getChallenges, createChallenge, enrollInChallenge, …) | BUILT |
 | agent referral · recruiting · agreements · gamification | ↳ from Commissions `/dashboard/financials/agreements` | `app/dashboard/financials/agreements/page.tsx` | app/actions/commission-policy/agreements.ts (listAgentAgreementGovernanceAction, recordAgreementEffectiveDateAction, recordAgentAgreementAmendmentAction, …) · app/actions/commission-agreement-history.ts (listCommissionAgreementHistoryAction) | BUILT |
 | agent referral · recruiting · agreements · gamification | Gift Studio `/dashboard/gifts` | `app/dashboard/gifts/page.tsx` | app/actions/gift-studio.ts (getGiftStudioAction, orderGiftSelectionAction, GiftableClosing) | BUILT |
@@ -800,11 +801,12 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | website · landing pages · lead magnets | ↳ from Ad Campaigns `/pricing` | `app/pricing/page.tsx` | lib/platform/public-tiers.ts · lib/platform/product-brand.ts | BUILT |
 | website · landing pages · lead magnets | ↳ from Video Pages `/v/x` | `app/v/[slug]/page.tsx` | app/actions/listing-video.ts (trackVideoView) · lib/kernel/agent-identity.ts | BUILT |
 
-### agents (178)
+### agents (179)
 
 | domain | surface | page | action behind it | verdict |
 |---|---|---|---|---|
 | (journey) agents & vendors | ↳ from Twin Studio `/dashboard/agent/ai-identity` | `app/dashboard/agent/ai-identity/page.tsx` | app/actions/ai-identity.ts (getAIIdentityProfile, getParentAIIdentityProfile, saveAIIdentityProfile, …) · lib/auth/resolve-user-role.ts | BUILT |
+| (unclassified) | Fraud & Trust Network `/dashboard/fraud-network` | `app/dashboard/fraud-network/page.tsx` | app/actions/fraud-network.ts (getFraudNetworkViewer, submitFraudIncident, listMyFraudCases, …) · lib/fraud-network/network.ts | BUILT |
 | agent referral · recruiting · agreements · gamification | First Deal `/dashboard/agent/first-deal` | `app/dashboard/agent/first-deal/page.tsx` | server-side read in the page tree | BUILT |
 | agent referral · recruiting · agreements · gamification | Refer an Agent `/dashboard/agent/refer` | `app/dashboard/agent/refer/page.tsx` | server-side read in the page tree | BUILT |
 | agent referral · recruiting · agreements · gamification | Referral Network `/dashboard/agent/referral-network` | `app/dashboard/agent/referral-network/page.tsx` | app/actions/referrals/agent-referral-actions.ts (getReferralNetwork, createAgentReferralAction) | BUILT |
