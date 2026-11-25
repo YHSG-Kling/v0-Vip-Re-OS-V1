@@ -59,7 +59,7 @@ export const FORM_PURPOSES = ["listing", "buyer_representation", "offer", "count
 /** The intended signer roles — the e-sign anchor vocabulary (lib/forms/esign-anchors.ts SignerRole), never a second spelling. */
 export const FORM_SIGNER_ROLES = ["buyer", "co_buyer", "seller", "co_seller", "agent", "listing_agent"] as const satisfies readonly SignerRole[]
 /** Packet types an individual agent may add for themselves (supplemental only). */
-export const SUPPLEMENTAL_PACKET_TYPES = ["custom", "disclosure"] as const
+const SUPPLEMENTAL_PACKET_TYPES = ["custom", "disclosure"] as const
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/
 const KEY = /^[a-z0-9][a-z0-9_.:-]{1,79}$/

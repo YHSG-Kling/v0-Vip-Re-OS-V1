@@ -1306,7 +1306,7 @@ export function permitDatasetRightsProblem(spec: Pick<SocrataDatasetSpec, "licen
 }
 
 /** The readers of motivated_seller_signals (named in this file's header) — the action a permit signal is consumed by. */
-export const PERMIT_SIGNAL_CONSUMERS = Object.freeze([
+const PERMIT_SIGNAL_CONSUMERS = Object.freeze([
   "lib/services/lead-management.service.ts (lead scoring)",
   "app/actions/ai-predictions.ts (conversion prediction)",
 ] as const)

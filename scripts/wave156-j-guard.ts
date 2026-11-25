@@ -416,7 +416,7 @@ async function roundTwo(net: any, A: any) {
 
   section("§J tenant departure by STATUS (the product's tenant-lifecycle vocabulary)")
   G.__J.mem = world(); G.__J.model = 0
-  check("the departed set is DERIVED from TENANT_LIFECYCLE_REFUSED minus the resumable 'suspended'", !!net && [...net.FRAUD_DEPARTED_TENANT_STATUSES].sort().join(",") === "archived,cancelled" && /TENANT_LIFECYCLE_REFUSED\]\.filter/.test(stripComments(raw(NET))))
+  check("the departed set is DERIVED from TENANT_LIFECYCLE_REFUSED minus the resumable 'suspended'", !!net && /const FRAUD_DEPARTED_TENANT_STATUSES[^=\n]*=\s*new Set\(\[\.\.\.TENANT_LIFECYCLE_REFUSED\]\.filter\(\(s\) => s !== "suspended"\)\)/.test(stripComments(raw(NET))) && [...(await load("lib/billing/billing-access.ts")).TENANT_LIFECYCLE_REFUSED].filter((x: string) => x !== "suspended").sort().join(",") === "archived,cancelled")
   const inc = { incidentKind: "credential_phishing", channel: "email", summary: "Fake e-sign request asking for the MLS password.", lossOccurred: "no" }
   const cX = A ? await as(U_XAGENT, () => A.submitFraudIncident({ ...inc, evidence: [{ kind: "screenshot", fingerprint: FP(40) }] })) : null
   const c1 = A ? await as(U_AGENT, () => A.submitFraudIncident({ ...inc, evidence: [{ kind: "screenshot", fingerprint: FP(41) }] })) : null

@@ -137,10 +137,10 @@ export const FRAUD_CLAIM_CLASSES = ["unverified_report", "verified_operational_p
 type FraudClaimClass = (typeof FRAUD_CLAIM_CLASSES)[number]
 export const FRAUD_CHANNELS = ["email", "text_message", "phone_call", "video_call", "social_media", "listing_site", "e_sign_platform", "postal_mail", "in_person", "other"] as const
 export const FRAUD_EVIDENCE_KINDS = ["screenshot", "email_headers", "document", "message_export", "audio_recording", "payment_record", "listing_capture", "other"] as const
-export const FRAUD_INDICATOR_KINDS = ["email", "phone", "domain", "name", "account_last4", "url", "other"] as const
-export const FRAUD_BULLETIN_INDICATOR_KINDS = ["lookalike_domain", "phrase", "document_trait", "channel_trait", "timing"] as const
+const FRAUD_INDICATOR_KINDS = ["email", "phone", "domain", "name", "account_last4", "url", "other"] as const
+const FRAUD_BULLETIN_INDICATOR_KINDS = ["lookalike_domain", "phrase", "document_trait", "channel_trait", "timing"] as const
 export const FRAUD_REPORT_AGENCIES = ["police", "ic3", "ftc", "state_regulator", "other"] as const
-export const FRAUD_CONFIDENCE = ["low", "medium", "high"] as const
+const FRAUD_CONFIDENCE = ["low", "medium", "high"] as const
 const FRAUD_CASE_STATUSES = ["submitted", "under_review", "used_for_bulletin", "closed_no_action", "withdrawn"] as const
 const FRAUD_BULLETIN_STATUSES = ["draft", "published", "taken_down"] as const
 
@@ -1045,8 +1045,8 @@ export async function purgeExpiredFraudCases(svc: Svc, now = new Date()): Promis
 /** A tenant has LEFT when brokerages.status is a lifecycle-refused value other than the resumable `suspended` (named
  *  subtraction from lib/billing/billing-access.ts TENANT_LIFECYCLE_REFUSED — never restated), or its row is soft-deleted
  *  (brokerages.deleted_at), or the row is gone. A suspended tenant is PAUSED: its seats cannot take part, its data stays. */
-export const FRAUD_DEPARTED_TENANT_STATUSES: ReadonlySet<string> = new Set([...TENANT_LIFECYCLE_REFUSED].filter((s) => s !== "suspended"))
-export type TenantStanding = "active" | "paused" | "departed"
+const FRAUD_DEPARTED_TENANT_STATUSES: ReadonlySet<string> = new Set([...TENANT_LIFECYCLE_REFUSED].filter((s) => s !== "suspended"))
+type TenantStanding = "active" | "paused" | "departed"
 
 /** Standing per tenant id. null = the read was refused (callers fail closed). A missing row reads as departed. */
 async function tenantStandings(svc: Svc, ids: ReadonlyArray<string | null | undefined>): Promise<Map<string, TenantStanding> | null> {

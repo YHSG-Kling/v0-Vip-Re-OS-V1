@@ -181,7 +181,7 @@ export async function createCalculatorArtifact(input: CreateCalculatorArtifactIn
 }
 
 // ── the public door ───────────────────────────────────────────────────────────
-export interface PublicCalculatorArtifact { formId: string; brokerageId: string; agentId: string | null; slug: string; name: string; config: CalculatorArtifactConfig }
+interface PublicCalculatorArtifact { formId: string; brokerageId: string; agentId: string | null; slug: string; name: string; config: CalculatorArtifactConfig }
 
 /** The ACTIVE calculator artifact behind a form id (the tenant is the row's). A draft, another magnet, a refused read → null. */
 async function loadPublicCalculatorArtifact(client: Db, formId: string): Promise<PublicCalculatorArtifact | null> {
