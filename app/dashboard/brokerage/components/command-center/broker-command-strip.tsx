@@ -29,7 +29,7 @@ interface BrokerCommandStripProps {
     criticalDeals: number
     fatigueAlerts: number
     pendingPayouts: number
-    recruitingROI: number
+    recruitingROI: number | string // wave 156 (156K): words ("Not shown for your seat" / "Unknown — could not be read") when the figure was not read — never 0
   }
 }
 
@@ -85,7 +85,7 @@ export function BrokerCommandStrip({ priority, summary }: BrokerCommandStripProp
                 )}
                 <span className="flex items-center gap-1.5">
                   <TrendingUp className="h-3.5 w-3.5 text-green-600" />
-                  {summary.recruitingROI > 0 ? "+" : ""}{summary.recruitingROI.toFixed(0)}% recruiting ROI
+                  {typeof summary.recruitingROI === "number" ? `${summary.recruitingROI > 0 ? "+" : ""}${summary.recruitingROI.toFixed(0)}% recruiting ROI` : `Recruiting ROI: ${summary.recruitingROI}`}
                 </span>
               </div>
             </div>

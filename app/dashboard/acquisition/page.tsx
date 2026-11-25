@@ -150,13 +150,20 @@ export default async function AcquisitionPage() {
   const topQr = qrCodes[0] ?? null
 
   // Recruiting ROI — only for admin/broker
-  const [recruitROISummary, recruitROIByRecruit] = isAdminOrBroker && brokerageId
+  // WAVE 156 (156K, round 2 addendum): SETTLED, never caught into a default — a team lead (on the roster, not on the books) or
+  // a refused read used to make the whole block vanish silently. Now the block says "not shown for your seat" / "unknown".
+  const { settleRecruitingFigure, recruitingFigureWords } = await import("@/lib/recruiting/recruiting-roi-compute")
+  const [recruitSummaryFigure, recruitByRecruitFigure] = isAdminOrBroker && brokerageId
     ? await Promise.all([
         // Tenant comes from the SESSION inside the actions (§4) — no id passed.
-        getRecruitingROISummary().catch(() => null),
-        getRecruitROIByRecruit().catch(() => []),
+        settleRecruitingFigure(getRecruitingROISummary()),
+        settleRecruitingFigure(getRecruitROIByRecruit()),
       ])
-    : [null, []]
+    : [null, null]
+  const recruitROISummary = recruitSummaryFigure?.state === "ok" ? recruitSummaryFigure.value : null
+  const recruitROIByRecruit = recruitByRecruitFigure?.state === "ok" ? recruitByRecruitFigure.value : []
+  const recruitMoneyWords = recruitSummaryFigure ? recruitingFigureWords(recruitSummaryFigure) : null
+  const recruitMoneyReason = recruitSummaryFigure && recruitSummaryFigure.state !== "ok" ? recruitSummaryFigure.reason : null
 
   return (
     <main className="max-w-6xl mx-auto p-6 space-y-8 font-sans">
@@ -383,6 +390,12 @@ export default async function AcquisitionPage() {
         )}
       </div>
 
+      {isAdminOrBroker && recruitMoneyWords && (
+        <div className="space-y-1">
+          <h2 className="text-lg font-semibold">Recruiting ROI — {recruitMoneyWords}</h2>
+          {recruitMoneyReason ? <p className="text-sm text-muted-foreground">{recruitMoneyReason}</p> : null}
+        </div>
+      )}
       {/* Recruiting ROI — admin/broker only */}
       {isAdminOrBroker && recruitROISummary && (
         <div className="space-y-4">
@@ -410,6 +423,9 @@ export default async function AcquisitionPage() {
           </div>
 
           {/* Per-recruit table */}
+          {recruitByRecruitFigure && recruitByRecruitFigure.state !== "ok" && (
+            <p className="text-sm text-muted-foreground">Per-recruit ROI — {recruitingFigureWords(recruitByRecruitFigure)}: {recruitByRecruitFigure.reason}</p>
+          )}
           {(recruitROIByRecruit as any[]).length > 0 && (
             <Card>
               <CardHeader className="pb-2">

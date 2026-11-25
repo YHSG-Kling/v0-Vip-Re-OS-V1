@@ -548,6 +548,52 @@ async function sectionF() {
   tenants({ refuse: { recruiting_roi: "permission denied (fixture)" } }); G.__K.seat = U_OWNER
   const fz = await drive(() => act.getRecruitingROISummary())
   check("a refused money read throws its refusal — the summary never reads as 0", !!fz.threw && !fz.r, fz)
+
+  // ── ROUND 2 ADDENDUM: the OTHER callers of the five money exports (the brokerage dashboard, the acquisition page, the
+  // brokerage action bar, the recruiting page's per-recruit series). Their loaders settle each call through
+  // lib/recruiting/recruiting-roi-compute.ts settleRecruitingFigure; driven here with the real actions for each seat.
+  const settle = compute.settleRecruitingFigure as undefined | (<X>(p: Promise<X>) => Promise<any>)
+  const words = compute.recruitingFigureWords as undefined | ((f: any) => string | null)
+  if (!settle || !words) { check("the loaders' settle helper exists (settleRecruitingFigure / recruitingFigureWords)", false); }
+  else {
+    const p0 = await settle(Promise.resolve({ totalInvested: 0 }))
+    const pn = await settle(Promise.reject(new Error("NOT_PERMITTED: books are not yours")))
+    const pu = await settle(Promise.reject(new Error("permission denied (fixture)")))
+    check("PURE: a real 0 stays a number ('ok'); a NOT_PERMITTED refusal is 'not_permitted' with its reason; any other error is 'unknown'",
+      p0.state === "ok" && p0.value.totalInvested === 0 && pn.state === "not_permitted" && pn.reason === "books are not yours" && pu.state === "unknown" && words(p0) === null && /seat/.test(words(pn) ?? "") && /Unknown/.test(words(pu) ?? ""), { p0, pn, pu })
+    // the brokerage dashboard's three loads and the acquisition page's two, per seat
+    const loads = async () => ({
+      summary: await settle(act.getRecruitingROISummary()), cost: await settle(act.getRecruitingCostBreakdown()),
+      breakEven: await settle(act.getBreakEvenAnalysis()), byRecruit: await settle(act.getRecruitROIByRecruit()),
+    })
+    tenants(); G.__K.seat = U_OWNER
+    const lo = await quiet(loads)
+    check("dashboard / acquisition loaders as broker_owner: every figure 'ok' with the real numbers (500000 invested)",
+      lo.summary.state === "ok" && lo.summary.value.totalInvested === 500000 && lo.cost.state === "ok" && lo.breakEven.state === "ok" && lo.byRecruit.state === "ok", lo)
+    tenants(); G.__K.seat = U_LEAD1
+    const ll = await quiet(loads)
+    check("dashboard / acquisition loaders as a finance-less team lead: every money figure 'not_permitted' with the reason — no 0 anywhere",
+      [ll.summary, ll.cost, ll.breakEven, ll.byRecruit].every((f: any) => f.state === "not_permitted" && /books/.test(f.reason) && !("value" in f)), ll)
+    tenants({ refuse: { recruiting_roi: "permission denied (fixture)", recruiting_costs: "permission denied (fixture)" } }); G.__K.seat = U_OWNER
+    const lr = await quiet(loads)
+    check("dashboard / acquisition loaders on refused reads: 'unknown' (never 0, never 'not permitted')",
+      lr.summary.state === "unknown" && lr.cost.state === "unknown" && lr.breakEven.state === "unknown" && lr.byRecruit.state === "unknown", lr)
+  }
+  // DERIVED RULE (comment-stripped, app/ + lib/): every caller of the five exports, and none chains `.catch(` onto the call
+  // (a caught refusal mapped to a default is how "$0" was drawn); each caller settles through settleRecruitingFigure.
+  const MONEY = ["getRecruitingROISummary", "getRecruitROIByRecruit", "getRecruitingCostBreakdown", "getBreakEvenAnalysis", "getRecruitingAnalyticsByYear"]
+  const CAUGHT = new RegExp(`\\b(?:${MONEY.join("|")})\\s*\\([^()]*\\)\\s*\\.catch\\s*\\(`)
+  const CALLS = new RegExp(`\\b(?:${MONEY.join("|")})\\s*\\(`)
+  const all: string[] = []
+  const walkAll = (d: string) => { for (const f of readdirSync(join(ROOT, d), { withFileTypes: true })) { const p = `${d}/${f.name}`; if (f.isDirectory()) { if (f.name !== "node_modules") walkAll(p) } else if (/\.(ts|tsx)$/.test(f.name)) all.push(p) } }
+  walkAll("app"); walkAll("lib")
+  const callers = all.filter((f) => f !== "app/actions/recruiting-roi.ts" && CALLS.test(stripComments(raw(f)).replace(/import\s*\{[^}]*\}\s*from\s*["'][^"']+["']/g, "")))
+  const caught = callers.filter((f) => CAUGHT.test(stripComments(raw(f))))
+  const unsettled = callers.filter((f) => !/settleRecruitingFigure\s*\(/.test(stripComments(raw(f))))
+  console.log(`  · callers of the five money exports (${callers.length}): ${callers.join(", ")}`)
+  check(`no caller of the five recruiting money exports chains .catch onto the call (${callers.length} callers, derived)`, callers.length >= 4 && caught.length === 0, { caught })
+  check("every caller settles the call through settleRecruitingFigure (a refusal becomes words, never a default)", callers.length >= 4 && unsettled.length === 0, { unsettled })
+  check("POSITIVE CONTROL: the finder recognises a caught call mapped to zeros", CAUGHT.test(`getRecruitingROISummary().catch(() => ({ totalInvested: 0 }))`) && CAUGHT.test(`await getRecruitingAnalyticsByYear(agentId).catch(() => [])`))
 }
 
 

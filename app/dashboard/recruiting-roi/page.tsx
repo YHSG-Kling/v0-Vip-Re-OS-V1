@@ -119,7 +119,7 @@ export default async function RecruitingROIPage() {
   }
   const perRecruitSeries = await Promise.all(
     recruitedIds.map(async (agentId) => {
-      const rows = await getRecruitingAnalyticsByYear(agentId).catch(() => [])
+      const rowsFigure = await (await import("@/lib/recruiting/recruiting-roi-compute")).settleRecruitingFigure(getRecruitingAnalyticsByYear(agentId)); const rows = rowsFigure.state === "ok" ? rowsFigure.value : [] // 156K: settled — an unread series is counted as unread below, never drawn as 0
       const byYear = new Map<number, number>()
       // recruiting_analytics.computed_at — the newest yearly rollup behind this series.
       let seriesComputedAt: string | null = null
@@ -137,11 +137,11 @@ export default async function RecruitingROIPage() {
         year1_revenue: byYear.get(1) ?? 0,
         year2_revenue: byYear.get(2) ?? 0,
         year3_revenue: byYear.get(3) ?? 0,
-        hasData: byYear.size > 0,
+        hasData: byYear.size > 0, unread: rowsFigure.state !== "ok",
       }
     }),
   )
-  const yearlyAnalytics = perRecruitSeries.filter((s) => s.hasData)
+  const yearlyAnalytics = perRecruitSeries.filter((s) => s.hasData); const unreadSeries = perRecruitSeries.filter((s) => s.unread).length
   // The newest recruiting_analytics.computed_at across every series actually drawn.
   const analyticsComputedAt = yearlyAnalytics
     .map((s) => s.computedAt)
@@ -386,7 +386,7 @@ export default async function RecruitingROIPage() {
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                <YearlyRevenueChart data={yearlyAnalytics} />
+                <YearlyRevenueChart data={yearlyAnalytics} />{unreadSeries > 0 ? <p className="text-xs text-muted-foreground mt-2">{unreadSeries} recruit(s): revenue unknown — could not be read (not drawn, never shown as 0).</p> : null}
               </CardContent>
             </Card>
 

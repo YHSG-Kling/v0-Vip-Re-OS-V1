@@ -142,3 +142,35 @@ export function computeRecruitingFunnel(f: RecruitFunnelFacts): { stages: Array<
     declined: R.filter((r) => r.status === "declined").length,
   }
 }
+
+// ─── WAVE 156 (lane 156K, round 2 addendum) — ONE WAY TO HOLD A RECRUITING MONEY FIGURE ─────────────────────────────────
+// The five money exports of app/actions/recruiting-roi.ts refuse a seat that may not read the books with an Error whose message
+// starts "NOT_PERMITTED:", and throw any refused read. Their callers used to `.catch(() => ({ totalInvested: 0, … }))` — a
+// refusal drawn as $0. Every caller now settles the call through this instead: a value is "ok", a NOT_PERMITTED refusal is
+// "not_permitted" with its reason, anything else is "unknown" with its reason. Never a number it did not read.
+// (Across a client → server-action boundary a production build redacts the message, so a refusal there reads as "unknown" —
+// still words, never 0.)
+// @proofSeam PURE — scripts/wave156-k-guard.ts
+
+export type RecruitingFigure<T> =
+  | { state: "ok"; value: T }
+  | { state: "not_permitted"; reason: string }
+  | { state: "unknown"; reason: string }
+
+export const RECRUITING_NOT_PERMITTED_PREFIX = "NOT_PERMITTED:"
+
+export async function settleRecruitingFigure<T>(call: Promise<T>): Promise<RecruitingFigure<T>> {
+  try {
+    return { state: "ok", value: await call }
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    return message.startsWith(RECRUITING_NOT_PERMITTED_PREFIX)
+      ? { state: "not_permitted", reason: message.slice(RECRUITING_NOT_PERMITTED_PREFIX.length).trim() }
+      : { state: "unknown", reason: message }
+  }
+}
+
+/** The words a surface shows for a figure it does not have. */
+export function recruitingFigureWords(f: RecruitingFigure<unknown>): string | null {
+  return f.state === "ok" ? null : f.state === "not_permitted" ? "Not shown for your seat" : "Unknown — could not be read"
+}
