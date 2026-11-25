@@ -392,8 +392,8 @@ async function roundTwo(rail: any) {
   check("the TENANT-owned BatchData door stays open (its own account and key — connectable, not license-held)", tpc.deriveTenantProviderConnectionState("batchdata", null).state === "unconfigured")
   check("…while a platform-dormant-PENDING-RIGHTS provider stays held for tenants too (Datafiniti — positive control of the distinction)", tpc.deriveTenantProviderConnectionState("datafiniti", null).state === "pending_owner_licensing")
   const pp = stripComments(raw("lib/lead-pipeline/pipeline-processor.ts"))
-  const at = pp.indexOf("const enrichmentResult =")
-  check("the raw-record promotion's PeopleData failover asks isPlatformProviderLicensed('peopledata') before skipTraceWithPeopleData (stripped)", at > 0 && /isPlatformProviderLicensed\('peopledata'\)/.test(pp.slice(at, pp.indexOf("skipTraceWithPeopleData(", at))))
+  check("the raw-record promotion's PeopleData failover: pdlUnlicensed = !isPlatformProviderLicensed('peopledata') (stripped)", /const pdlUnlicensed = [^\n]*isPlatformProviderLicensed\('peopledata'\)/.test(pp))
+  check("…and the SAME flag guards the call AND its meter (no call, no booking)", /const enrichmentResult = skipPeopleData \|\| versiumAnswered \|\| pdlUnlicensed\b/.test(pp) && /if \(!skipPeopleData && !versiumAnswered && !pdlUnlicensed && fields\.brokerageId/.test(pp))
 
   section("§J the connector-health probe's RentCast call is counted and booked on success only")
   const probe = await load("lib/agentic-os/connector-probe.ts")

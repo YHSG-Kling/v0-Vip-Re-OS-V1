@@ -1133,8 +1133,8 @@ async function enrichWithPeopleData(fields: {
         existingProfile: fields.knownDemographics ?? null,
       })
     : null
-  const versiumAnswered = !!versium?.answered && versium.emails.length > 0
-  const enrichmentResult = skipPeopleData || versiumAnswered || !(await import('@/lib/ai-isa/property-lookup-rail')).isPlatformProviderLicensed('peopledata') // wave 156 (156G): the platform PeopleData failover runs only where the platform holds a license (dormant → no call, $0)
+  const versiumAnswered = !!versium?.answered && versium.emails.length > 0; const pdlUnlicensed = !skipPeopleData && !versiumAnswered && !(await import('@/lib/ai-isa/property-lookup-rail')).isPlatformProviderLicensed('peopledata') // wave 156 (156G): the platform PeopleData failover runs only where the platform holds a license (dormant → no call, no booking)
+  const enrichmentResult = skipPeopleData || versiumAnswered || pdlUnlicensed
     ? { data: null }
     : await skipTraceWithPeopleData({
         name:  [fields.first_name, fields.last_name].filter(Boolean).join(' ') || undefined,
@@ -1160,7 +1160,7 @@ async function enrichWithPeopleData(fields: {
   // Lane 83A — EVERY PeopleData call from this path is booked, not only the profile-identify one:
   // the name/phone/email match (the common case) was unmetered here and nowhere else (82A's open
   // item: "booked by the CALLER" — no caller booked it). Platform-paid ledger, per MATCH ($0 miss).
-  if (!skipPeopleData && !versiumAnswered && fields.brokerageId && (profileUrl || hasNamePhoneEmail)) {
+  if (!skipPeopleData && !versiumAnswered && !pdlUnlicensed && fields.brokerageId && (profileUrl || hasNamePhoneEmail)) {
     const matched = !!enrichmentResult.data
     void meterVendorSpend({
       vendorName: 'peopledata',

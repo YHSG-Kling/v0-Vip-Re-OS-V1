@@ -250,8 +250,9 @@ console.log("\n[Layer 2b · VERSIUM FIRST — executed; PeopleData only after a 
   const pp = stripped("lib/lead-pipeline/pipeline-processor.ts")
   const iVr = pp.indexOf("runVersiumContactLeg("), iPr = pp.indexOf("await skipTraceWithPeopleData(")
   check("the raw-record promotion runs the SAME Versium leg BEFORE PeopleData, and a Versium answer skips PeopleData and its meter",
-    iVr > -1 && iPr > iVr && /const enrichmentResult = skipPeopleData \|\| versiumAnswered\s*\?\s*\{ data: null \}/.test(pp)
-    && /if \(!skipPeopleData && !versiumAnswered && fields\.brokerageId/.test(pp))
+    // Wave 156 (156G): the same guard may also carry `pdlUnlicensed` (an unlicensed platform PeopleData is neither called nor booked).
+    iVr > -1 && iPr > iVr && /const enrichmentResult = skipPeopleData \|\| versiumAnswered(?: \|\| pdlUnlicensed)?\s*\?\s*\{ data: null \}/.test(pp)
+    && /if \(!skipPeopleData && !versiumAnswered (?:&& !pdlUnlicensed )?&& fields\.brokerageId/.test(pp))
   // POSITIVE CONTROL — replay the decision on both outcomes: PeopleData is called only after a miss.
   const pdlCalledAfter = (versiumAnswered: boolean, demographicsRuling: boolean) => {
     const via = versiumAnswered ? "versium" : null
