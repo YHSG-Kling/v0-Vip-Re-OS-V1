@@ -41,7 +41,7 @@ const READ_EXECUTORS: Record<string, (args: any, ctx: { brokerageId: string }) =
     return getCurrentAvm({ address: String(args.address ?? ""), zipCode: args.zipCode ?? null, brokerageId: ctx.brokerageId, skipProviders: ["batchdata"] })
   },
   comparable_sales: async (args, ctx) => {
-    const { requestPropertyComparables } = await import("@/lib/avm/provider-chain") // TOMBSTONE (156I r4, LAW 3): getRentcastComps by name → lib/avm/provider-chain.ts:854
+    const { requestPropertyComparables } = await import("@/lib/avm/provider-chain") // TOMBSTONE (156I r4, LAW 3): getRentcastComps by name → lib/avm/provider-chain.ts:857
     return (await requestPropertyComparables({ brokerageId: ctx.brokerageId, address: String(args.address ?? ""), limit: args.limit != null ? Number(args.limit) : undefined, exclude: ["batchdata"] })).pull.comps
   },
   market_stats: async (args, ctx) => {

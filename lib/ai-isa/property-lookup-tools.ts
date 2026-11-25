@@ -211,7 +211,7 @@ function buildStaffLookupPropertyFactsTool(ctx: CustomerCapabilityContext, userI
       if (args.include_value_and_comps || args.include_full_record) {
         const rc = await import("@/lib/property/rentcast")
         if (args.include_value_and_comps) {
-          // TOMBSTONE (wave 156, 156I r4 — LAW 3): rc.getRentcastAvmAndComps by name. Survivor: lib/avm/provider-chain.ts:854 requestPropertyComparables (gate, ceiling, single-flight; the AVM rides the SAME request, so asking requestPropertyValuation too would buy /avm/value twice).
+          // TOMBSTONE (wave 156, 156I r4 — LAW 3): rc.getRentcastAvmAndComps by name. Survivor: lib/avm/provider-chain.ts:857 requestPropertyComparables (gate, ceiling, single-flight; the AVM rides the SAME request, so asking requestPropertyValuation too would buy /avm/value twice).
           const cap = await (await import("@/lib/avm/provider-chain")).requestPropertyComparables({ brokerageId: ctx.brokerageId, address: oneLine, limit: 10, systemSource: "ai_agent_tool", contactId: ctx.contactId ?? null }), v = cap.pull
           valueAndComps = {
             providerEstimate: v.avmAvailable ? v.avm : null, notAvailable: cap.notAvailable, // absent → null + the plain reason; never an invented figure

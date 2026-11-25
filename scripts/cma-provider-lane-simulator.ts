@@ -648,8 +648,11 @@ function constructLayer(): void {
   const avmComps = (readers.match(/endpoint:\s*"\/avm\/value\(comps\)"/g) ?? []).length
   check("C8 there is exactly ONE comps pull site, so the AVM cannot be billed twice",
     compsLookups === 1 && avmComps === 1, `comps_lookup=${compsLookups} endpoints=${avmComps}`)
-  check("C9 getRentcastComps is a thin reader over the combined pull, not a second implementation",
-    /export async function getRentcastComps[\s\S]{0,400}?getRentcastAvmAndComps\(params\)\)\.comps/.test(readers))
+  // WAVE 156 (156I r6): the thin reader is DELETED (orphan doctrine, third case) — no second comps entry may exist beside the
+  // combined pull; comparables are asked through lib/avm/provider-chain.ts requestPropertyComparables. The rule (no second
+  // implementation of the comps pull) is unchanged and now reads: the name is gone and its tombstone names the survivor.
+  check("C9 no second comps entry beside the combined pull: getRentcastComps is gone and its tombstone names requestPropertyComparables",
+    !/export async function getRentcastComps\b/.test(readers) && /TOMBSTONE[^\n]*`getRentcastComps`[\s\S]{0,600}?requestPropertyComparables/.test(raw(F.readers)))
   check("C10 a parsed AVM figure is never allowed to be 0 — non-positive resolves to null",
     /function parseAvmValue[\s\S]{0,400}?v\s*>\s*0\s*\?\s*v\s*:\s*null/.test(readers))
 }

@@ -310,38 +310,23 @@ function assertGateUsesTheClientsResolver(): boolean {
 // ─────────────────────────────────────────────────────────────────────────────
 // E3 — every RentCast export asks the gate BEFORE the network
 // ─────────────────────────────────────────────────────────────────────────────
-const RENTCAST_EXPORTS = [
-  "searchRentcastSaleListings",
-  "getRentcastListingStatus",
-  "searchRentcastRentalListings",
-  "getRentcastAVM",
-  "getRentcastMarketStats",
-  // Reads the comparables AND the AVM off the ONE /avm/value response, so the
-  // CMA lane can show the provider's own estimate as a baseline without buying
-  // a second lookup. This is the gated export; `getRentcastComps` below is a
-  // thin reader over it.
-  "getRentcastAvmAndComps",
-  "getRentcastComps",
-  // Wave 82 lane A — the property-RECORD reader (tax bill / assessed basis / HOA for the public
-  // calculators). Added here the moment it landed: the negative control below rewrites the FIRST
-  // `const { apiKey } = await gateRentcast(params)` in the file, which is now this reader's — an
-  // export missing from this list let that control stay green with the defect present.
-  "getRentcastPropertyRecord",
-  // Wave 92 (lane 92B) — the record is fetched ONCE by a module-private shared reader that BOTH
-  // projections delegate to (the public whitelist above and the full staff record below): it is
-  // the one that must pass gate-before-network, so it is listed by name (regionOf reads a
-  // non-exported function the same way). The negative control below now rewrites ITS gate line.
-  "fetchRentcastPropertyRow",
-  "getRentcastPropertyDetail",
-]
+// WAVE 156 (156I r6): DERIVED, never retyped. The hand list named 10 functions and had drifted both ways — it still named
+// `getRentcastComps` after round 6 deleted it (survivor: lib/avm/provider-chain.ts requestPropertyComparables), and it never named
+// three exports that do reach RentCast (getRentcastSaleListingById, getRentcastPropertyDetailWithOutcome, getRentcastSoldRecords).
+// The population is now read from the comment-stripped module: every `async function` that reaches the network itself (the
+// facade token below) or asks the gate, plus every EXPORTED async function that delegates to one of those. A private helper is
+// included only when it reaches the network itself (the shared record reader, fetchRentcastPropertyRow). Filled on first use
+// (deriveRentcastReaders, below) so the network token it depends on is initialised.
+const RENTCAST_EXPORTS: string[] = []
 
 /**
  * A DELEGATING export: one that issues no request of its own and reaches the
  * provider only through another export in this list.
  *
- * `getRentcastComps` became one of these when the comps pull and the AVM read
- * were merged into `getRentcastAvmAndComps` — two calls to `/avm/value` for one
- * question was two charges and two possibly-different comparable sets. A
+ * `getRentcastPropertyRecord` and `getRentcastPropertyDetail` are of this kind: both
+ * delegate to the shared record reader. (`getRentcastComps`, the delegate over
+ * `getRentcastAvmAndComps`, was deleted in wave 156 round 6 — its job is
+ * lib/avm/provider-chain.ts requestPropertyComparables.) A
  * delegate has no `gateRentcast(` of its own and does not need one; it is gated
  * by the thing it calls.
  *
@@ -364,8 +349,33 @@ function delegateTargetOf(body: string): string | null {
   return null
 }
 
+/** The readers that reach RentCast, derived from the stripped module (see RENTCAST_EXPORTS). */
+function deriveRentcastReaders(src: string): string[] {
+  const decls = [...src.matchAll(/(?:^|\n)(export\s+)?async\s+function\s+(\w+)\s*\(/g)].map((m) => ({ name: m[2], exported: !!m[1] }))
+  const bodyOf = (fn: string) => { const r = regionOf(src, fn); return r === null ? "" : bodyAfterParams(r) }
+  const direct = new Set(decls.filter((d) => NET_RE.test(bodyOf(d.name)) || bodyOf(d.name).includes("gateRentcast(")).map((d) => d.name))
+  direct.delete("gateRentcast")
+  let grew = true
+  while (grew) {
+    grew = false
+    for (const d of decls) {
+      if (!d.exported || direct.has(d.name)) continue
+      if ([...direct].some((r) => new RegExp(`\\b${r}\\s*\\(`).test(bodyOf(d.name)))) { direct.add(d.name); grew = true }
+    }
+  }
+  return decls.filter((d) => direct.has(d.name) && (d.exported || NET_RE.test(bodyOf(d.name)))).map((d) => d.name)
+}
+
 function assertGatedBeforeNetwork(): boolean {
   const src = code(F.readers)
+  if (RENTCAST_EXPORTS.length === 0) {
+    RENTCAST_EXPORTS.push(...deriveRentcastReaders(src))
+    console.log(`  derived ${RENTCAST_EXPORTS.length} RentCast readers: ${RENTCAST_EXPORTS.join(", ")}`)
+    // POSITIVE CONTROL for the derivation: the known gated readers are found, and a deleted name is not.
+    check("E3-derivation finds the known readers (getRentcastAVM, getRentcastAvmAndComps, the shared record reader) and not the deleted getRentcastComps",
+      ["getRentcastAVM", "getRentcastAvmAndComps", "fetchRentcastPropertyRow"].every((n) => RENTCAST_EXPORTS.includes(n)) && !RENTCAST_EXPORTS.includes("getRentcastComps"),
+      RENTCAST_EXPORTS.join(", "))
+  }
   const offenders: string[] = []
   const clean = new Set<string>()
   const delegating: Array<{ fn: string; target: string }> = []
