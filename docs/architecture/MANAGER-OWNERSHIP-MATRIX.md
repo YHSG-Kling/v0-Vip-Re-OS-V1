@@ -96,10 +96,10 @@ OS-wide arbitration is these EXISTING deciders, each at its own action boundary 
 | 5 · manager delegation | May a delegation move from one status to another? | `lib/kernel/manager-delegation.ts:119` `canDelegationTransition` (module-private: the gate is the door) | ⟨1⟩ in-file | `test:manager-delegation` |
 | 5 · manager delegation | Would this ask close a wait-for cycle between managers (deadlock)? | `lib/kernel/manager-delegation.ts:298` `delegationWaitCycle` (module-private: the gate is the door) | ⟨1⟩ in-file | `test:os-arbitration-canaries` |
 | 5 · manager delegation | What authority rung does a manager hold in this tenant? | `lib/managers/autonomy-gate.ts:298` `resolveAgentAuthorityLevel` | ⟨16⟩ file(s) | `test:autonomy-gate` |
-| 5 · manager delegation | Which manager is accountable for a domain? | `lib/kernel/manager-registry.ts:3498` `resolveMaintenanceManager` | ⟨1⟩ file(s) | `test:manager-ownership` |
+| 5 · manager delegation | Which manager is accountable for a domain? | `lib/kernel/manager-registry.ts:3506` `resolveMaintenanceManager` | ⟨1⟩ file(s) | `test:manager-ownership` |
 | 6 · human approval | Who approves this tenant's asset (owner / team lead / brokerage only by policy)? | `lib/kernel/approval-authority.ts:118` `approverFor` | ⟨10⟩ file(s) | `test:ads-tv-connections` |
 | 6 · human approval | Is a pending approval overdue (SLA → escalation)? | `lib/kernel/approval-sla.ts:17` `evaluateApprovalSla` | ⟨4⟩ file(s) | `test:social-approval` |
-| resource · entitlement | Is this subscription entitled to (and able to afford) a paid lane? | `lib/billing/billing-access.ts:325` `mayUseAndAfford` | ⟨36⟩ file(s) | `test:billing-access` |
+| resource · entitlement | Is this subscription entitled to (and able to afford) a paid lane? | `lib/billing/billing-access.ts:325` `mayUseAndAfford` | ⟨37⟩ file(s) | `test:billing-access` |
 | resource · provider budget | Does this spend fit the tenant's monthly vendor ceiling (all providers, one scope)? | `lib/vendor-governance/budget-gate.ts:89` `checkVendorBudget` | ⟨20⟩ file(s) | `test:os-arbitration-canaries` |
 | resource · provider budget | Throttle / defer a pooled paid want against its approved ceiling? | `lib/vendor-governance/budget-eval.ts:159` `decideSpendBackpressure` | ⟨4⟩ file(s) | `test:spend-backpressure` |
 | resource · acquisition spend | May this paid pull run (approved line, value verdict)? | `lib/lead-pipeline/source-discovery-planner.ts:608` `paidPullApproval` | ⟨6⟩ file(s) | `test:acquisition-door` |
@@ -133,17 +133,17 @@ Decision flow between the planes: a trigger (event / human goal / signal / cron)
 
 | Manager | Domains | loop-complete | read-surface | partial | writes-unread | untriggered | guard-only | registry-only | proof-unregistered | Crons | Tables | Queues | Capabilities |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| Deal Coordinator | ⟨110⟩ | ⟨66⟩ | ⟨31⟩ | ⟨8⟩ | ⟨0⟩ | ⟨0⟩ | ⟨5⟩ | ⟨0⟩ | ⟨0⟩ | ⟨18⟩ | ⟨71⟩ | ⟨2⟩ | ⟨1⟩ |
+| Deal Coordinator | ⟨111⟩ | ⟨66⟩ | ⟨32⟩ | ⟨8⟩ | ⟨0⟩ | ⟨0⟩ | ⟨5⟩ | ⟨0⟩ | ⟨0⟩ | ⟨18⟩ | ⟨71⟩ | ⟨2⟩ | ⟨1⟩ |
 | Shopping Agent | ⟨60⟩ | ⟨25⟩ | ⟨22⟩ | ⟨12⟩ | ⟨0⟩ | ⟨0⟩ | ⟨1⟩ | ⟨0⟩ | ⟨0⟩ | ⟨8⟩ | ⟨42⟩ | ⟨0⟩ | ⟨3⟩ |
 | Listing Concierge | ⟨86⟩ | ⟨39⟩ | ⟨35⟩ | ⟨8⟩ | ⟨0⟩ | ⟨0⟩ | ⟨4⟩ | ⟨0⟩ | ⟨0⟩ | ⟨17⟩ | ⟨57⟩ | ⟨0⟩ | ⟨4⟩ |
 | Sphere Manager | ⟨25⟩ | ⟨14⟩ | ⟨8⟩ | ⟨3⟩ | ⟨0⟩ | ⟨0⟩ | ⟨0⟩ | ⟨0⟩ | ⟨0⟩ | ⟨14⟩ | ⟨15⟩ | ⟨2⟩ | ⟨3⟩ |
 | Campaign Orchestrator | ⟨143⟩ | ⟨83⟩ | ⟨36⟩ | ⟨18⟩ | ⟨0⟩ | ⟨0⟩ | ⟨6⟩ | ⟨0⟩ | ⟨0⟩ | ⟨37⟩ | ⟨120⟩ | ⟨6⟩ | ⟨10⟩ |
-| Asset Manager | ⟨103⟩ | ⟨32⟩ | ⟨38⟩ | ⟨29⟩ | ⟨0⟩ | ⟨0⟩ | ⟨4⟩ | ⟨0⟩ | ⟨0⟩ | ⟨14⟩ | ⟨32⟩ | ⟨1⟩ | ⟨1⟩ |
+| Asset Manager | ⟨104⟩ | ⟨32⟩ | ⟨39⟩ | ⟨29⟩ | ⟨0⟩ | ⟨0⟩ | ⟨4⟩ | ⟨0⟩ | ⟨0⟩ | ⟨14⟩ | ⟨32⟩ | ⟨1⟩ | ⟨1⟩ |
 | Ads Manager | ⟨15⟩ | ⟨6⟩ | ⟨5⟩ | ⟨4⟩ | ⟨0⟩ | ⟨0⟩ | ⟨0⟩ | ⟨0⟩ | ⟨0⟩ | ⟨7⟩ | ⟨11⟩ | ⟨2⟩ | ⟨2⟩ |
-| AI ISA | ⟨100⟩ | ⟨61⟩ | ⟨15⟩ | ⟨18⟩ | ⟨0⟩ | ⟨0⟩ | ⟨6⟩ | ⟨0⟩ | ⟨0⟩ | ⟨21⟩ | ⟨43⟩ | ⟨0⟩ | ⟨4⟩ |
-| Data Steward | ⟨498⟩ | ⟨200⟩ | ⟨159⟩ | ⟨65⟩ | ⟨0⟩ | ⟨1⟩ | ⟨73⟩ | ⟨0⟩ | ⟨0⟩ | ⟨36⟩ | ⟨262⟩ | ⟨0⟩ | ⟨2⟩ |
+| AI ISA | ⟨101⟩ | ⟨61⟩ | ⟨16⟩ | ⟨18⟩ | ⟨0⟩ | ⟨0⟩ | ⟨6⟩ | ⟨0⟩ | ⟨0⟩ | ⟨21⟩ | ⟨43⟩ | ⟨0⟩ | ⟨4⟩ |
+| Data Steward | ⟨499⟩ | ⟨200⟩ | ⟨157⟩ | ⟨68⟩ | ⟨0⟩ | ⟨1⟩ | ⟨73⟩ | ⟨0⟩ | ⟨0⟩ | ⟨36⟩ | ⟨262⟩ | ⟨0⟩ | ⟨2⟩ |
 | Recruiting Manager | ⟨65⟩ | ⟨31⟩ | ⟨21⟩ | ⟨12⟩ | ⟨0⟩ | ⟨0⟩ | ⟨1⟩ | ⟨0⟩ | ⟨0⟩ | ⟨9⟩ | ⟨58⟩ | ⟨0⟩ | ⟨2⟩ |
-| Compliance Officer | ⟨97⟩ | ⟨63⟩ | ⟨14⟩ | ⟨17⟩ | ⟨0⟩ | ⟨0⟩ | ⟨3⟩ | ⟨0⟩ | ⟨0⟩ | ⟨6⟩ | ⟨18⟩ | ⟨0⟩ | ⟨1⟩ |
+| Compliance Officer | ⟨99⟩ | ⟨63⟩ | ⟨14⟩ | ⟨19⟩ | ⟨0⟩ | ⟨0⟩ | ⟨3⟩ | ⟨0⟩ | ⟨0⟩ | ⟨6⟩ | ⟨20⟩ | ⟨0⟩ | ⟨1⟩ |
 | Finance Manager | ⟨96⟩ | ⟨55⟩ | ⟨19⟩ | ⟨19⟩ | ⟨0⟩ | ⟨0⟩ | ⟨3⟩ | ⟨0⟩ | ⟨0⟩ | ⟨14⟩ | ⟨41⟩ | ⟨0⟩ | ⟨4⟩ |
 | Cron Manager | ⟨47⟩ | ⟨37⟩ | ⟨8⟩ | ⟨1⟩ | ⟨0⟩ | ⟨0⟩ | ⟨1⟩ | ⟨0⟩ | ⟨0⟩ | ⟨11⟩ | ⟨9⟩ | ⟨0⟩ | ⟨0⟩ |
 | Platform Sentinel (platform scope) | — | — | — | — | — | — | — | — | — | `/api/cron/platform-sentinel` | — | — | — |

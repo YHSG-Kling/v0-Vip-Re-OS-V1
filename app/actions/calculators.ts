@@ -164,7 +164,7 @@ export async function calculateSellerNet(data: {
   // 12-month appreciation for a seller. TOMBSTONE — all of it removed; SURVIVOR: lib/calculators/engine.ts runCalculator
   // ("seller_net_sheet") reached through lib/calculators/artifact.ts computeInternalSellerNet, which prices the listing
   // commission from the brokerage's agreed structure for an authorized seat and refuses to guess any other figure.
-  const { computeInternalSellerNet } = await import("@/lib/calculators/artifact")
+  const { computeInternalSellerNet, agreedCommissionFromStructure } = await import("@/lib/calculators/artifact"); const { getDefaultCommissionStructure } = await import("@/lib/brokerage/get-default-commission-structure") // the door names the reader of the terms it prices with
   const { getAgentContext } = await import("@/lib/identity/get-agent-context")
   const ctx = await getAgentContext()
   const extra = (data.stagingCost ?? 0) + (data.movingCost ?? 0)
@@ -175,7 +175,7 @@ export async function calculateSellerNet(data: {
       hoaAtClosing: data.hoaFees, repairCredits: data.repairsConcessions, otherCosts: extra > 0 ? extra : undefined,
     },
     jurisdiction: data.state ? `US-${String(data.state).trim().toUpperCase()}` : null,
-  }, { userId: actor.userId, brokerageId: tenant.brokerageId, userType: ctx.role })
+  }, { userId: actor.userId, brokerageId: tenant.brokerageId, userType: ctx.role }, { loadAgreedCommission: async (b: string) => agreedCommissionFromStructure(await getDefaultCommissionStructure(b)) })
   if (!r.success) return { success: false as const, error: r.error }
   const o = r.outcome
   if (!o.ok) return { success: false as const, error: [...o.missing.map((m) => m.message), ...o.refused.map((x) => `${x.label}: ${x.reason}`)].join("; "), missing: o.missing }

@@ -6,25 +6,25 @@ Owner ruling 18 (2026-10-29): *"All capabilities at all levels … Validate each
 
 **Verdicts.** BUILT — the screen reaches a data path. PARTIAL — it reaches one and says honestly that a part is not available / not configured. UNWIRED — interactive controls, no data path. STATIC — informational, no controls, no data (not a defect). REDIRECT — an alias that lands elsewhere. MISSING — no page serves the href. Dead CONTROLS inside a BUILT screen are `test:ui-wiring-census`'s (hard zero on every journey); page role gates are `test:page-role-gate-roster`'s; colour contrast is `test:ui-palette-contrast`'s.
 
-**Totals:** 828 role-surfaces — BUILT 752 · PARTIAL 61 · UNWIRED 0 · STATIC 14 · REDIRECT 1 · MISSING 0. Public pages: 39; contact-portal pages: 30. Expected-coverage gaps: 0.
+**Totals:** 834 role-surfaces — BUILT 748 · PARTIAL 71 · UNWIRED 0 · STATIC 14 · REDIRECT 1 · MISSING 0. Public pages: 39; contact-portal pages: 31. Expected-coverage gaps: 0.
 
 ## Role × domain (B = BUILT, P = PARTIAL, U = UNWIRED, S = STATIC, R = REDIRECT, M = MISSING; **GAP** = ruling 18 expects this level here and no surface exists; · = not expected, none)
 
 | domain | platform staff | platform prospects · public | tenant admins | teams · team leads | agents | ISA | transaction coordinators | compliance officers | buyers · sellers · lifetime contacts | vendors · partners |
 |---|---|---|---|---|---|---|---|---|---|---|
-| **website · landing pages · lead magnets** | B1 | B18 | B9 | B5 | B10 | · | B5 | B5 | · | · |
+| **website · landing pages · lead magnets** | B1 | B18 | B10 | B6 | B11 | · | B6 | B6 | · | · |
 | **lead acquisition** | B5 | B9 | B12 | B4 | B7 | B9 | B1 | B1 | · | · |
 | **dedup · enrichment · behavioural intent** | B3 | · | B7 P1 | B2 | B4 | B1 | · | · | · | · |
-| **listings** | B1 | B1 | B2 P1 S1 | B3 P1 S1 | B8 P1 S1 | S1 | · | · | · | · |
+| **listings** | P1 | B1 | B1 P2 S1 | B2 P2 S1 | B7 P2 S1 | S1 | · | · | · | · |
 | **properties** | · | B1 | B2 | B2 | B2 | · | · | · | B3 | · |
-| **forms** | · | B1 | B8 | B1 | B8 | · | B1 | B1 | B2 | B3 |
+| **forms** | · | B1 | B7 P1 | B1 | B7 P1 | · | B1 | B1 | B2 | B3 |
 | **transactions** | B1 P1 | · | B1 P1 | B1 P1 | B4 P1 | · | B6 P1 | B4 P1 | B3 | B8 |
 | **closings** | · | · | B3 | B2 | B3 | · | · | · | · | B2 |
-| **portals · dashboards · login · onboarding** | B3 | B6 S1 | B11 | B9 | B11 P1 | B2 | B2 | B1 | B16 S1 | B10 |
+| **portals · dashboards · login · onboarding** | B3 | B6 S1 | B11 | B9 | B11 P1 | B2 | B2 | B1 | B17 S1 | B10 |
 | **vendor marketplace** | B1 | · | B2 | · | B1 | · | B2 | B1 | B1 | B4 |
 | **education** | B1 | · | B6 | B2 | B5 | B1 | B1 | B1 | B2 | · |
 | **agent referral · recruiting · agreements · gamification** | B2 | · | B7 | B6 | B10 | · | · | · | B1 | · |
-| CRM · contacts · lifetime | B1 | · | B7 | B8 | B11 | B2 | B2 | B2 | · | · |
+| CRM · contacts · lifetime | B1 | · | B6 P1 | B7 P1 | B10 P1 | B1 P1 | B2 | B2 | · | · |
 | marketing · media · communications · AI | B2 | · | B40 P5 | B28 P6 S1 | B36 P6 S1 | B11 P1 | B10 P4 | B13 P4 | · | · |
 | compliance · approvals | B2 | · | B11 P2 S1 | B7 S1 | B2 | · | B3 | B11 P1 S1 | · | · |
 | financials · billing | B7 P1 | · | B12 | B7 | B6 | · | · | · | B1 | B4 |
@@ -43,6 +43,7 @@ None — every level the ruling names reaches every domain it should, on a real 
 | role | domain | surface | page | verdict | why |
 |---|---|---|---|---|---|
 | platform staff | operations · managers · reports | Integrations `/dashboard/superadmin/connectors` | `app/dashboard/superadmin/connectors/page.tsx` | PARTIAL | says "Not configured" (`app/dashboard/superadmin/connectors/go-live-card.tsx:26` — implemented-missing-owner-config) |
+| tenant admins | forms | Forms Library `/dashboard/forms` | `app/dashboard/forms/page.tsx` | PARTIAL | says "NOT CONFIGURED" (`app/components/forms/add-form-or-packet.tsx:103` — implemented-missing-owner-config) |
 | tenant admins | operations · managers · reports | Team Heatmap `/dashboard/team-heatmap` | `app/dashboard/team-heatmap/page.tsx` | PARTIAL | says "isn't configured" (`app/dashboard/team-heatmap/page.tsx:406` — implemented-missing-owner-config) |
 | tenant admins | marketing · media · communications · AI | Create Video `/dashboard/videos/create` | `app/dashboard/videos/create/page.tsx` | PARTIAL | says "not configured" (`app/dashboard/videos/create/teammate-explainer-card.tsx:38` — implemented-missing-owner-config) |
 | tenant admins | marketing · media · communications · AI | Social Dashboard `/dashboard/social` | `app/dashboard/social/page.tsx` | PARTIAL | says "isn't configured" (`app/components/ai-image/generate-image-button.tsx:133` — implemented-missing-owner-config) |
@@ -54,11 +55,15 @@ None — every level the ruling names reaches every domain it should, on a real 
 | tenant admins | compliance · approvals | AI Disclosures `/dashboard/admin/compliance/ai-disclosures` | `app/dashboard/admin/compliance/ai-disclosures/page.tsx` | PARTIAL | says "not configured" (`app/dashboard/admin/compliance/ai-disclosures/page.tsx:44` — implemented-missing-owner-config) |
 | tenant admins | marketing · media · communications · AI | Direct Mail `/dashboard/campaigns/mail` | `app/dashboard/campaigns/mail/page.tsx` | PARTIAL | says "not configured" (`app/dashboard/campaigns/mail/mail-dashboard.tsx:190` — implemented-missing-owner-config) |
 | tenant admins | compliance · approvals | TCPA Compliance `/dashboard/admin/compliance/tcpa` | `app/dashboard/admin/compliance/tcpa/page.tsx` | PARTIAL | says "not configured" (`app/dashboard/admin/compliance/tcpa/page.tsx:66` — implemented-missing-owner-config) |
+| teams · team leads | CRM · contacts · lifetime | CRM `/crm` | `app/crm/page.tsx` | PARTIAL | says "not configured" (`app/components/form-wizard/FormWizard.tsx:2657` — implemented-missing-owner-config) |
 | teams · team leads | operations · managers · reports | Team Heatmap `/dashboard/team-heatmap` | `app/dashboard/team-heatmap/page.tsx` | PARTIAL | says "isn't configured" (`app/dashboard/team-heatmap/page.tsx:406` — implemented-missing-owner-config) |
 | teams · team leads | marketing · media · communications · AI | Create Video `/dashboard/videos/create` | `app/dashboard/videos/create/page.tsx` | PARTIAL | says "not configured" (`app/dashboard/videos/create/teammate-explainer-card.tsx:38` — implemented-missing-owner-config) |
 | teams · team leads | marketing · media · communications · AI | Social Dashboard `/dashboard/social` | `app/dashboard/social/page.tsx` | PARTIAL | says "isn't configured" (`app/components/ai-image/generate-image-button.tsx:133` — implemented-missing-owner-config) |
 | teams · team leads | marketing · media · communications · AI | Podcast Studio `/dashboard/marketing/podcast` | `app/dashboard/marketing/podcast/page.tsx` | PARTIAL | says "not configured" (`app/dashboard/marketing/podcast/components/create-episode-dialog.tsx:340` — implemented-missing-owner-config) |
 | teams · team leads | marketing · media · communications · AI | Direct Mail `/dashboard/campaigns/mail` | `app/dashboard/campaigns/mail/page.tsx` | PARTIAL | says "not configured" (`app/dashboard/campaigns/mail/mail-dashboard.tsx:190` — implemented-missing-owner-config) |
+| agents | CRM · contacts · lifetime | My Contacts `/crm` | `app/crm/page.tsx` | PARTIAL | says "not configured" (`app/components/form-wizard/FormWizard.tsx:2657` — implemented-missing-owner-config) |
+| agents | listings | My Listings `/dashboard/listings` | `app/dashboard/listings/page.tsx` | PARTIAL | says "not configured" (`app/components/form-wizard/FormWizard.tsx:2657` — implemented-missing-owner-config) |
+| agents | forms | Forms Library `/dashboard/forms` | `app/dashboard/forms/page.tsx` | PARTIAL | says "NOT CONFIGURED" (`app/components/forms/add-form-or-packet.tsx:103` — implemented-missing-owner-config) |
 | agents | marketing · media · communications · AI | Create Video `/dashboard/videos/create` | `app/dashboard/videos/create/page.tsx` | PARTIAL | says "not configured" (`app/dashboard/videos/create/teammate-explainer-card.tsx:38` — implemented-missing-owner-config) |
 | agents | marketing · media · communications · AI | Social Dashboard `/dashboard/social` | `app/dashboard/social/page.tsx` | PARTIAL | says "isn't configured" (`app/components/ai-image/generate-image-button.tsx:133` — implemented-missing-owner-config) |
 | agents | marketing · media · communications · AI | Podcast Studio `/dashboard/marketing/podcast` | `app/dashboard/marketing/podcast/page.tsx` | PARTIAL | says "not configured" (`app/dashboard/marketing/podcast/components/create-episode-dialog.tsx:340` — implemented-missing-owner-config) |
@@ -74,7 +79,10 @@ None — every level the ruling names reaches every domain it should, on a real 
 | platform staff | operations · managers · reports | ↳ from AI Command Center `/dashboard/admin/voice-dial-batches` | `app/dashboard/admin/voice-dial-batches/page.tsx` | PARTIAL | says "not configured" (`app/dashboard/admin/voice-dial-batches/page.tsx:30` — implemented-missing-owner-config) |
 | platform staff | transactions | ↳ from AI Command Center `/dashboard/transactions/x` | `app/dashboard/transactions/[id]/page.tsx` | PARTIAL | says "Not Configured" (`app/dashboard/transactions/[id]/transaction-detail-client.tsx:5282` — implemented-missing-owner-config) |
 | platform staff | financials · billing | ↳ from Billing Administration `/dashboard/superadmin/coupons` | `app/dashboard/superadmin/coupons/page.tsx` | PARTIAL | says "not configured" (`app/dashboard/superadmin/coupons/coupons-manager.tsx:126` — implemented-missing-owner-config) |
+| platform staff | listings | ↳ from More `/dashboard/listings` | `app/dashboard/listings/page.tsx` | PARTIAL | says "not configured" (`app/components/form-wizard/FormWizard.tsx:2657` — implemented-missing-owner-config) |
+| tenant admins | CRM · contacts · lifetime | ↳ from AI Briefing `/crm` | `app/crm/page.tsx` | PARTIAL | says "not configured" (`app/components/form-wizard/FormWizard.tsx:2657` — implemented-missing-owner-config) |
 | tenant admins | listings | ↳ from AI Briefing `/dashboard/listings/x/lifecycle` | `app/dashboard/listings/[id]/lifecycle/page.tsx` | PARTIAL | says "not configured" (`app/components/dashboard/listings/lifecycle/investor-buybox-preview-card.tsx:61` — implemented-missing-owner-config) |
+| tenant admins | listings | ↳ from Operations `/dashboard/listings` | `app/dashboard/listings/page.tsx` | PARTIAL | says "not configured" (`app/components/form-wizard/FormWizard.tsx:2657` — implemented-missing-owner-config) |
 | tenant admins | transactions | ↳ from Operations `/dashboard/transactions/x` | `app/dashboard/transactions/[id]/page.tsx` | PARTIAL | says "Not Configured" (`app/dashboard/transactions/[id]/transaction-detail-client.tsx:5282` — implemented-missing-owner-config) |
 | tenant admins | operations · managers · reports | ↳ from AI Command Center `/dashboard/admin/voice-dial-batches` | `app/dashboard/admin/voice-dial-batches/page.tsx` | PARTIAL | says "not configured" (`app/dashboard/admin/voice-dial-batches/page.tsx:30` — implemented-missing-owner-config) |
 | tenant admins | marketing · media · communications · AI | ↳ from Review Queue `/social-planner` | `app/social-planner/page.tsx` | PARTIAL | says "isn't configured" (`app/components/ai-image/generate-image-button.tsx:133` — implemented-missing-owner-config) |
@@ -83,6 +91,7 @@ None — every level the ruling names reaches every domain it should, on a real 
 | tenant admins | settings · people · support | ↳ from Settings `/settings/commission` | `app/settings/commission/page.tsx` | PARTIAL | says "Not configured" (`app/components/settings/BenefitOfferingsCard.tsx:137` — implemented-missing-owner-config) |
 | tenant admins | settings · people · support | ↳ from Settings `/settings/services` | `app/settings/services/page.tsx` | PARTIAL | says "Not Configured" (`app/settings/services/services-content.tsx:268` — implemented-missing-owner-config) |
 | teams · team leads | listings | ↳ from AI Briefing `/dashboard/listings/x/lifecycle` | `app/dashboard/listings/[id]/lifecycle/page.tsx` | PARTIAL | says "not configured" (`app/components/dashboard/listings/lifecycle/investor-buybox-preview-card.tsx:61` — implemented-missing-owner-config) |
+| teams · team leads | listings | ↳ from Team Dashboard `/dashboard/listings` | `app/dashboard/listings/page.tsx` | PARTIAL | says "not configured" (`app/components/form-wizard/FormWizard.tsx:2657` — implemented-missing-owner-config) |
 | teams · team leads | transactions | ↳ from Team Dashboard `/dashboard/transactions/x` | `app/dashboard/transactions/[id]/page.tsx` | PARTIAL | says "Not Configured" (`app/dashboard/transactions/[id]/transaction-detail-client.tsx:5282` — implemented-missing-owner-config) |
 | teams · team leads | marketing · media · communications · AI | ↳ from Team Dashboard `/mobile/voice` | `app/mobile/voice/page.tsx` | PARTIAL | says "not configured" (`app/mobile/voice/page.tsx:197` — implemented-missing-owner-config) |
 | teams · team leads | operations · managers · reports | ↳ from AI Command Center `/dashboard/admin/voice-dial-batches` | `app/dashboard/admin/voice-dial-batches/page.tsx` | PARTIAL | says "not configured" (`app/dashboard/admin/voice-dial-batches/page.tsx:30` — implemented-missing-owner-config) |
@@ -94,6 +103,7 @@ None — every level the ruling names reaches every domain it should, on a real 
 | agents | marketing · media · communications · AI | ↳ from Review Queue `/social-planner` | `app/social-planner/page.tsx` | PARTIAL | says "isn't configured" (`app/components/ai-image/generate-image-button.tsx:133` — implemented-missing-owner-config) |
 | agents | operations · managers · reports | ↳ from AI Command Center `/dashboard/admin/voice-dial-batches` | `app/dashboard/admin/voice-dial-batches/page.tsx` | PARTIAL | says "not configured" (`app/dashboard/admin/voice-dial-batches/page.tsx:30` — implemented-missing-owner-config) |
 | agents | operations · managers · reports | ↳ from Connections `/dashboard/admin/phone-settings` | `app/dashboard/admin/phone-settings/page.tsx` | PARTIAL | says "Not configured" (`app/dashboard/admin/phone-settings/page.tsx:15` — implemented-missing-owner-config) |
+| ISA | CRM · contacts · lifetime | ↳ from AI-ISA Console `/crm` | `app/crm/page.tsx` | PARTIAL | says "not configured" (`app/components/form-wizard/FormWizard.tsx:2657` — implemented-missing-owner-config) |
 | transaction coordinators | transactions | ↳ from Coordinator Command `/dashboard/transactions/x` | `app/dashboard/transactions/[id]/page.tsx` | PARTIAL | says "Not Configured" (`app/dashboard/transactions/[id]/transaction-detail-client.tsx:5282` — implemented-missing-owner-config) |
 | transaction coordinators | marketing · media · communications · AI | ↳ from Marketing Studio `/dashboard/campaigns/mail` | `app/dashboard/campaigns/mail/page.tsx` | PARTIAL | says "not configured" (`app/dashboard/campaigns/mail/mail-dashboard.tsx:190` — implemented-missing-owner-config) |
 | transaction coordinators | marketing · media · communications · AI | ↳ from Review Queue `/social-planner` | `app/social-planner/page.tsx` | PARTIAL | says "isn't configured" (`app/components/ai-image/generate-image-button.tsx:133` — implemented-missing-owner-config) |
@@ -106,11 +116,11 @@ None — every level the ruling names reaches every domain it should, on a real 
 
 ## Classification — every unfinished / not-configured / not-available sentence (ruling 9, lane 147H)
 
-Owner ruling 9 (2026-10-31): *"Build the missing capabilities and the ones that say 'not available yet'. Every exposed function works, gives an honest configuration message, or leaves the advertised launch surface."* Population: every line of STRIPPED source in `app/**` carrying the honest-state phrase family (and every "not available yet" line in `lib/**`) — 183 sentences (42 on screens, 141 server refusals a screen relays). Each sits in exactly one class, **derived from code** for 128 (an env var the runtime reads, a fail-closed tenant guard, a connection / provider probe, a migration stamp) and from the published allow-list (`CLASSIFIED_SURFACES`) for 55. A missing credential is configuration, never an engineering failure.
+Owner ruling 9 (2026-10-31): *"Build the missing capabilities and the ones that say 'not available yet'. Every exposed function works, gives an honest configuration message, or leaves the advertised launch surface."* Population: every line of STRIPPED source in `app/**` carrying the honest-state phrase family (and every "not available yet" line in `lib/**`) — 189 sentences (47 on screens, 142 server refusals a screen relays). Each sits in exactly one class, **derived from code** for 130 (an env var the runtime reads, a fail-closed tenant guard, a connection / provider probe, a migration stamp) and from the published allow-list (`CLASSIFIED_SURFACES`) for 59. A missing credential is configuration, never an engineering failure.
 
 | class | sentences |
 |---|---|
-| implemented-missing-owner-config | 181 |
+| implemented-missing-owner-config | 187 |
 | present-but-unwired | 0 |
 | incomplete-code | 0 |
 | missing-reader/writer/evidence | 0 |
@@ -232,6 +242,9 @@ Owner ruling 9 (2026-10-31): *"Build the missing capabilities and the ones that 
 | `app/api/workflow/trigger/route.ts` | 158 | server | not configured | implemented-missing-owner-config | code | platform env WORKFLOW_WEBHOOK_SECRET | kept: honest configuration copy (derived) |
 | `app/components/ai-image/generate-image-button.tsx` | 133 | ui | isn't configured | implemented-missing-owner-config | allow-list | the image-generation provider returns 503 when its platform key is unset | kept: honest refusal |
 | `app/components/dashboard/listings/lifecycle/investor-buybox-preview-card.tsx` | 61 | ui | not configured | implemented-missing-owner-config | code | tenant / provider connection probe (unconfigured) | kept: honest configuration copy (derived) |
+| `app/components/form-wizard/FormWizard.tsx` | 2657 | ui | not configured | implemented-missing-owner-config | allow-list | a packet item whose licensed file the tenant has not uploaded and whose provider form it has not linked (status not_configured) — a tenant library setting | new in wave 156: status label on the deal-packet panel, beside the recovery link to Add a form or packet |
+| `app/components/form-wizard/FormWizard.tsx` | 2660 | ui | not available yet | implemented-missing-owner-config | allow-list | a REQUIRED form of the tenant's packet bundle has no licensed file or linked provider form yet — the tenant's own library, completed from the same panel | new in wave 156: the count on the deal-packet header; each missing item carries its recovery link |
+| `app/components/forms/add-form-or-packet.tsx` | 103, 170 | ui | not configured | implemented-missing-owner-config | allow-list | a state-package pick is registered without bytes and reads NOT CONFIGURED until the tenant uploads its licensed file or links a provider form — on the flow that does both | new in wave 156: status badge and the success message of the add-form flow |
 | `app/components/settings/BenefitOfferingsCard.tsx` | 137 | ui | not configured | implemented-missing-owner-config | allow-list | the brokerage has not described its benefit distribution — a tenant-owner setting on the same card | kept: honest owner-setting copy (the toggle pays nothing until the distribution is described) |
 | `app/components/shared/push-permission-toggle.tsx` | 233 | ui | not configured | implemented-missing-owner-config | code | tenant / provider connection probe (unconfigured) | kept: honest configuration copy (derived) |
 | `app/crm/actions/ask-relationship-ai.ts` | 35 | server | not configured | implemented-missing-owner-config | code | platform env AI_GATEWAY_API_KEY | kept: honest configuration copy (derived) |
@@ -251,6 +264,7 @@ Owner ruling 9 (2026-10-31): *"Build the missing capabilities and the ones that 
 | `app/dashboard/settings/integrations/lead-sources/acquisition-providers-panel.tsx` | 151 | ui | isn’t available yet | implemented-missing-owner-config | allow-list | the Settings panel relays the same platform secret-storage state before a tenant pastes a token (encryptionConfigured is read on the server page) | kept: honest status line on the page that would connect it (tenant wording, wave 152 lane 152A) |
 | `app/dashboard/settings/podcast-channels/podcast-channels-client.tsx` | 166 | ui | not configured | implemented-missing-owner-config | allow-list | a podcast channel the tenant has not connected | kept: status label on the settings page that connects it |
 | `app/dashboard/superadmin/ai-ops/rotation-risks-panel.tsx` | 31 | ui | not configured | implemented-missing-owner-config | code | tenant / provider connection probe (skipped) | kept: honest sweep summary |
+| `app/dashboard/superadmin/connector-healing/rentcast-cap-panel.tsx` | 26 | ui | not available yet | implemented-missing-owner-config | code | fallback for a database missing APPLIED migration m1019 (dormant live; the deployment applies it) | kept: honest configuration copy (derived) |
 | `app/dashboard/superadmin/connectors/go-live-card.tsx` | 26 | ui | not configured | implemented-missing-owner-config | allow-list | the go-live board's per-connector state vocabulary (not_configured) | kept: the board IS the readiness surface |
 | `app/dashboard/superadmin/connectors/provider-posture-cards.tsx` | 51 | ui | not configured | implemented-missing-owner-config | code | tenant / provider connection probe (envPart) | kept: honest configuration copy (derived) |
 | `app/dashboard/superadmin/coupons/coupons-manager.tsx` | 126 | ui | not configured | implemented-missing-owner-config | allow-list | Stripe (STRIPE_SECRET_KEY) unset — publish records an honest MOCK ledger entry (owner ruling: no Stripe objects) | kept: honest mock label |
@@ -276,6 +290,7 @@ Owner ruling 9 (2026-10-31): *"Build the missing capabilities and the ones that 
 | `lib/kernel/video.ts` | 657 | server | not yet available | unsupported/deferred | allow-list | video repurposing (shorts / clips / thumbnails) has no processing backend; the old code fabricated artifact URLs | kept: honest refusal relayed by the video studio dialog; a processor (worker) is an owner decision — Still open |
 | `lib/market-reports/producer.ts` | 233 | server | not available yet | implemented-missing-owner-config | allow-list | a market datum the licensed data sources (RentCast — RENTCAST_API_KEY, the tenant's MLS / IDX feed connection) did not return for this territory; the report labels it instead of estimating it (owner ruling 6) | kept: the honest section heading the producer's validator requires |
 | `lib/market-reports/prompts.ts` | 64 | server | not available yet | implemented-missing-owner-config | allow-list | the writing prompt's rule that a fact the data sources did not return is said to be not available, never estimated (owner ruling 6; the producer validator refuses an invented figure) | kept: an instruction to the model, not user copy |
+| `lib/property/rentcast-eligibility.ts` | 587 | server | not available yet | implemented-missing-owner-config | code | fallback for a database missing APPLIED migration m1019 (dormant live; the deployment applies it) | kept: honest configuration copy (derived) |
 
 ### Migration-gated fallbacks (copy that names a migration, with its stamp)
 
@@ -300,6 +315,7 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | `app/dashboard/admin/manager-trust/tenant-constitution-panel.tsx:115` | m696 | applied |
 | `app/dashboard/admin/manager-trust/workforce-thresholds-editor.tsx:31` | m709 | applied |
 | `app/dashboard/listings/[id]/lifecycle/listing-agreement-terms-panel.tsx:87` | m856 | applied |
+| `app/dashboard/superadmin/connector-healing/rentcast-cap-panel.tsx:26` | m1019 | applied |
 | `app/dashboard/superadmin/form-packets/page.tsx:41` | m807 | applied |
 | `app/dashboard/superadmin/plans/ai-overage-terms-card.tsx:40` | m669 | applied |
 | `app/dashboard/transactions/[id]/tax-proration-card.tsx:105` | m873 | applied |
@@ -333,7 +349,7 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | lead acquisition | ↳ from More `/dashboard/isa` | `app/dashboard/isa/page.tsx` | app/actions/leads.ts (resumeAIISA, getISAQueueLeads, getLeadStats, …) · app/actions/ai-isa.ts (listISACampaigns, getQualificationOutcomes, getGhostRecoveryQueue, …) | BUILT |
 | lead acquisition | ↳ from More `/leads` | `app/leads/page.tsx` | app/actions/lead-intelligence.ts (getIntelligenceDashboardStats, getMotivatedSellers, getUnifiedLeadProfiles, …) · app/actions/lead-management.ts (getLeadsAdmin, enrichLead, rejectLead, …) | BUILT |
 | lead acquisition | ↳ from Stale Queue `/leads/x` | `app/leads/[leadId]/page.tsx` | lib/auth/lead-visibility.ts · lib/lead-pipeline/lead-intelligence-signals.ts | BUILT |
-| listings | ↳ from More `/dashboard/listings` | `app/dashboard/listings/page.tsx` | app/actions/ai-cma.ts (getCMAReports, updateCMAReport, generateAICMA, …) · app/actions/listings-kernel.ts (updateListingStatus, createListingWithSellerContact, resolveListingIdByMlsAction, …) | BUILT |
+| listings | ↳ from More `/dashboard/listings` | `app/dashboard/listings/page.tsx` | app/actions/ai-cma.ts (getCMAReports, updateCMAReport, generateAICMA, …) · app/actions/listings-kernel.ts (updateListingStatus, createListingWithSellerContact, resolveListingIdByMlsAction, …) | PARTIAL |
 | marketing · media · communications · AI | AI Quality `/dashboard/ai-quality` | `app/dashboard/ai-quality/page.tsx` | lib/intelligence/feedback-aggregator.ts · lib/intelligence/prompt-calibrator.ts | BUILT |
 | marketing · media · communications · AI | ↳ from Behavioral Patterns `/dashboard/campaigns/roi` | `app/dashboard/campaigns/roi/page.tsx` | app/dashboard/campaigns/roi/actions.ts (declineRoiRecommendation) · lib/kernel/egress-scope.ts | BUILT |
 | operations · managers · reports | Settings `/admin/settings` | `app/admin/settings/page.tsx` | — | REDIRECT |
@@ -415,20 +431,20 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | website · landing pages · lead magnets | /embed/[publicId] `/embed/[publicId]` | `app/embed/[publicId]/page.tsx` | fetch /api/embed/session/end · fetch /api/embed/session/heartbeat | BUILT |
 | website · landing pages · lead magnets | /embed/blog/[slug] `/embed/blog/[slug]` | `app/embed/blog/[slug]/page.tsx` | fetch /api/blog/track-view · fetch /api/blog/track-share | BUILT |
 | website · landing pages · lead magnets | /legal `/legal` | `app/legal/page.tsx` | lib/platform/product-brand.ts | BUILT |
-| website · landing pages · lead magnets | /lm/[slug] `/lm/[slug]` | `app/lm/[slug]/page.tsx` | app/actions/lead-magnet-capture.ts (captureFormSubmissionAction) · lib/identity/get-agent-context.ts | BUILT |
+| website · landing pages · lead magnets | /lm/[slug] `/lm/[slug]` | `app/lm/[slug]/page.tsx` | app/actions/calculator-artifacts.ts (computeCalculatorArtifactAction, optInCalculatorArtifactAction, recordCalculatorOpenAction) · app/actions/lead-magnet-capture.ts (captureFormSubmissionAction) | BUILT |
 | website · landing pages · lead magnets | /p/[agentSlug] `/p/[agentSlug]` | `app/p/[agentSlug]/page.tsx` | app/actions/agent-public-profile.ts (captureProfileLead) · lib/embed/resolve-site-embed.ts | BUILT |
 | website · landing pages · lead magnets | /pricing `/pricing` | `app/pricing/page.tsx` | lib/platform/public-tiers.ts · lib/platform/product-brand.ts | BUILT |
 | website · landing pages · lead magnets | /privacy/request `/privacy/request` | `app/privacy/request/page.tsx` | app/actions/privacy/data-subject-requests.ts (submitDataSubjectRequestAction, DSARType) | BUILT |
 | website · landing pages · lead magnets | /site/[slug] `/site/[slug]` | `app/site/[slug]/page.tsx` | lib/video/public-video.ts · lib/kernel/tenant-creation.ts | BUILT |
 | website · landing pages · lead magnets | /site/[slug]/events/[eventId] `/site/[slug]/events/[eventId]` | `app/site/[slug]/events/[eventId]/page.tsx` | fetch /api/open-house/register · lib/kernel/tenant-creation.ts | BUILT |
-| website · landing pages · lead magnets | /site/[slug]/lm/[formSlug] `/site/[slug]/lm/[formSlug]` | `app/site/[slug]/lm/[formSlug]/page.tsx` | app/actions/lead-magnet-capture.ts (captureFormSubmissionAction) · lib/kernel/tenant-creation.ts | BUILT |
+| website · landing pages · lead magnets | /site/[slug]/lm/[formSlug] `/site/[slug]/lm/[formSlug]` | `app/site/[slug]/lm/[formSlug]/page.tsx` | app/actions/calculator-artifacts.ts (computeCalculatorArtifactAction, optInCalculatorArtifactAction, recordCalculatorOpenAction) · app/actions/lead-magnet-capture.ts (captureFormSubmissionAction) | BUILT |
 | website · landing pages · lead magnets | /team/[slug] `/team/[slug]` | `app/team/[slug]/page.tsx` | server-side read in the page tree | BUILT |
 | website · landing pages · lead magnets | /trust `/trust` | `app/trust/page.tsx` | lib/platform/product-brand.ts | BUILT |
 | website · landing pages · lead magnets | /v/[slug] `/v/[slug]` | `app/v/[slug]/page.tsx` | app/actions/listing-video.ts (trackVideoView) · lib/kernel/agent-identity.ts | BUILT |
 | website · landing pages · lead magnets | /widget/[brokerageSlug] `/widget/[brokerageSlug]` | `app/widget/[brokerageSlug]/page.tsx` | fetch /api/widget/session · fetch /api/track/visitor | BUILT |
 | website · landing pages · lead magnets | /widget/chat `/widget/chat` | `app/widget/chat/page.tsx` | fetch /api/widget/session · fetch /api/widget/intake | BUILT |
 
-### tenant admins (222)
+### tenant admins (223)
 
 | domain | surface | page | action behind it | verdict |
 |---|---|---|---|---|
@@ -458,7 +474,7 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | compliance · approvals | Privacy Requests (DSAR) `/dashboard/admin/privacy/requests` | `app/dashboard/admin/privacy/requests/page.tsx` | app/actions/privacy/data-subject-requests.ts (listDSARQueueAction, verifyDSARIdentityAction, fulfillExportRequestAction, …) · lib/external/batchdata-seller-signals.ts | BUILT |
 | compliance · approvals | Compliance `/dashboard/compliance` | `app/dashboard/compliance/page.tsx` | app/actions/compliance-monitoring.ts (getPendingApprovals, getComplianceViolations, generateComplianceReport, …) · app/actions/transaction-compliance.ts (getAllTransactionComplianceLogs, updateComplianceCheck, batchPassComplianceChecks, …) | BUILT |
 | CRM · contacts · lifetime | Credit Pipeline `/credit-pipeline` | `app/credit-pipeline/page.tsx` | app/actions/credit-copilot.ts (advanceCreditFlow, getCreditPipelineStats, createCreditAccount, …) · app/actions/referrals/referral-actions.ts (listPartnersWithReferrals) | BUILT |
-| CRM · contacts · lifetime | ↳ from AI Briefing `/crm` | `app/crm/page.tsx` | app/actions/contacts.ts (getContacts, getContactById, createContact, …) · app/actions/buyer-financial.ts (loadFinancialProfile, upsertFinancialProfile, markFinanciallyVerified, …) | BUILT |
+| CRM · contacts · lifetime | ↳ from AI Briefing `/crm` | `app/crm/page.tsx` | app/actions/contacts.ts (getContacts, getContactById, createContact, …) · app/actions/buyer-financial.ts (loadFinancialProfile, upsertFinancialProfile, markFinanciallyVerified, …) | PARTIAL |
 | CRM · contacts · lifetime | ↳ from AI Briefing `/crm/contacts/x` | `app/crm/contacts/[contactId]/page.tsx` | app/actions/buyer-lifecycle-core.ts (getBuyerEnabledGates, checkBuyerOfferEligibility, getCurrentBuyerState, …) · app/actions/workflow-orchestrator.ts (getRunsForContact, getRunDetail, approveChainStep, …) | BUILT |
 | CRM · contacts · lifetime | Portal Clients `/crm/portal-clients` | `app/crm/portal-clients/page.tsx` | app/actions/portal-invites.ts (listMyPortalClientsAction, PortalClientRow, PendingPortalInviteRow) | BUILT |
 | CRM · contacts · lifetime | Calendar `/dashboard/calendar` | `app/dashboard/calendar/page.tsx` | lib/auth/resolve-user-role.ts | BUILT |
@@ -491,11 +507,11 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | financials · billing | Team Financials `/dashboard/financials/team` | `app/dashboard/financials/team/page.tsx` | app/actions/accounting-sync.ts (pushTeamPnlToQuickBooksAction, disconnectProvider) · app/actions/financial-kernel.ts (loadBrokerageFinancialSummaryAction) | BUILT |
 | financials · billing | ↳ from Usage Metrics `/settings/billing` | `app/settings/billing/page.tsx` | app/actions/billing.ts (getSubscriptionTiers, getCurrentSubscription, getInvoiceHistory, …) · app/actions/usage-overview.ts (loadUsageOverview) | BUILT |
 | forms | Forms Manager `/dashboard/admin/forms` | `app/dashboard/admin/forms/page.tsx` | fetch /api/forms/templates · lib/auth/resolve-user-role.ts | BUILT |
-| forms | ↳ from Required Documents `/dashboard/admin/transaction-forms` | `app/dashboard/admin/transaction-forms/page.tsx` | fetch /api/admin/transaction-forms · lib/auth/resolve-user-role.ts | BUILT |
+| forms | ↳ from Required Documents `/dashboard/admin/transaction-forms` | `app/dashboard/admin/transaction-forms/page.tsx` | fetch /api/admin/transaction-forms · fetch /api/forms/directory | BUILT |
 | forms | Document Center `/dashboard/documents` | `app/dashboard/documents/page.tsx` | app/actions/dotloop-integration.ts (createDocumentShareLink, createDocumentFolder, getDocumentFolders, …) · app/actions/ai-document-intelligence.ts (aiCompareDocuments, aiGenerateDocument, aiClassifyDocument, …) | BUILT |
 | forms | ↳ from Document Center `/dashboard/documents/downloads` | `app/dashboard/documents/downloads/page.tsx` | server-side read in the page tree | BUILT |
 | forms | ↳ from Document Center `/dashboard/documents/library` | `app/dashboard/documents/library/page.tsx` | app/actions/generated-documents.ts (getGeneratedDocumentLibrary) | BUILT |
-| forms | Forms Library `/dashboard/forms` | `app/dashboard/forms/page.tsx` | app/actions/forms-kernel.ts (loadAvailableFormsAction, resolveFormsProviderAction, prefillFormAction, …) · app/actions/contacts.ts (getContacts) | BUILT |
+| forms | Forms Library `/dashboard/forms` | `app/dashboard/forms/page.tsx` | app/actions/forms-kernel.ts (loadAvailableFormsAction, resolveFormsProviderAction, prefillFormAction, …) · app/actions/contacts.ts (getContacts) | PARTIAL |
 | forms | ↳ from Document Center `/documents/shared/x` | `app/documents/shared/[token]/page.tsx` | app/actions/dotloop-integration.ts (accessSharedDocument, SharedDocumentResult) · app/actions/document-center.ts (getGovernedDocumentUrl) | BUILT |
 | forms | ↳ from Lead Magnets `/forms/x` | `app/forms/[slug]/page.tsx` | fetch /api/forms/submit · lib/kernel/lead-magnets.ts | BUILT |
 | lead acquisition | Lead Acquisition `/dashboard/acquisition` | `app/dashboard/acquisition/page.tsx` | app/actions/recruiting-roi.ts (getRecruitingROISummary, getRecruitROIByRecruit) · app/actions/contacts.ts (createContact) | BUILT |
@@ -510,7 +526,7 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | lead acquisition | ↳ from Lead Acquisition `/home-value` | `app/home-value/page.tsx` | app/actions/home-value.ts (getAgentBySlug, getHomeValueConsentBrand, getPageConfigByAgentId, …) | BUILT |
 | lead acquisition | Lead Intelligence `/leads` | `app/leads/page.tsx` | app/actions/lead-intelligence.ts (getIntelligenceDashboardStats, getMotivatedSellers, getUnifiedLeadProfiles, …) · app/actions/lead-management.ts (getLeadsAdmin, enrichLead, rejectLead, …) | BUILT |
 | lead acquisition | ↳ from Lead Intelligence `/leads/x` | `app/leads/[leadId]/page.tsx` | lib/auth/lead-visibility.ts · lib/lead-pipeline/lead-intelligence-signals.ts | BUILT |
-| listings | ↳ from Operations `/dashboard/listings` | `app/dashboard/listings/page.tsx` | app/actions/ai-cma.ts (getCMAReports, updateCMAReport, generateAICMA, …) · app/actions/listings-kernel.ts (updateListingStatus, createListingWithSellerContact, resolveListingIdByMlsAction, …) | BUILT |
+| listings | ↳ from Operations `/dashboard/listings` | `app/dashboard/listings/page.tsx` | app/actions/ai-cma.ts (getCMAReports, updateCMAReport, generateAICMA, …) · app/actions/listings-kernel.ts (updateListingStatus, createListingWithSellerContact, resolveListingIdByMlsAction, …) | PARTIAL |
 | listings | ↳ from Operations `/dashboard/listings/x` | `app/dashboard/listings/[id]/page.tsx` | — | STATIC |
 | listings | ↳ from AI Briefing `/dashboard/listings/x/lifecycle` | `app/dashboard/listings/[id]/lifecycle/page.tsx` | app/actions/listings-kernel.ts (verifyMlsSyndicationAction, prefillListingFormAction, launchListingAction, …) · app/actions/listing-lifecycle-core.ts (getListingNextStages, validateListingTransition, getEnabledGates, …) | PARTIAL |
 | listings | ↳ from Lead Acquisition `/dashboard/listings/x/open-house` | `app/dashboard/listings/[id]/open-house/page.tsx` | app/actions/seller-open-house.ts (getOpenHouseDashboard, inviteFarmContacts, createOpenHouseEvent, …) · app/actions/open-house-automation.ts (getOpenHouseEvents, sendOpenHouseInvitations, optimizeOpenHouseTiming, …) | BUILT |
@@ -651,11 +667,12 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | website · landing pages · lead magnets | Branding `/dashboard/settings/branding` | `app/dashboard/settings/branding/page.tsx` (redirects → app/settings/branding/page.tsx) | app/actions/custom-domains.ts (getCustomDomainsPanel, addCustomDomainAction, checkCustomDomainStatusAction, …) · app/actions/settings/business-registration.ts (getBusinessRegistrationAction, saveBusinessRegistrationAction, BusinessRegistrationView) | BUILT |
 | website · landing pages · lead magnets | Widget & AI Setup `/dashboard/settings/widget` | `app/dashboard/settings/widget/page.tsx` | app/actions/settings/global-settings-actions.ts (fetchGlobalSettings, fetchWidgetScope, updateWidgetScope, …) · app/dashboard/settings/widget/actions.ts (saveWidgetSettings, saveAIIdentity) | BUILT |
 | website · landing pages · lead magnets | ↳ from Marketing Studio `/legal` | `app/legal/page.tsx` | lib/platform/product-brand.ts | BUILT |
+| website · landing pages · lead magnets | ↳ from Marketing Studio `/lm/x${c.isActive ` | `app/lm/[slug]/page.tsx` | app/actions/calculator-artifacts.ts (computeCalculatorArtifactAction, optInCalculatorArtifactAction, recordCalculatorOpenAction) · app/actions/lead-magnet-capture.ts (captureFormSubmissionAction) | BUILT |
 | website · landing pages · lead magnets | ↳ from Ad Campaigns `/pricing` | `app/pricing/page.tsx` | lib/platform/public-tiers.ts · lib/platform/product-brand.ts | BUILT |
 | website · landing pages · lead magnets | ↳ from Settings `/settings/branding` | `app/settings/branding/page.tsx` | app/actions/custom-domains.ts (getCustomDomainsPanel, addCustomDomainAction, checkCustomDomainStatusAction, …) · app/actions/settings/business-registration.ts (getBusinessRegistrationAction, saveBusinessRegistrationAction, BusinessRegistrationView) | BUILT |
 | website · landing pages · lead magnets | ↳ from Video Pages `/v/x` | `app/v/[slug]/page.tsx` | app/actions/listing-video.ts (trackVideoView) · lib/kernel/agent-identity.ts | BUILT |
 
-### teams · team leads (122)
+### teams · team leads (123)
 
 | domain | surface | page | action behind it | verdict |
 |---|---|---|---|---|
@@ -676,7 +693,7 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | compliance · approvals | ↳ from Compliance `/compliance/violations/new` | `app/compliance/violations/new/page.tsx` | fetch /api/compliance/flags | BUILT |
 | compliance · approvals | ↳ from AI Command Center `/dashboard/admin/compliance-ledger` | `app/dashboard/admin/compliance-ledger/page.tsx` | lib/kernel/compliance-ledger.ts · lib/auth/resolve-user-role.ts | BUILT |
 | compliance · approvals | Compliance `/dashboard/compliance` | `app/dashboard/compliance/page.tsx` | app/actions/compliance-monitoring.ts (getPendingApprovals, getComplianceViolations, generateComplianceReport, …) · app/actions/transaction-compliance.ts (getAllTransactionComplianceLogs, updateComplianceCheck, batchPassComplianceChecks, …) | BUILT |
-| CRM · contacts · lifetime | CRM `/crm` | `app/crm/page.tsx` | app/actions/contacts.ts (getContacts, getContactById, createContact, …) · app/actions/buyer-financial.ts (loadFinancialProfile, upsertFinancialProfile, markFinanciallyVerified, …) | BUILT |
+| CRM · contacts · lifetime | CRM `/crm` | `app/crm/page.tsx` | app/actions/contacts.ts (getContacts, getContactById, createContact, …) · app/actions/buyer-financial.ts (loadFinancialProfile, upsertFinancialProfile, markFinanciallyVerified, …) | PARTIAL |
 | CRM · contacts · lifetime | New Contact `/crm/contacts/new` | `app/crm/contacts/new/page.tsx` | app/actions/contacts.ts (createContact) | BUILT |
 | CRM · contacts · lifetime | ↳ from AI Briefing `/crm/contacts/x` | `app/crm/contacts/[contactId]/page.tsx` | app/actions/buyer-lifecycle-core.ts (getBuyerEnabledGates, checkBuyerOfferEligibility, getCurrentBuyerState, …) · app/actions/workflow-orchestrator.ts (getRunsForContact, getRunDetail, approveChainStep, …) | BUILT |
 | CRM · contacts · lifetime | Portal Clients `/crm/portal-clients` | `app/crm/portal-clients/page.tsx` | app/actions/portal-invites.ts (listMyPortalClientsAction, PortalClientRow, PendingPortalInviteRow) | BUILT |
@@ -701,7 +718,7 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | lead acquisition | ↳ from Team Dashboard `/leads` | `app/leads/page.tsx` | app/actions/lead-intelligence.ts (getIntelligenceDashboardStats, getMotivatedSellers, getUnifiedLeadProfiles, …) · app/actions/lead-management.ts (getLeadsAdmin, enrichLead, rejectLead, …) | BUILT |
 | lead acquisition | ↳ from Team Dashboard `/leads/x` | `app/leads/[leadId]/page.tsx` | lib/auth/lead-visibility.ts · lib/lead-pipeline/lead-intelligence-signals.ts | BUILT |
 | listings | ↳ from Team Dashboard `/dashboard/listing-appointments/x` | `app/dashboard/listing-appointments/[runId]/page.tsx` | app/actions/listing-appointment-copilot.ts (getListingAppointmentPrepDetail, markListingApptPrepReady, ListingApptPrepDetail) · fetch /api/workflow/listing-presentation | BUILT |
-| listings | ↳ from Team Dashboard `/dashboard/listings` | `app/dashboard/listings/page.tsx` | app/actions/ai-cma.ts (getCMAReports, updateCMAReport, generateAICMA, …) · app/actions/listings-kernel.ts (updateListingStatus, createListingWithSellerContact, resolveListingIdByMlsAction, …) | BUILT |
+| listings | ↳ from Team Dashboard `/dashboard/listings` | `app/dashboard/listings/page.tsx` | app/actions/ai-cma.ts (getCMAReports, updateCMAReport, generateAICMA, …) · app/actions/listings-kernel.ts (updateListingStatus, createListingWithSellerContact, resolveListingIdByMlsAction, …) | PARTIAL |
 | listings | ↳ from Team Dashboard `/dashboard/listings/presentations/x` | `app/dashboard/listings/presentations/[id]/page.tsx` | server-side read in the page tree | BUILT |
 | listings | ↳ from CRM `/dashboard/listings/x` | `app/dashboard/listings/[id]/page.tsx` | — | STATIC |
 | listings | ↳ from AI Briefing `/dashboard/listings/x/lifecycle` | `app/dashboard/listings/[id]/lifecycle/page.tsx` | app/actions/listings-kernel.ts (verifyMlsSyndicationAction, prefillListingFormAction, launchListingAction, …) · app/actions/listing-lifecycle-core.ts (getListingNextStages, validateListingTransition, getEnabledGates, …) | PARTIAL |
@@ -779,10 +796,11 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | website · landing pages · lead magnets | SEO / GEO `/dashboard/marketing/seo` | `app/dashboard/marketing/seo/page.tsx` | app/actions/blog.ts (addSeoKeyword, toggleKeywordActive, discoverKeywordsAI, …) · app/actions/marketing-intelligence.ts (getTrendingKeywords, getCompetitorHighPerformers, getSearchDemandIntelligence, …) | BUILT |
 | website · landing pages · lead magnets | Video Pages `/dashboard/marketing/video-pages` | `app/dashboard/marketing/video-pages/page.tsx` | app/actions/video-landing.ts (listPublishableRenders, publishRenderToWeb, unpublishRenderFromWeb, …) | BUILT |
 | website · landing pages · lead magnets | ↳ from Marketing Studio `/legal` | `app/legal/page.tsx` | lib/platform/product-brand.ts | BUILT |
+| website · landing pages · lead magnets | ↳ from Marketing Studio `/lm/x${c.isActive ` | `app/lm/[slug]/page.tsx` | app/actions/calculator-artifacts.ts (computeCalculatorArtifactAction, optInCalculatorArtifactAction, recordCalculatorOpenAction) · app/actions/lead-magnet-capture.ts (captureFormSubmissionAction) | BUILT |
 | website · landing pages · lead magnets | ↳ from Ad Campaigns `/pricing` | `app/pricing/page.tsx` | lib/platform/public-tiers.ts · lib/platform/product-brand.ts | BUILT |
 | website · landing pages · lead magnets | ↳ from Video Pages `/v/x` | `app/v/[slug]/page.tsx` | app/actions/listing-video.ts (trackVideoView) · lib/kernel/agent-identity.ts | BUILT |
 
-### agents (177)
+### agents (178)
 
 | domain | surface | page | action behind it | verdict |
 |---|---|---|---|---|
@@ -803,7 +821,7 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | compliance · approvals | Approvals `/approvals` | `app/approvals/page.tsx` | fetch /api/approvals/pending · fetch /api/approvals/approve | BUILT |
 | compliance · approvals | ↳ from AI Command Center `/dashboard/admin/compliance-ledger` | `app/dashboard/admin/compliance-ledger/page.tsx` | lib/kernel/compliance-ledger.ts · lib/auth/resolve-user-role.ts | BUILT |
 | CRM · contacts · lifetime | Credit Pipeline `/credit-pipeline` | `app/credit-pipeline/page.tsx` | app/actions/credit-copilot.ts (advanceCreditFlow, getCreditPipelineStats, createCreditAccount, …) · app/actions/referrals/referral-actions.ts (listPartnersWithReferrals) | BUILT |
-| CRM · contacts · lifetime | My Contacts `/crm` | `app/crm/page.tsx` | app/actions/contacts.ts (getContacts, getContactById, createContact, …) · app/actions/buyer-financial.ts (loadFinancialProfile, upsertFinancialProfile, markFinanciallyVerified, …) | BUILT |
+| CRM · contacts · lifetime | My Contacts `/crm` | `app/crm/page.tsx` | app/actions/contacts.ts (getContacts, getContactById, createContact, …) · app/actions/buyer-financial.ts (loadFinancialProfile, upsertFinancialProfile, markFinanciallyVerified, …) | PARTIAL |
 | CRM · contacts · lifetime | Create Contact `/crm/contacts/new` | `app/crm/contacts/new/page.tsx` | app/actions/contacts.ts (createContact) | BUILT |
 | CRM · contacts · lifetime | ↳ from AI Briefing `/crm/contacts/x` | `app/crm/contacts/[contactId]/page.tsx` | app/actions/buyer-lifecycle-core.ts (getBuyerEnabledGates, checkBuyerOfferEligibility, getCurrentBuyerState, …) · app/actions/workflow-orchestrator.ts (getRunsForContact, getRunDetail, approveChainStep, …) | BUILT |
 | CRM · contacts · lifetime | Portal Clients `/crm/portal-clients` | `app/crm/portal-clients/page.tsx` | app/actions/portal-invites.ts (listMyPortalClientsAction, PortalClientRow, PendingPortalInviteRow) | BUILT |
@@ -832,7 +850,7 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | forms | Contract Review `/dashboard/documents/contract-review` | `app/dashboard/documents/contract-review/page.tsx` | app/actions/ai-contract-review.ts (reviewTransactionDocuments, generateDocumentChecklist, extractContractTerms, …) · app/actions/ai-document-intelligence.ts (aiAnalyzeContract) | BUILT |
 | forms | ↳ from Document Center `/dashboard/documents/downloads` | `app/dashboard/documents/downloads/page.tsx` | server-side read in the page tree | BUILT |
 | forms | ↳ from Document Center `/dashboard/documents/library` | `app/dashboard/documents/library/page.tsx` | app/actions/generated-documents.ts (getGeneratedDocumentLibrary) | BUILT |
-| forms | Forms Library `/dashboard/forms` | `app/dashboard/forms/page.tsx` | app/actions/forms-kernel.ts (loadAvailableFormsAction, resolveFormsProviderAction, prefillFormAction, …) · app/actions/contacts.ts (getContacts) | BUILT |
+| forms | Forms Library `/dashboard/forms` | `app/dashboard/forms/page.tsx` | app/actions/forms-kernel.ts (loadAvailableFormsAction, resolveFormsProviderAction, prefillFormAction, …) · app/actions/contacts.ts (getContacts) | PARTIAL |
 | forms | ↳ from Document Center `/documents/shared/x` | `app/documents/shared/[token]/page.tsx` | app/actions/dotloop-integration.ts (accessSharedDocument, SharedDocumentResult) · app/actions/document-center.ts (getGovernedDocumentUrl) | BUILT |
 | forms | ↳ from Lead Magnets `/forms/x` | `app/forms/[slug]/page.tsx` | fetch /api/forms/submit · lib/kernel/lead-magnets.ts | BUILT |
 | forms | ↳ from My Contacts `/portal/x/documents` | `app/portal/[contactId]/documents/page.tsx` | app/actions/documents.ts (analyzeDocument, askDocumentQuestion, getEducationalOverlay) · lib/kernel/portal.ts | BUILT |
@@ -844,7 +862,7 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | lead acquisition | ↳ from Dashboard `/leads/x` | `app/leads/[leadId]/page.tsx` | lib/auth/lead-visibility.ts · lib/lead-pipeline/lead-intelligence-signals.ts | BUILT |
 | lead acquisition | ↳ from Open Houses `/open-house/x/register` | `app/open-house/[eventId]/register/page.tsx` | fetch /api/open-house/register · lib/open-house/event-attendance.ts | BUILT |
 | listings | ↳ from Dashboard `/dashboard/listing-appointments/x` | `app/dashboard/listing-appointments/[runId]/page.tsx` | app/actions/listing-appointment-copilot.ts (getListingAppointmentPrepDetail, markListingApptPrepReady, ListingApptPrepDetail) · fetch /api/workflow/listing-presentation | BUILT |
-| listings | My Listings `/dashboard/listings` | `app/dashboard/listings/page.tsx` | app/actions/ai-cma.ts (getCMAReports, updateCMAReport, generateAICMA, …) · app/actions/listings-kernel.ts (updateListingStatus, createListingWithSellerContact, resolveListingIdByMlsAction, …) | BUILT |
+| listings | My Listings `/dashboard/listings` | `app/dashboard/listings/page.tsx` | app/actions/ai-cma.ts (getCMAReports, updateCMAReport, generateAICMA, …) · app/actions/listings-kernel.ts (updateListingStatus, createListingWithSellerContact, resolveListingIdByMlsAction, …) | PARTIAL |
 | listings | ↳ from My Listings `/dashboard/listings/ai-pricing` | `app/dashboard/listings/ai-pricing/page.tsx` | server-side read in the page tree | BUILT |
 | listings | ↳ from My Listings `/dashboard/listings/analytics` | `app/dashboard/listings/analytics/page.tsx` | app/actions/listing-lifecycle-core.ts (getBrokerageLifecycleStats, getBrokerageStageTimings) | BUILT |
 | listings | Listing Health `/dashboard/listings/health` | `app/dashboard/listings/health/page.tsx` | app/dashboard/listings/health/actions.ts (loadListingHealthBoard, resolveIntervention, draftSellerActionEmail, …) | BUILT |
@@ -853,7 +871,7 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | listings | ↳ from Operations `/dashboard/listings/x` | `app/dashboard/listings/[id]/page.tsx` | — | STATIC |
 | listings | ↳ from AI Briefing `/dashboard/listings/x/lifecycle` | `app/dashboard/listings/[id]/lifecycle/page.tsx` | app/actions/listings-kernel.ts (verifyMlsSyndicationAction, prefillListingFormAction, launchListingAction, …) · app/actions/listing-lifecycle-core.ts (getListingNextStages, validateListingTransition, getEnabledGates, …) | PARTIAL |
 | listings | Open Houses `/dashboard/open-houses` | `app/dashboard/open-houses/page.tsx` | app/actions/open-house.ts (getOpenHouses, createOpenHouse, getOpenHouseAttendees, …) · app/actions/open-house-kernel.ts (resolveOrCreateOpenHouseContactAction, createOpenHouseAttendeeFromContactAction, attachOpenHouseSourceAttributionAction, …) | BUILT |
-| marketing · media · communications · AI | AI Toolkit `/dashboard/ai-tools` | `app/dashboard/ai-tools/page.tsx` | app/actions/ai-tools-hub.ts (executeAITool, getUserFavorites, getAIToolUsageStats, …) · app/actions/calculators.ts (compareNeighborhoods, analyzeInvestmentProperty, calculateRentVsBuy, …) | BUILT |
+| marketing · media · communications · AI | AI Toolkit `/dashboard/ai-tools` | `app/dashboard/ai-tools/page.tsx` | app/actions/ai-tools-hub.ts (executeAITool, getUserFavorites, getAIToolUsageStats, …) · app/actions/calculators.ts (compareNeighborhoods, analyzeInvestmentProperty, runCalculatorTool, …) | BUILT |
 | marketing · media · communications · AI | Ad Campaigns `/dashboard/campaigns/ads` | `app/dashboard/campaigns/ads/page.tsx` | app/actions/chatgpt-ads.ts (stageChatgptCampaignAction, markChatgptCampaignLaunchedAction, importChatgptPerformanceAction, …) · app/actions/ctv-ads.ts (stageCtvCampaignAction, markCtvCampaignLaunchedAction, dispatchCtvCampaignAction) | BUILT |
 | marketing · media · communications · AI | Competitive Intel `/dashboard/campaigns/competitive` | `app/dashboard/campaigns/competitive/page.tsx` | lib/ads/ad-monitor.ts · lib/competitive-intel/brand-listening.ts | BUILT |
 | marketing · media · communications · AI | Direct Mail `/dashboard/campaigns/mail` | `app/dashboard/campaigns/mail/page.tsx` | app/actions/direct-mail.ts (getMailCampaigns, getRecipients, getTrackingRecords, …) · app/actions/ai-direct-mail.ts (submitToPrintFulfillment, validateMailingList, trackCampaignResponse, …) | PARTIAL |
@@ -924,7 +942,7 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | portals · dashboards · login · onboarding | ↳ from Dashboard `/portal/x` | `app/portal/[contactId]/page.tsx` | app/actions/portal-lifetime.ts (getLifetimeContext, submitReferral, submitClientTestimonial, …) · app/actions/portal-seller.ts (getMarketPosition, getSellerDashboardData, getSellerVendors, …) | BUILT |
 | properties | ↳ from My Listings `/dashboard/cma/x` | `app/dashboard/cma/[cmaId]/page.tsx` | app/actions/seller-cma.ts (loadCMAReportById, triggerAICompScoring) · app/actions/appraisal-defense.ts (buildAppraisalDefensePackage, AppraisalDefensePackage) | BUILT |
 | properties | Market Insights `/dashboard/market-insights` | `app/dashboard/market-insights/page.tsx` | app/actions/market-insight-actions.ts (getAgentMarketSources, getCurrentInsight, getCurrentMarketData, …) · app/actions/ai-predictions.ts (predictMarketShift) | BUILT |
-| settings · people · support | Calculators `/dashboard/calculators` | `app/dashboard/calculators/page.tsx` | app/actions/calculators.ts (calculateSellerNet, compareMortgageScenarios, calculateRentVsBuy, …) | BUILT |
+| settings · people · support | Calculators `/dashboard/calculators` | `app/dashboard/calculators/page.tsx` | app/actions/calculators.ts (calculateSellerNet, compareMortgageScenarios, saveCalculation, …) | BUILT |
 | settings · people · support | Help & Support `/dashboard/help` | `app/dashboard/help/page.tsx` | app/actions/support.ts (searchHelp, listMyTickets, canRaisePlatformTicket, …) | BUILT |
 | settings · people · support | My Profile `/dashboard/profile` | `app/dashboard/profile/page.tsx` | app/actions/user-profile.ts (getMyProfile, getMyAgentIdentity, saveAgentEmailSignature, …) · app/actions/agent-settings.ts (getAgentSettings, updateAgentSettings) | BUILT |
 | settings · people · support | ↳ from Behavioral Patterns `/dashboard/settings` | `app/dashboard/settings/page.tsx` | app/actions/compliance-phrases.ts (listCompliancePhrases, addCompliancePhrase, updateCompliancePhrase, …) · app/actions/admin/lead-routing-settings.ts (getDefaultAssignmentMethod, setDefaultAssignmentMethod, getMailboxOwnerPreference, …) | BUILT |
@@ -961,6 +979,7 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | website · landing pages · lead magnets | ↳ from Embeds `/dashboard/settings/embeds/x/analytics` | `app/dashboard/settings/embeds/[widgetId]/analytics/page.tsx` | app/actions/embed-widgets.ts (getEmbedAnalytics, listMyEmbeds, EmbedAnalytics) | BUILT |
 | website · landing pages · lead magnets | Widget & AI Setup `/dashboard/settings/widget` | `app/dashboard/settings/widget/page.tsx` | app/actions/settings/global-settings-actions.ts (fetchGlobalSettings, fetchWidgetScope, updateWidgetScope, …) · app/dashboard/settings/widget/actions.ts (saveWidgetSettings, saveAIIdentity) | BUILT |
 | website · landing pages · lead magnets | ↳ from Marketing Studio `/legal` | `app/legal/page.tsx` | lib/platform/product-brand.ts | BUILT |
+| website · landing pages · lead magnets | ↳ from Marketing Studio `/lm/x${c.isActive ` | `app/lm/[slug]/page.tsx` | app/actions/calculator-artifacts.ts (computeCalculatorArtifactAction, optInCalculatorArtifactAction, recordCalculatorOpenAction) · app/actions/lead-magnet-capture.ts (captureFormSubmissionAction) | BUILT |
 | website · landing pages · lead magnets | ↳ from Ad Campaigns `/pricing` | `app/pricing/page.tsx` | lib/platform/public-tiers.ts · lib/platform/product-brand.ts | BUILT |
 | website · landing pages · lead magnets | ↳ from Video Pages `/v/x` | `app/v/[slug]/page.tsx` | app/actions/listing-video.ts (trackVideoView) · lib/kernel/agent-identity.ts | BUILT |
 
@@ -969,7 +988,7 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | domain | surface | page | action behind it | verdict |
 |---|---|---|---|---|
 | (journey) agents & vendors | ↳ from Twin Studio `/dashboard/agent/ai-identity` | `app/dashboard/agent/ai-identity/page.tsx` | app/actions/ai-identity.ts (getAIIdentityProfile, getParentAIIdentityProfile, saveAIIdentityProfile, …) · lib/auth/resolve-user-role.ts | BUILT |
-| CRM · contacts · lifetime | ↳ from AI-ISA Console `/crm` | `app/crm/page.tsx` | app/actions/contacts.ts (getContacts, getContactById, createContact, …) · app/actions/buyer-financial.ts (loadFinancialProfile, upsertFinancialProfile, markFinanciallyVerified, …) | BUILT |
+| CRM · contacts · lifetime | ↳ from AI-ISA Console `/crm` | `app/crm/page.tsx` | app/actions/contacts.ts (getContacts, getContactById, createContact, …) · app/actions/buyer-financial.ts (loadFinancialProfile, upsertFinancialProfile, markFinanciallyVerified, …) | PARTIAL |
 | CRM · contacts · lifetime | ↳ from AI-ISA Console `/crm/contacts/x` | `app/crm/contacts/[contactId]/page.tsx` | app/actions/buyer-lifecycle-core.ts (getBuyerEnabledGates, checkBuyerOfferEligibility, getCurrentBuyerState, …) · app/actions/workflow-orchestrator.ts (getRunsForContact, getRunDetail, approveChainStep, …) | BUILT |
 | dedup · enrichment · behavioural intent | Movement Signals `/dashboard/intelligence/movement-signals` | `app/dashboard/intelligence/movement-signals/page.tsx` | app/actions/movement-signals.ts (listMovementSignalsAction, markMovementSignalOutcomeAction, recordStatedDateAction) | BUILT |
 | education | ↳ from Scripts `/dashboard/coaching/practice` | `app/dashboard/coaching/practice/page.tsx` | app/actions/objection-training.ts (listPracticeSessions, startObjectionPracticeSession, submitPracticeTurn, …) · fetch /api/internal/voice-tts | BUILT |
@@ -1001,13 +1020,13 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | settings · people · support | Settings `/dashboard/settings/general` | `app/dashboard/settings/general/page.tsx` (redirects → app/settings/general/page.tsx) | app/actions/settings/brokerage-identity.ts (getBrokerageIdentity, BrokerageIdentity, updateBrokerageIdentity) · app/actions/settings/brokerage-affiliation.ts (getBrokerageAffiliationPanelAction, declareBrokerageAffiliationAction, AffiliationPanel) | BUILT |
 | settings · people · support | Twin Studio `/dashboard/settings/twin-studio` | `app/dashboard/settings/twin-studio/page.tsx` | app/actions/twin-studio.ts (listMyTwins, listPendingApprovals, setDefaultTwin, …) · app/actions/settings/brokerage-column-settings.ts (getLiveFaceProviderSettingAction, saveLiveFaceProviderOrderAction) | BUILT |
 
-### transaction coordinators (42)
+### transaction coordinators (43)
 
 | domain | surface | page | action behind it | verdict |
 |---|---|---|---|---|
 | compliance · approvals | Violations `/compliance/violations` | `app/compliance/violations/page.tsx` | app/actions/compliance-monitoring.ts (getComplianceViolations) · fetch /api/compliance/flags | BUILT |
 | compliance · approvals | ↳ from Violations `/dashboard/compliance` | `app/dashboard/compliance/page.tsx` | app/actions/compliance-monitoring.ts (getPendingApprovals, getComplianceViolations, generateComplianceReport, …) · app/actions/transaction-compliance.ts (getAllTransactionComplianceLogs, updateComplianceCheck, batchPassComplianceChecks, …) | BUILT |
-| compliance · approvals | Compliance Queue `/dashboard/compliance/queue` | `app/dashboard/compliance/queue/page.tsx` | app/actions/compliance/dashboard.ts (getComplianceDashboard, resolveComplianceFlagAction) | BUILT |
+| compliance · approvals | Compliance Queue `/dashboard/compliance/queue` | `app/dashboard/compliance/queue/page.tsx` | app/actions/compliance/representation-review.ts (listRepresentationReviewQueueAction, getRepresentationReviewAction, recordRepresentationReview, …) · app/actions/compliance/dashboard.ts (getComplianceDashboard, resolveComplianceFlagAction) | BUILT |
 | CRM · contacts · lifetime | ↳ from Review Queue `/crm/contacts/x` | `app/crm/contacts/[contactId]/page.tsx` | app/actions/buyer-lifecycle-core.ts (getBuyerEnabledGates, checkBuyerOfferEligibility, getCurrentBuyerState, …) · app/actions/workflow-orchestrator.ts (getRunsForContact, getRunDetail, approveChainStep, …) | BUILT |
 | CRM · contacts · lifetime | ↳ from Compliance Queue `/crm/contacts/x/offers/x` | `app/crm/contacts/[contactId]/offers/[offerId]/page.tsx` | app/actions/negotiation-strategy.ts (generateAndPersistNegotiationStrategyAction, getNegotiationStrategyForOfferAction, acceptStrategyAction, …) · app/actions/negotiation-copilot.ts (negotiationCoPilot, sendDraftAsCounterResponse, NegotiationCoPilotResult) | BUILT |
 | education | ↳ from Coordinator Command `/academy/module/x` | `app/academy/module/[id]/page.tsx` | app/actions/academy-learning.ts (getModuleForLearner, markModuleViewed, submitModuleQuiz, …) | BUILT |
@@ -1046,9 +1065,10 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | website · landing pages · lead magnets | SEO / GEO `/dashboard/marketing/seo` | `app/dashboard/marketing/seo/page.tsx` | app/actions/blog.ts (addSeoKeyword, toggleKeywordActive, discoverKeywordsAI, …) · app/actions/marketing-intelligence.ts (getTrendingKeywords, getCompetitorHighPerformers, getSearchDemandIntelligence, …) | BUILT |
 | website · landing pages · lead magnets | Video Pages `/dashboard/marketing/video-pages` | `app/dashboard/marketing/video-pages/page.tsx` | app/actions/video-landing.ts (listPublishableRenders, publishRenderToWeb, unpublishRenderFromWeb, …) | BUILT |
 | website · landing pages · lead magnets | ↳ from Marketing Studio `/legal` | `app/legal/page.tsx` | lib/platform/product-brand.ts | BUILT |
+| website · landing pages · lead magnets | ↳ from Marketing Studio `/lm/x${c.isActive ` | `app/lm/[slug]/page.tsx` | app/actions/calculator-artifacts.ts (computeCalculatorArtifactAction, optInCalculatorArtifactAction, recordCalculatorOpenAction) · app/actions/lead-magnet-capture.ts (captureFormSubmissionAction) | BUILT |
 | website · landing pages · lead magnets | ↳ from Video Pages `/v/x` | `app/v/[slug]/page.tsx` | app/actions/listing-video.ts (trackVideoView) · lib/kernel/agent-identity.ts | BUILT |
 
-### compliance officers (53)
+### compliance officers (54)
 
 | domain | surface | page | action behind it | verdict |
 |---|---|---|---|---|
@@ -1064,7 +1084,7 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | compliance · approvals | ↳ from Policies `/dashboard/admin/compliance/tcpa` | `app/dashboard/admin/compliance/tcpa/page.tsx` | app/actions/tcpa-compliance.ts (recordContactConsentAction) · lib/auth/resolve-user-role.ts | PARTIAL |
 | compliance · approvals | ↳ from Policies `/dashboard/admin/privacy/requests` | `app/dashboard/admin/privacy/requests/page.tsx` | app/actions/privacy/data-subject-requests.ts (listDSARQueueAction, verifyDSARIdentityAction, fulfillExportRequestAction, …) · lib/external/batchdata-seller-signals.ts | BUILT |
 | compliance · approvals | Compliance Command `/dashboard/compliance` | `app/dashboard/compliance/page.tsx` | app/actions/compliance-monitoring.ts (getPendingApprovals, getComplianceViolations, generateComplianceReport, …) · app/actions/transaction-compliance.ts (getAllTransactionComplianceLogs, updateComplianceCheck, batchPassComplianceChecks, …) | BUILT |
-| compliance · approvals | Compliance Queue `/dashboard/compliance/queue` | `app/dashboard/compliance/queue/page.tsx` | app/actions/compliance/dashboard.ts (getComplianceDashboard, resolveComplianceFlagAction) | BUILT |
+| compliance · approvals | Compliance Queue `/dashboard/compliance/queue` | `app/dashboard/compliance/queue/page.tsx` | app/actions/compliance/representation-review.ts (listRepresentationReviewQueueAction, getRepresentationReviewAction, recordRepresentationReview, …) · app/actions/compliance/dashboard.ts (getComplianceDashboard, resolveComplianceFlagAction) | BUILT |
 | CRM · contacts · lifetime | ↳ from Review Queue `/crm/contacts/x` | `app/crm/contacts/[contactId]/page.tsx` | app/actions/buyer-lifecycle-core.ts (getBuyerEnabledGates, checkBuyerOfferEligibility, getCurrentBuyerState, …) · app/actions/workflow-orchestrator.ts (getRunsForContact, getRunDetail, approveChainStep, …) | BUILT |
 | CRM · contacts · lifetime | ↳ from Compliance Queue `/crm/contacts/x/offers/x` | `app/crm/contacts/[contactId]/offers/[offerId]/page.tsx` | app/actions/negotiation-strategy.ts (generateAndPersistNegotiationStrategyAction, getNegotiationStrategyForOfferAction, acceptStrategyAction, …) · app/actions/negotiation-copilot.ts (negotiationCoPilot, sendDraftAsCounterResponse, NegotiationCoPilotResult) | BUILT |
 | education | ↳ from Compliance Command `/academy/module/x` | `app/academy/module/[id]/page.tsx` | app/actions/academy-learning.ts (getModuleForLearner, markModuleViewed, submitModuleQuiz, …) | BUILT |
@@ -1104,15 +1124,16 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | website · landing pages · lead magnets | SEO / GEO `/dashboard/marketing/seo` | `app/dashboard/marketing/seo/page.tsx` | app/actions/blog.ts (addSeoKeyword, toggleKeywordActive, discoverKeywordsAI, …) · app/actions/marketing-intelligence.ts (getTrendingKeywords, getCompetitorHighPerformers, getSearchDemandIntelligence, …) | BUILT |
 | website · landing pages · lead magnets | Video Pages `/dashboard/marketing/video-pages` | `app/dashboard/marketing/video-pages/page.tsx` | app/actions/video-landing.ts (listPublishableRenders, publishRenderToWeb, unpublishRenderFromWeb, …) | BUILT |
 | website · landing pages · lead magnets | ↳ from Marketing Studio `/legal` | `app/legal/page.tsx` | lib/platform/product-brand.ts | BUILT |
+| website · landing pages · lead magnets | ↳ from Marketing Studio `/lm/x${c.isActive ` | `app/lm/[slug]/page.tsx` | app/actions/calculator-artifacts.ts (computeCalculatorArtifactAction, optInCalculatorArtifactAction, recordCalculatorOpenAction) · app/actions/lead-magnet-capture.ts (captureFormSubmissionAction) | BUILT |
 | website · landing pages · lead magnets | ↳ from Video Pages `/v/x` | `app/v/[slug]/page.tsx` | app/actions/listing-video.ts (trackVideoView) · lib/kernel/agent-identity.ts | BUILT |
 
-### buyers · sellers · lifetime contacts (32)
+### buyers · sellers · lifetime contacts (33)
 
 | domain | surface | page | action behind it | verdict |
 |---|---|---|---|---|
 | agent referral · recruiting · agreements · gamification | portal ·/referrals `/portal/[contactId]/referrals` | `app/portal/[contactId]/referrals/page.tsx` | app/actions/portal-lifetime.ts (getReferralHistory, submitReferral) · lib/kernel/portal.ts | BUILT |
 | education | portal ·/learn `/portal/[contactId]/learn` | `app/portal/[contactId]/learn/page.tsx` | app/actions/portal-education.ts (getLessonFeed, notifyPortalEducationCompleted, markLessonRead, …) · app/actions/ai-client-portal.ts (markResourceCompleted) | BUILT |
-| education | portal ·/resources `/portal/[contactId]/resources` | `app/portal/[contactId]/resources/page.tsx` | app/actions/calculators.ts (getCalculatorHistory, estimateMovingCosts, saveCalculatorResult) · app/actions/portal-lifetime.ts (getVendorResources) | BUILT |
+| education | portal ·/resources `/portal/[contactId]/resources` | `app/portal/[contactId]/resources/page.tsx` | app/actions/calculators.ts (getCalculatorHistory, saveCalculatorResult) · app/actions/portal-lifetime.ts (getVendorResources) | BUILT |
 | financials · billing | portal ·/invoices `/portal/[contactId]/invoices` | `app/portal/[contactId]/invoices/page.tsx` | app/actions/vendor-payments.ts (confirmVendorInvoiceCheckout, startVendorInvoiceCheckout) · lib/connections/vendor-stripe.ts | BUILT |
 | forms | portal ·/documents `/portal/[contactId]/documents` | `app/portal/[contactId]/documents/page.tsx` | app/actions/documents.ts (analyzeDocument, askDocumentQuestion, getEducationalOverlay) · lib/kernel/portal.ts | BUILT |
 | forms | portal ·/documents/[documentId] `/portal/[contactId]/documents/[documentId]` | `app/portal/[contactId]/documents/[documentId]/page.tsx` | app/actions/documents.ts (getDocumentWithAnalysis, getEducationalOverlay, checkStateCompliance) · app/actions/portal-document-requests.ts (loadActiveSignaturePacket, ActiveSignaturePacket) | BUILT |
@@ -1121,6 +1142,7 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | portals · dashboards · login · onboarding | portal · `/portal/[contactId]` | `app/portal/[contactId]/page.tsx` | app/actions/portal-lifetime.ts (getLifetimeContext, submitReferral, submitClientTestimonial, …) · app/actions/portal-seller.ts (getMarketPosition, getSellerDashboardData, getSellerVendors, …) | BUILT |
 | portals · dashboards · login · onboarding | portal ·/alerts/[alertId] `/portal/[contactId]/alerts/[alertId]` | `app/portal/[contactId]/alerts/[alertId]/page.tsx` | app/actions/property-alerts/alert-actions.ts (getAlertResults, markResultViewed) · lib/kernel/portal.ts | BUILT |
 | portals · dashboards · login · onboarding | portal ·/assistant `/portal/[contactId]/assistant` | `app/portal/[contactId]/assistant/page.tsx` | app/actions/buyer-execution.ts (handleBuyerVoiceAssistant) · fetch /api/portal/ai-assistant | BUILT |
+| portals · dashboards · login · onboarding | portal ·/calculators `/portal/[contactId]/calculators` | `app/portal/[contactId]/calculators/page.tsx` | app/actions/calculator-artifacts.ts (computeCalculatorArtifactAction, optInCalculatorArtifactAction, recordCalculatorOpenAction) · lib/kernel/portal.ts | BUILT |
 | portals · dashboards · login · onboarding | portal ·/calendar `/portal/[contactId]/calendar` | `app/portal/[contactId]/calendar/page.tsx` | lib/kernel/portal.ts | BUILT |
 | portals · dashboards · login · onboarding | portal ·/connections `/portal/[contactId]/connections` | `app/portal/[contactId]/connections/page.tsx` | app/actions/connections/connection-center.ts (getConnectionCenter, connectApiKeyProvider, disconnectProvider, …) · app/actions/settings/global-settings-actions.ts (getByoCarrierPolicy, setByoCarrierPolicy) | BUILT |
 | portals · dashboards · login · onboarding | portal ·/dashboard/[persona] `/portal/[contactId]/dashboard/[persona]` | `app/portal/[contactId]/dashboard/[persona]/page.tsx` | — | STATIC |

@@ -5,7 +5,7 @@
 
 ## 1. Totals (numerator / denominator)
 
-Rows: **3011** — working **2880** · partial **0** · missing **59** · owner-held **72**. Consequential rows: 2645.
+Rows: **3023** — working **2892** · partial **0** · missing **59** · owner-held **72**. Consequential rows: 2657.
 
 | population | rows / scanned |
 |---|---|
@@ -16,25 +16,25 @@ Rows: **3011** — working **2880** · partial **0** · missing **59** · owner-
 | capability | 11 |
 | assistant_tool | 59 |
 | provider_egress | 6 |
-| http | 123 |
+| http | 125 |
 | webhook | 28 |
-| server_action | 1868 |
-| server_action (read-only, not rows) | 1163 |
+| server_action | 1878 |
+| server_action (read-only, not rows) | 1170 |
 | capability (catalog-only, not callable — not rows) | 48 |
-| use-server modules scanned | 666 |
-| runtime files scanned | 5430 |
+| use-server modules scanned | 669 |
+| runtime files scanned | 5466 |
 
 | trigger kind | rows | working | partial | missing |
 |---|---|---|---|---|
 | assistant_tool | 59 | 59 | 0 | 0 |
 | capability | 11 | 11 | 0 | 0 |
 | cron | 219 | 219 | 0 | 0 |
-| http | 123 | 117 | 0 | 5 |
+| http | 125 | 119 | 0 | 5 |
 | kernel_event | 361 | 269 | 0 | 54 |
 | manager_signal | 326 | 326 | 0 | 0 |
 | orchestrator_event | 10 | 8 | 0 | 0 |
 | provider_egress | 6 | 6 | 0 | 0 |
-| server_action | 1868 | 1837 | 0 | 0 |
+| server_action | 1878 | 1847 | 0 | 0 |
 | webhook | 28 | 28 | 0 | 0 |
 
 Missing links across all rows: worker 82 · owner 24 · trigger 15 · evidence 2.
@@ -44,8 +44,8 @@ Missing links across all rows: worker 82 · owner 24 · trigger 15 · evidence 2
 | contract step (A1) | existing component (live code) |
 |---|---|
 | OBSERVE (triggers) | `dispatchDueCrons` @ lib/kernel/cron-dispatch.ts:429 · `emitKernelEvent` @ lib/kernel/emit.ts:155 · `publishManagerSignal` @ lib/kernel/manager-signals.ts:71 · `runIngressReconciliation` @ lib/kernel/ingress-reconciliation.ts:288 |
-| IDENTIFY ACTOR / TENANT | `resolveTableManager` @ lib/kernel/manager-registry.ts:3507 · `authorityAllows` @ lib/voice/tool-registry.ts:928 · `requireLenderVendorActor` @ lib/kernel/portal-auth.ts:64 |
-| BUILD TYPED ACTION · SELECT MANAGER | `resolveCronManager` @ lib/kernel/manager-registry.ts:3492 · `requestDelegation` @ lib/kernel/manager-delegation.ts:408 · `capabilityOwner` @ lib/agentic-os/capability-ownership.ts:117 |
+| IDENTIFY ACTOR / TENANT | `resolveTableManager` @ lib/kernel/manager-registry.ts:3515 · `authorityAllows` @ lib/voice/tool-registry.ts:928 · `requireLenderVendorActor` @ lib/kernel/portal-auth.ts:64 |
+| BUILD TYPED ACTION · SELECT MANAGER | `resolveCronManager` @ lib/kernel/manager-registry.ts:3500 · `requestDelegation` @ lib/kernel/manager-delegation.ts:408 · `capabilityOwner` @ lib/agentic-os/capability-ownership.ts:117 |
 | CHECK AUTHORITY / POLICY / BUDGET | `isToolAllowedAtAuthority` @ lib/ai-isa/persona-tool-policy.ts:616 · `autonomyDecision` @ lib/managers/autonomy-gate.ts:91 · `approverFor` @ lib/kernel/approval-authority.ts:118 |
 | COORDINATE OR HOLD | `arbitratePlannedTouch` @ lib/ai-isa/followup-arbiter.ts:1878 · `evaluateApprovalSla` @ lib/kernel/approval-sla.ts:17 |
 | EXECUTE THROUGH ONE WRITER / EGRESS | `dispatchEmail` @ lib/providers/dispatch.ts:394 · `dispatchSms` @ lib/providers/dispatch.ts:395 · `callConnector` @ lib/agentic-os/connector-gateway.ts:246 |
@@ -56,62 +56,62 @@ Missing links across all rows: worker 82 · owner 24 · trigger 15 · evidence 2
 
 | plane | rows | working | partial | missing |
 |---|---|---|---|---|
-| P1 platform · billing · metering | 733 | 716 | 0 | 4 |
+| P1 platform · billing · metering | 734 | 717 | 0 | 4 |
 | P2 tenant provisioning · seats · offices · websites | 334 | 323 | 0 | 3 |
-| P3 command center · NL / voice · tasks · approvals | 663 | 645 | 0 | 14 |
-| P4 raw acquisition · RawData · Raw Lead · Lead | 507 | 487 | 0 | 17 |
-| P5 prospects · contacts · portal · conversation | 897 | 875 | 0 | 7 |
-| P6 marketing · content · channels · ads | 950 | 935 | 0 | 2 |
-| P7 listings · shopping agent · MLS / IDX | 545 | 539 | 0 | 2 |
-| P8 offers · transactions · documents · closing | 930 | 914 | 0 | 1 |
-| P9 commission · settlement · brokerage finance | 446 | 436 | 0 | 6 |
-| P10 recruiting · gamification · support · ops | 972 | 941 | 0 | 8 |
+| P3 command center · NL / voice · tasks · approvals | 671 | 653 | 0 | 14 |
+| P4 raw acquisition · RawData · Raw Lead · Lead | 510 | 490 | 0 | 17 |
+| P5 prospects · contacts · portal · conversation | 896 | 874 | 0 | 7 |
+| P6 marketing · content · channels · ads | 954 | 939 | 0 | 2 |
+| P7 listings · shopping agent · MLS / IDX | 550 | 544 | 0 | 2 |
+| P8 offers · transactions · documents · closing | 937 | 921 | 0 | 1 |
+| P9 commission · settlement · brokerage finance | 448 | 438 | 0 | 6 |
+| P10 recruiting · gamification · support · ops | 974 | 943 | 0 | 8 |
 
-Unclassified rows (no plane matcher): 225.
+Unclassified rows (no plane matcher): 226.
 
 ## 4. The A7.1 surfaces
 
 | surface | rows | working | partial | missing | example working row / exact missing link |
 |---|---|---|---|---|---|
-| SaaS subscriber lifecycle | 318 | 312 | 0 | 3 | `kernel_event:subscription_downgraded` @ lib/kernel/event-reactor.ts:1098 |
+| SaaS subscriber lifecycle | 320 | 314 | 0 | 3 | `kernel_event:subscription_downgraded` @ lib/kernel/event-reactor.ts:1098 |
 | Organization and membership | 112 | 104 | 0 | 6 | `server_action:app/actions/admin/invitations.ts#revokeInvitationAction` @ app/actions/admin/invitations.ts:138 |
-| Tenant website / landing / IDX | 237 | 227 | 0 | 4 | `http:/api/form-wizard/intake-notes` @ app/api/form-wizard/intake-notes/route.ts:20 |
+| Tenant website / landing / IDX | 244 | 234 | 0 | 4 | `http:/api/form-wizard/intake-notes` @ app/api/form-wizard/intake-notes/route.ts:20 |
 | Platform provider fabric | 232 | 224 | 0 | 3 | `server_action:app/actions/ai-calendar-management.ts#syncCalendar` @ app/actions/ai-calendar-management.ts:731 |
-| Platform security | 334 | 321 | 0 | 0 | `http:/api/seed/users` @ app/api/seed/users/route.ts:8 |
-| Kernel supervisor / mission board | 153 | 144 | 0 | 8 | `manager_signal:mission_escalated` @ lib/kernel/signal-registry.ts:34 |
-| Manager-to-manager bus | 893 | 882 | 0 | 4 | `kernel_event:agent_escalated_to_human` @ lib/kernel/event-reactor.ts:2416 |
+| Platform security | 335 | 322 | 0 | 0 | `http:/api/seed/users` @ app/api/seed/users/route.ts:8 |
+| Kernel supervisor / mission board | 158 | 149 | 0 | 8 | `manager_signal:mission_escalated` @ lib/kernel/signal-registry.ts:34 |
+| Manager-to-manager bus | 891 | 880 | 0 | 4 | `kernel_event:agent_escalated_to_human` @ lib/kernel/event-reactor.ts:2416 |
 | Cron / scheduling / watchers | 284 | 280 | 0 | 3 | `cron:/api/cron/marketing-agent-weekly` @ app/api/cron/marketing-agent-weekly/route.ts:33 |
 | Natural-language and voice command | 299 | 292 | 0 | 4 | `assistant_tool:explain_touches` @ app/api/agent-assistant/tool-call/route.ts:814 |
 | Raw external research | 48 | 40 | 0 | 8 | `capability:vendor:web_research` @ vendor manifest (buildFullActionManifest) |
-| RawData and identity | 85 | 82 | 0 | 2 | `capability:vendor:lead_skip_trace` @ vendor manifest (buildFullActionManifest) |
+| RawData and identity | 84 | 81 | 0 | 2 | `capability:vendor:lead_skip_trace` @ vendor manifest (buildFullActionManifest) |
 | Raw Lead to Lead | 94 | 94 | 0 | 0 | `server_action:app/actions/leads.ts#qualifyLead` @ app/actions/leads.ts:230 |
-| Lead to Contact | 199 | 198 | 0 | 0 | `capability:app:agent_coaching_assign` @ lib/agentic-os/app-capability-registry.ts:229 |
-| Existing Contact / Customer 360 | 519 | 509 | 0 | 7 | `kernel_event:contact_channel_opt_out` @ lib/kernel/event-reactor.ts:1232 |
+| Lead to Contact | 201 | 200 | 0 | 0 | `capability:app:agent_coaching_assign` @ lib/agentic-os/app-capability-registry.ts:229 |
+| Existing Contact / Customer 360 | 518 | 508 | 0 | 7 | `kernel_event:contact_channel_opt_out` @ lib/kernel/event-reactor.ts:1232 |
 | Conversation / AI ISA | 176 | 175 | 0 | 1 | `server_action:app/actions/ai-communication-hub.ts#markConversationRead` @ app/actions/ai-communication-hub.ts:388 |
 | Consumer portals / stage education, collaboration | 317 | 316 | 0 | 1 | `orchestrator_event:journey.all_tasks_done` @ lib/orchestrator/internal.ts:299 |
-| Shopping Agent / property search | 27 | 26 | 0 | 0 | `kernel_event:buyer_search_configured` @ lib/kernel/event-reactor.ts:260 |
-| Market Twin / intelligence graph | 53 | 51 | 0 | 0 | `server_action:app/actions/admin/brokerage-intelligence-doors.ts#seedFarmTerritoriesFromServiceAreaAction` @ app/actions/admin/brokerage-intelligence-doors.ts:39 |
+| Shopping Agent / property search | 28 | 27 | 0 | 0 | `kernel_event:buyer_search_configured` @ lib/kernel/event-reactor.ts:260 |
+| Market Twin / intelligence graph | 51 | 49 | 0 | 0 | `server_action:app/actions/admin/brokerage-intelligence-doors.ts#seedFarmTerritoriesFromServiceAreaAction` @ app/actions/admin/brokerage-intelligence-doors.ts:39 |
 | Content-topic pool | 76 | 76 | 0 | 0 | `server_action:app/actions/content-intel/sources.ts#createContentSource` @ app/actions/content-intel/sources.ts:62 |
-| Brand / asset studio | 290 | 287 | 0 | 0 | `http:/api/did/agents/session/heartbeat` @ app/api/did/agents/session/heartbeat/route.ts:24 |
+| Brand / asset studio | 294 | 291 | 0 | 0 | `http:/api/did/agents/session/heartbeat` @ app/api/did/agents/session/heartbeat/route.ts:24 |
 | Paid advertising | 167 | 165 | 0 | 2 | `capability:app:ad_campaign_launch` @ lib/agentic-os/app-capability-registry.ts:222 |
-| Outbound channels | 1077 | 1050 | 0 | 4 | `http:/api/admin/qr-codes` @ app/api/admin/qr-codes/route.ts:41 |
-| Campaign bundles / Refurbish / Omnipresence | 69 | 69 | 0 | 0 | `server_action:app/actions/ai-lead-nurturing.ts#aiGenerateDripCampaign` @ app/actions/ai-lead-nurturing.ts:123 |
+| Outbound channels | 1081 | 1054 | 0 | 4 | `http:/api/admin/qr-codes` @ app/api/admin/qr-codes/route.ts:41 |
+| Campaign bundles / Refurbish / Omnipresence | 70 | 70 | 0 | 0 | `server_action:app/actions/ai-lead-nurturing.ts#aiGenerateDripCampaign` @ app/actions/ai-lead-nurturing.ts:123 |
 | Events and community intelligence | 67 | 65 | 0 | 1 | `server_action:app/actions/open-house-automation.ts#monitorCompetingEvents` @ app/actions/open-house-automation.ts:1634 |
 | Circle learning and top producers | 10 | 10 | 0 | 0 | `server_action:app/actions/events-and-circles.ts#revokeCircleTacticAction` @ app/actions/events-and-circles.ts:153 |
-| Listing lifecycle | 360 | 357 | 0 | 0 | `kernel_event:listing_created` @ lib/kernel/event-fanout.ts:226 |
-| Offers / counters | 345 | 342 | 0 | 1 | `http:/api/approvals/counter` @ app/api/approvals/counter/route.ts:21 |
-| Transaction / deal coordination | 370 | 363 | 0 | 0 | `server_action:app/actions/ai-closing-workflow.ts#aiGenerateClosingChecklist` @ app/actions/ai-closing-workflow.ts:26 |
-| Addenda / document intelligence | 156 | 156 | 0 | 0 | `kernel_event:document_requested` @ lib/kernel/event-fanout.ts:588 |
-| Compliance and CDA | 468 | 458 | 0 | 1 | `http:/api/compliance/flags` @ app/api/compliance/flags/route.ts:30 |
-| Lender / title / insurance | 89 | 89 | 0 | 0 | `kernel_event:appraisal_gap_detected` @ lib/kernel/event-fanout.ts:458 |
-| Commission and settlement | 91 | 87 | 0 | 4 | `manager_signal:agent_crushed_cap` @ lib/kernel/signal-registry.ts:112 |
+| Listing lifecycle | 362 | 359 | 0 | 0 | `kernel_event:listing_created` @ lib/kernel/event-fanout.ts:226 |
+| Offers / counters | 346 | 343 | 0 | 1 | `http:/api/approvals/counter` @ app/api/approvals/counter/route.ts:21 |
+| Transaction / deal coordination | 377 | 370 | 0 | 0 | `server_action:app/actions/ai-closing-workflow.ts#aiGenerateClosingChecklist` @ app/actions/ai-closing-workflow.ts:26 |
+| Addenda / document intelligence | 157 | 157 | 0 | 0 | `kernel_event:document_requested` @ lib/kernel/event-fanout.ts:588 |
+| Compliance and CDA | 477 | 467 | 0 | 1 | `http:/api/compliance/flags` @ app/api/compliance/flags/route.ts:30 |
+| Lender / title / insurance | 91 | 91 | 0 | 0 | `kernel_event:appraisal_gap_detected` @ lib/kernel/event-fanout.ts:458 |
+| Commission and settlement | 93 | 89 | 0 | 4 | `manager_signal:agent_crushed_cap` @ lib/kernel/signal-registry.ts:112 |
 | Brokerage finance | 89 | 87 | 0 | 2 | `http:/api/accounting/sync` @ app/api/accounting/sync/route.ts:26 |
 | ROI and budgets | 24 | 23 | 0 | 1 | `kernel_event:campaign_roi_updated` @ lib/kernel/event-reactor.ts:1046 |
-| Gamification / Academy | 179 | 165 | 0 | 2 | `server_action:app/actions/academy.ts#addTemplateFeedback` @ app/actions/academy.ts:236 |
+| Gamification / Academy | 183 | 169 | 0 | 2 | `server_action:app/actions/academy.ts#addTemplateFeedback` @ app/actions/academy.ts:236 |
 | Recruitment / onboarding | 81 | 78 | 0 | 0 | `capability:app:recruit_outreach` @ lib/agentic-os/app-capability-registry.ts:216 |
-| Sphere / lifetime / reviews | 122 | 117 | 0 | 0 | `kernel_event:anniversary_triggered` @ lib/kernel/event-fanout.ts:661 |
+| Sphere / lifetime / reviews | 124 | 119 | 0 | 0 | `kernel_event:anniversary_triggered` @ lib/kernel/event-fanout.ts:661 |
 | Support / education | 21 | 21 | 0 | 0 | `server_action:app/actions/knowledge/search.ts#backfillAllEmbeddings` @ app/actions/knowledge/search.ts:799 |
-| Operations and incidents | 605 | 595 | 0 | 3 | `http:/api/blog/track-share` @ app/api/blog/track-share/route.ts:26 |
+| Operations and incidents | 604 | 594 | 0 | 3 | `http:/api/blog/track-share` @ app/api/blog/track-share/route.ts:26 |
 | Audit / security / production | 24 | 24 | 0 | 0 | `server_action:app/actions/campaign-readiness.ts#batchEvaluateContentReadiness` @ app/actions/campaign-readiness.ts:133 |
 
 ## 5. Human-versus-autonomy decision matrix (driven through the real deciders, SIMULATED inputs)
@@ -153,7 +153,7 @@ Approval SLA (lib/kernel/approval-sla.ts evaluateApprovalSla, default windows): 
 
 Deterministic outbound chain (never an LLM): `autonomyGate` @ lib/providers/dispatch.ts:434 → `deconflictGate` @ lib/providers/dispatch.ts:642 → `checkSuppression` @ lib/providers/dispatch.ts:745 → `evaluateOutboundCompliance` @ lib/providers/dispatch.ts:768 → `contentSafetyBackstop` @ lib/providers/dispatch.ts:863 → `channelRefusalForRecipient` @ lib/providers/dispatch.ts:1023 → `requireConsentForVideoAvatarSource` @ lib/providers/dispatch.ts:1858.
 
-Per row: 944 rows start without a person (cron / event / signal / webhook), of which 121 carry no decision gate on their path; 58 rows hold for a human approver on the path; 1956 rows are decided by the signed-in person.
+Per row: 944 rows start without a person (cron / event / signal / webhook), of which 121 carry no decision gate on their path; 62 rows hold for a human approver on the path; 1964 rows are decided by the signed-in person.
 
 ## 6. Gap list (ranked by consequence; top 60 — the full set is the JSON)
 
@@ -364,7 +364,7 @@ Per row: 944 rows start without a person (cron / event / signal / webhook), of w
 
 | row | state | missing | manager | decision owner | entrypoint |
 |---|---|---|---|---|---|
-| `http:/api/admin/system/providers/test` | owner-held | owner | unresolved: it writes only carriers / unstewarded tables (ap | session actor (createClient() from "@/lib/supabase/server" @ app/api/a | app/api/admin/system/providers/test/route.ts:108 |
+| `http:/api/admin/system/providers/test` | owner-held | owner | unresolved: it writes only carriers / unstewarded tables (ap | session actor (createClient() from "@/lib/supabase/server" @ app/api/a | app/api/admin/system/providers/test/route.ts:104 |
 | `http:/api/errors/collect` | missing | trigger | cron_manager | session actor (auth.getUser @ app/api/errors/collect/route.ts:45) | app/api/errors/collect/route.ts:31 |
 | `http:/api/workflow/trigger` | missing | trigger | campaign_orchestrator | provider of record (signature verified: timingSafeEqual @ app/api/work | app/api/workflow/trigger/route.ts:71 |
 | `kernel_event:ce_completed` | owner-held |  | recruiting_manager | recruiting_manager under policy:autonomyDecision @ lib/gamification/li | lib/kernel/event-reactor.ts:4919 |
@@ -431,6 +431,6 @@ Open rows: OWNER_HELD **72** · DECLARATIVE_READ_ONLY **54** · SIMULATED_ONLY *
 | UNKNOWN | 1 | 1× http: the caller may be outside the repo (provider console, external client, another scheduler) — unreferenced is not dead (CLAUDE.md §1) |
 
 - **evidenceCreditedByAnEventsDomainTable**: 0 rows — a record-suffixed table that runtime code REWRITES (a domain table: calendar_events, open_house_events, voice_calls …) taken as evidence — 0 by construction since lane 155R16 (isLogTable); a non-zero count means the predicate was bypassed
-- **evidenceCreditedByAnAppendOnlySuffixTable**: 86 rows — evidence is a write to a record-suffixed table that is not a log BY NAME but that no runtime code rewrites (append-only: compliance_events, contact_consent_events, usage_events …). Taken as a ledger by rule; a gate's own ledger (compliance_events) evidences the decision on the path, not the action's outcome
+- **evidenceCreditedByAnAppendOnlySuffixTable**: 92 rows — evidence is a write to a record-suffixed table that is not a log BY NAME but that no runtime code rewrites (append-only: compliance_events, contact_consent_events, usage_events …). Taken as a ledger by rule; a gate's own ledger (compliance_events) evidences the decision on the path, not the action's outcome
 - **autonomousConsequentialWithoutRecovery**: 323 rows — recovery is REPORTED per row but is not a judged link (ECC agent-architecture-audit layer 12 cross-check): a failed autonomous run with no retry / sweep / escalation on its path
 

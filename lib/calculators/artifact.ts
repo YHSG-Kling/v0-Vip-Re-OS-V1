@@ -311,11 +311,11 @@ export async function computeInternalSellerNet(
   return { success: true, outcome: runCalculator("seller_net_sheet", input.inputs ?? {}, { audience: "internal", jurisdiction, agreedCommission: agreed, estimateKeys: input.estimateKeys ?? [] }) }
 }
 
+/** PURE. The brokerage's default structure → the agreed listing commission the engine prices with (one mapping, two callers). */
+export function agreedCommissionFromStructure(s: { grossRateDecimal: number }): AgreedCommission { const pct = Math.round(s.grossRateDecimal * 100 * 10_000) / 10_000; return { listingRatePct: pct, flatAmount: null, label: `${pct}% — the brokerage's default commission structure` } }
 async function defaultAgreedCommission(brokerageId: string): Promise<AgreedCommission | null> {
   const { getDefaultCommissionStructure } = await import("@/lib/brokerage/get-default-commission-structure")
-  const s = await getDefaultCommissionStructure(brokerageId)
-  const pct = Math.round(s.grossRateDecimal * 100 * 10_000) / 10_000
-  return { listingRatePct: pct, flatAmount: null, label: `${pct}% — the brokerage's default commission structure` }
+  return agreedCommissionFromStructure(await getDefaultCommissionStructure(brokerageId))
 }
 
 // ── performance (observable) ──────────────────────────────────────────────────

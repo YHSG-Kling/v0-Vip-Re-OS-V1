@@ -1,7 +1,7 @@
 {
  "generator": "scripts/os-coverage-ledger.ts --write (wave 155, lane 155B1) — GENERATED, do not edit; per-row ledger: coverage/os-arbitration-coverage.json (on demand)",
  "states": {
-  "working": 2880,
+  "working": 2892,
   "owner-held": 72,
   "missing": 59
  },
@@ -113,7 +113,7 @@
     "OWNER_HELD entry: owner-held (platform-staff door: requirePlatformCapability @ app/actions/superadmin/platform-social.ts:38): Platform-staff": 1,
     "OWNER_HELD entry: owner-held (platform-staff door: requirePlatformCapability @ app/actions/superadmin/provider-posture.ts:55): Platform-staf": 1,
     "OWNER_HELD entry: owner-held (platform-staff door: requireProviders @ app/actions/superadmin/platform-reception.ts:36): Platform-staff acts:": 1,
-    "OWNER_HELD entry: owner-held (platform-staff door: requireSuperadminAuth @ app/api/admin/system/providers/test/route.ts:110): Platform-staff": 1,
+    "OWNER_HELD entry: owner-held (platform-staff door: requireSuperadminAuth @ app/api/admin/system/providers/test/route.ts:106): Platform-staff": 1,
     "OWNER_HELD entry: owner-held pending owner decision (lane 155R24): build or retire? A closing gift (closing_gifts.price_cents) is spend; the": 1,
     "OWNER_HELD entry: owner-held pending owner decision (lane 155R24): build or retire? Nothing produces the moment — no writer of transactions.": 1,
     "OWNER_HELD entry: owner-held pending owner decision (lane 155R29, Q1): WIRE OR RETIRE? A staff re-match of one stored visitor signal to a co": 1,
@@ -161,10 +161,10 @@
    "sample": []
   },
   "evidenceCreditedByAnAppendOnlySuffixTable": {
-   "rows": 86,
+   "rows": 92,
    "note": "evidence is a write to a record-suffixed table that is not a log BY NAME but that no runtime code rewrites (append-only: compliance_events, contact_consent_events, usage_events …). Taken as a ledger by rule; a gate's own ledger (compliance_events) evidences the decision on the path, not the action's outcome",
    "byTable": {
-    "compliance_events": 53,
+    "compliance_events": 59,
     "phone_number_events": 10,
     "mission_events": 8,
     "contact_consent_events": 5,
