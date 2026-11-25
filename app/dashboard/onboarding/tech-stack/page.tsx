@@ -7,7 +7,7 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { getIntegrationStatus } from "@/app/actions/onboarding/tech-stack"
-import { TechStackClient } from "./tech-stack-client"
+import { TechStackClient } from "./tech-stack-client"; import { PROVIDER_METADATA, PROVIDER_GROUPS } from "@/lib/onboarding/integration-tester" // server-side: the client gets the tables as props (156L)
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
 export const dynamic = 'force-dynamic'
@@ -59,7 +59,7 @@ export default async function TechStackPage() {
       userId={userData.id}
       brokerageId={userData.brokerage_id}
       brokerageName={brokerage?.name || ""}
-      initialStatus={integrationStatus}
+      initialStatus={integrationStatus} providerMetadata={PROVIDER_METADATA} providerGroups={PROVIDER_GROUPS}
     />
   )
 }

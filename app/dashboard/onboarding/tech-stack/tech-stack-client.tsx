@@ -55,11 +55,11 @@ import {
   type IntegrationStatusResult,
   type ProviderStatus,
 } from "@/app/actions/onboarding/tech-stack"
-import {
-  PROVIDER_METADATA,
-  PROVIDER_GROUPS,
-  type ProviderName,
-} from "@/lib/onboarding/integration-tester"
+import type {
+  PROVIDER_METADATA as PROVIDER_METADATA_SHAPE,
+  PROVIDER_GROUPS as PROVIDER_GROUPS_SHAPE,
+  ProviderName,
+} from "@/lib/onboarding/integration-tester" // TYPES only (156L): it reaches connector-gateway → the service-role client; page.tsx passes the two tables as props
 import confetti from "canvas-confetti"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
@@ -68,7 +68,7 @@ interface TechStackClientProps {
   userId: string
   brokerageId: string
   brokerageName: string
-  initialStatus: IntegrationStatusResult | null
+  initialStatus: IntegrationStatusResult | null; providerMetadata: typeof PROVIDER_METADATA_SHAPE; providerGroups: typeof PROVIDER_GROUPS_SHAPE
 }
 
 // ─── ICON MAP ─────────────────────────────────────────────────────────────────
@@ -93,7 +93,7 @@ export function TechStackClient({
   userId,
   brokerageId,
   brokerageName,
-  initialStatus,
+  initialStatus, providerMetadata: PROVIDER_METADATA, providerGroups: PROVIDER_GROUPS,
 }: TechStackClientProps) {
   const router = useRouter()
   const searchParams = useSearchParams()
