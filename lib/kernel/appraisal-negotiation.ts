@@ -308,8 +308,8 @@ async function loadSupportingComps(args: {
 }): Promise<SupportingComp[]> {
   if (!args.address) return []
   try {
-    const { getRentcastComps } = await import("@/lib/property/rentcast")
-    const raw = await getRentcastComps({ brokerageId: args.brokerageId, address: args.address, limit: 12 }).catch(() => null)
+    const { requestPropertyComparables } = await import("@/lib/avm/provider-chain") // TOMBSTONE (156I r4, LAW 3): getRentcastComps by name → lib/avm/provider-chain.ts:854
+    const raw = await requestPropertyComparables({ brokerageId: args.brokerageId, address: args.address, limit: 12 }).then((c) => c.pull.comps).catch(() => null)
     if (!raw || !Array.isArray(raw) || raw.length === 0) return []
 
     const mapped: SupportingComp[] = raw

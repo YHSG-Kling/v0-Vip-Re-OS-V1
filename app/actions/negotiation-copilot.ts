@@ -367,13 +367,13 @@ async function summarizeComparables(input: {
   // RentCast comps (the platform comps provider). Returns recent sold comps with
   // sale_price / days_on_market / price_per_sqft — the fields the medians use.
   try {
-    const { getRentcastComps } = await import("@/lib/property/rentcast")
+    const { requestPropertyComparables } = await import("@/lib/avm/provider-chain") // TOMBSTONE (156I r4, LAW 3): getRentcastComps by name → lib/avm/provider-chain.ts:854
     const comps = input.brokerageId
-      ? await getRentcastComps({
+      ? (await requestPropertyComparables({
           brokerageId: input.brokerageId,
           address: [input.address, input.city, input.state, input.zip].filter(Boolean).join(", "),
           limit: 20,
-        }).catch(() => null)
+        }).then((c) => c.pull.comps).catch(() => null))
       : null
 
     if (comps && Array.isArray(comps) && comps.length > 0) {

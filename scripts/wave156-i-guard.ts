@@ -43,7 +43,7 @@
  * are named, not re-driven, here.
  */
 import { registerHooks } from "node:module"
-import { readFileSync, existsSync, statSync } from "node:fs"
+import { readFileSync, existsSync, statSync, readdirSync } from "node:fs"
 import { pathToFileURL } from "node:url"
 import { join } from "node:path"
 import { memSupabase, type MemClient } from "./in-memory-supabase"
@@ -70,7 +70,9 @@ const OVERRIDE: Record<string, string> = {
   "lib/supabase/service.ts": "export function createServiceClient(){ if (globalThis.__I.svcMem) return globalThis.__I.svcMem; throw new Error('fixture: the guard hands every door its client') }",
   // ROUND 3 §K — the RentCast egress and the vendor ledger, COUNTED (the same seams lane 156G's guard uses); no vendor reached.
   "lib/agentic-os/connector-gateway.ts": "export async function callConnector(req){ globalThis.__I.gateway.push(req); await new Promise((r) => setTimeout(r, 5)); return { ok: true, status: 200, data: { price: 400000, priceRangeLow: 380000, priceRangeHigh: 420000, comparables: [{ formattedAddress: '1 Comp St', price: 395000, squareFootage: 1800, bedrooms: 3, bathrooms: 2, removedDate: '2026-10-01', distance: 0.3, correlation: 0.95 }] }, error: null } }; export async function loadProviderHealth(){ return { state: 'healthy', routeAround: false, reason: 'fixture' } }",
-  "lib/vendor-governance/usage-logger.ts": "export async function logVendorUsage(e){ globalThis.__I.usage.push(e); return { success: true } }",
+  // ROUND 4 §N — the staff tool's facts rung (cache → IDX → RentCast record → public records) is not under test here; it answers "not found".
+  "lib/ai-isa/property-lookup-rail.ts": "export async function lookupPropertyForConversation(){ return { found: false, facts: null, rungsTried: ['fixture'] } }",
+  "lib/vendor-governance/usage-logger.ts":"export async function logVendorUsage(e){ globalThis.__I.usage.push(e); return { success: true } }",
   "lib/vendor-governance/meter-vendor.ts": "export async function meterVendorSpend(m){ globalThis.__I.usage.push(m); return true }",
   "lib/supabase/server.ts": "export async function createClient(){ throw new Error('fixture: no session client') }",
   // ROUND 2 §I — the model narrative (counted) and the state rate read (no table here: an empty, honestly-labelled rate set).
@@ -574,9 +576,62 @@ async function sectionM() {
   check("a TEAM LEAD's task includes their team's consented owners (agent-2's contact)", /O5-OTHERAGENT/.test(d2) && /\b1 of your contacts/.test(d2), d2.slice(-300))
 }
 
+// ══ ROUND 4 ════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// §N LAW 3 at every caller — the staff AI tool asks the comparables capability; no file outside the provider's own modules calls
+// the RentCast valuation / comparables functions by name (derived from comment-stripped source, with a positive control).
+const VENDOR_FNS = /\b(getRentcastAVM|getRentcastAvmAndComps|getRentcastComps)\s*\(/g
+const VENDOR_ALLOWED = (rel: string) => rel === "lib/avm/provider-chain.ts" || /^lib\/property\/rentcast[\w.-]*\.ts$/.test(rel)
+function vendorCallersIn(dir: string, out: Array<{ file: string; fn: string }> = []): Array<{ file: string; fn: string }> {
+  const abs = join(ROOT, dir)
+  if (!existsSync(abs)) return out
+  for (const e of readdirSync(abs)) {
+    if (e === "node_modules" || e.startsWith(".")) continue
+    const rel = `${dir}/${e}`
+    if (statSync(join(ROOT, rel)).isDirectory()) { vendorCallersIn(rel, out); continue }
+    if (!/\.(ts|tsx)$/.test(e) || VENDOR_ALLOWED(rel)) continue
+    const code = stripComments(readFileSync(join(ROOT, rel), "utf8"))
+    for (const m of code.matchAll(VENDOR_FNS)) out.push({ file: rel, fn: m[1] })
+  }
+  return out
+}
+async function sectionN() {
+  section("§N LAW 3 at every caller: the staff property tool asks requestPropertyComparables; no vendor-by-name caller outside the provider")
+  process.env.RENTCAST_API_KEY = process.env.RENTCAST_API_KEY || "fixture-not-a-key"
+  const el = await load("lib/property/rentcast-eligibility.ts")
+  const world = (used: number) => {
+    G.__I.svcMem = memSupabase({
+      platform_settings: [{ id: true, provider_request_caps: null }],
+      vendor_usage_tracking: Array.from({ length: used }, (_, i) => ({ id: `v${i}`, vendor_name: "rentcast", units_used: 1, total_cost: 0.074, created_at: `${new Date().toISOString().slice(0, 7)}-02T00:00:00.000Z`, request_metadata: {} })),
+    })
+    G.__I.gateway = []; G.__I.usage = []
+    try { el.resetRentcastPlatformCapState?.() } catch { /* base */ }
+  }
+  const rcCalls = () => (G.__I.gateway as any[]).filter((r) => r.connector === "rentcast").length
+  const tools = await load("lib/ai-isa/property-lookup-tools.ts")
+  const t = tools.buildLookupPropertyFactsTool({ brokerageId: B1, contactId: null, agentId: null } as never, { audience: "staff", userId: "u-staff" })
+  const ask = (street: string) => t.execute({ street, city: "Austin", state: "TX", zip: "78701", include_value_and_comps: true, include_full_record: null }, { toolCallId: "x", messages: [] } as never)
+  world(0)
+  const [a, b] = await Promise.all([ask("500 Tool St"), ask("500 Tool St")])
+  check("POSITIVE: two concurrent tool asks for one address → ONE paid request, both carry the provider estimate and comparables", rcCalls() === 1 && a?.valueAndComps?.providerEstimate?.value === 400000 && (b?.valueAndComps?.comparables ?? []).length >= 1, { calls: rcCalls(), a: a?.valueAndComps?.providerEstimate })
+  const included = el.RENTCAST_PLAN_INCLUDED_REQUESTS ?? 1000
+  world(included)
+  const capped = await ask("600 Cap St")
+  check("NEGATIVE: at the platform ceiling the tool says 'not available' — no estimate invented, 0 requests", rcCalls() === 0 && capped?.valueAndComps?.providerEstimate === null && /not available/.test(String(capped?.valueAndComps?.notAvailable)), { calls: rcCalls(), v: capped?.valueAndComps })
+  world(0)
+  const key = process.env.RENTCAST_API_KEY; delete process.env.RENTCAST_API_KEY
+  const refused = await ask("700 Gate St")
+  process.env.RENTCAST_API_KEY = key
+  check("NEGATIVE: an ineligible tenant (no platform key) is refused by the gate — 0 requests, the reason named", rcCalls() === 0 && refused?.valueAndComps?.providerEstimate === null && /refused|not available/.test(String(refused?.valueAndComps?.notAvailable)), { calls: rcCalls(), v: refused?.valueAndComps?.notAvailable })
+  G.__I.svcMem = null
+  const callers = [...vendorCallersIn("app"), ...vendorCallersIn("lib")]
+  check("ABSENCE (derived, comment-stripped): no file outside lib/avm/provider-chain.ts and lib/property/rentcast*.ts calls getRentcastAVM / getRentcastAvmAndComps / getRentcastComps", callers.length === 0, callers)
+  const planted = stripComments(`// getRentcastComps( in a comment is not a call\nconst x = await getRentcastAvmAndComps({ address })`)
+  check("POSITIVE CONTROL: the finder sees a planted call and ignores the same name in a comment", [...planted.matchAll(VENDOR_FNS)].map((m) => m[1]).join() === "getRentcastAvmAndComps")
+}
+
 async function main() {
   console.log(`wave156-i-guard — grounded market intelligence (modules from ${ROOT === WT ? "this tree" : ROOT})`)
-  for (const s of [sectionA, sectionB, sectionC, sectionD, sectionE, sectionF, sectionG, sectionH, sectionI, sectionJ, sectionK, sectionL, sectionM]) {
+  for (const s of [sectionA, sectionB, sectionC, sectionD, sectionE, sectionF, sectionG, sectionH, sectionI, sectionJ, sectionK, sectionL, sectionM, sectionN]) {
     try { await s() } catch (e) { check(`${s.name} ran without throwing`, false, e instanceof Error ? `${e.message}\n${e.stack?.split("\n").slice(1, 4).join(" | ")}` : String(e)) }
   }
   console.log(`\n${passed} passed, ${failed} failed`)
