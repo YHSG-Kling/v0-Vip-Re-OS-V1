@@ -104,6 +104,9 @@ export interface GenerateVideoInput {
    * `avatar_pip` (planWantsKeyedPresenter), never by hand.
    */
   transparentBackground?: boolean
+  /** Wave 156 (156S): ONE D-ID charge per key — a retried submit under it replays the receipt (the job id it
+   *  already bought) instead of rendering and billing a second talk. Callers with a stable unit pass it. */
+  idempotencyKey?: string | null
 }
 
 export interface GenerateVideoResult {
@@ -513,16 +516,12 @@ export async function generateVideo(
   // 2. Submit the D-ID job
   // ---------------------------------------------------------------------------
 
-  // Vendor budget gate — auto-pause D-ID renders when the brokerage is over its
-  // monthly platform-vendor ceiling (closes the metering→cap governance loop).
-  {
-    const { checkVendorBudget } = await import("@/lib/vendor-governance/budget-gate")
-    const { estimatePlatformVendorCost: estCost } = await import("@/lib/vendor-governance/meter-vendor")
-    const budget = await checkVendorBudget({ brokerageId: input.brokerageId, addCost: estCost("did", 1) })
-    if (!budget.allowed) {
-      throw new Error(`Vendor budget exceeded — D-ID render paused ($${budget.spent}/$${budget.budget})`)
-    }
-  }
+  // THE PAID DOOR (wave 156, lane 156S) — lib/vendor-governance/budget-gate.ts runPaidEgress: the vendor budget
+  // BEFORE the submit (auto-pause when the brokerage is over its monthly platform-vendor ceiling), an action receipt,
+  // and the spend (D-ID bills per submitted talk render) booked only once the submit succeeded, under the caller's
+  // idempotency key — a retried submit replays the job it already bought.
+  const { runPaidEgress } = await import("@/lib/vendor-governance/budget-gate")
+  const { estimatePlatformVendorCost } = await import("@/lib/vendor-governance/meter-vendor")
 
   // V4 EXPRESSIVE (owner rule: personalized avatar video rides D-ID's newest
   // engine when the avatar supports it). Expressive avatar ids carry "@avt_"
@@ -537,36 +536,41 @@ export async function generateVideo(
   // reason rides the result so the caller records the fallback honestly.
   const keyed = transparentPresenterConfig(isV4Expressive ? "expressives" : "talks", input.transparentBackground === true)
   let talkId: string
+  let paid: import("@/lib/vendor-governance/budget-gate").PaidEgressResult<{ id: string }>
   try {
-    if (isV4Expressive) {
-      const sentimentFor: Record<string, string> = { happy: "happy", neutral: "neutral", serious: "serious", surprise: "surprise" }
-      const created = await didPost("/expressives", {
-        avatar_id: avatarSrc.actorId,
-        script: scriptBlock,
-        sentiment_id: sentimentFor[expression] ?? "neutral",
-        ...keyed.body,
-        config: { result_format: "mp4", ...keyed.config },
-      })
-      talkId = created.id
-    } else {
-      const created = await didPost("/talks", bodyBase)
-      talkId = created.id
-    }
+    paid = await runPaidEgress<{ id: string }>({
+      brokerageId: input.brokerageId, vendor: "did", usageType: "video_render", action: "video.did.render",
+      estimatedCostUsd: estimatePlatformVendorCost("did", 1), units: 1,
+      subject: { type: "did_talk", id: null, ref: isV4Expressive ? "expressives" : "talks" },
+      actor: input.agentUserId ? { type: "user", userId: input.agentUserId } : { type: "system" },
+      idempotencyKey: input.idempotencyKey ?? null, systemSource: "video_generation",
+    }, () => {
+      if (isV4Expressive) {
+        const sentimentFor: Record<string, string> = { happy: "happy", neutral: "neutral", serious: "serious", surprise: "surprise" }
+        return didPost("/expressives", {
+          avatar_id: avatarSrc.actorId,
+          script: scriptBlock,
+          sentiment_id: sentimentFor[expression] ?? "neutral",
+          ...keyed.body,
+          config: { result_format: "mp4", ...keyed.config },
+        })
+      }
+      return didPost("/talks", bodyBase)
+    }, (created) => ({ ok: !!created?.id, providerRef: created?.id ?? null }))
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
     throw new Error(`D-ID submit failed: ${msg}`)
   }
-
-  // Unified vendor-spend ledger — D-ID bills per submitted talk render.
-  const { meterVendorSpend, estimatePlatformVendorCost } = await import("@/lib/vendor-governance/meter-vendor")
-  void meterVendorSpend({
-    vendorName: "did",
-    usageType: "video_render",
-    cost: estimatePlatformVendorCost("did", 1),
-    brokerageId: input.brokerageId,
-    systemSource: "video_generation",
-    metadata: { talk_id: talkId },
-  })
+  if (!paid.ran) {
+    if (paid.reason === "budget_refused") {
+      throw new Error(`Vendor budget exceeded — D-ID render paused ($${paid.budget.spent}/$${paid.budget.budget})`)
+    }
+    // A REPLAY of a submit already bought under this key: continue on THAT job, never a second charge.
+    if (!paid.providerRef) throw new Error(`D-ID submit not repeated: ${paid.detail}`)
+    talkId = paid.providerRef
+  } else {
+    talkId = paid.result.id
+  }
 
   // ---------------------------------------------------------------------------
   // 3. Poll for completion (skipped in submitOnly mode — the async pipeline drives it)

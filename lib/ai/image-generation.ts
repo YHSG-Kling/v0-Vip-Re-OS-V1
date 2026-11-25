@@ -135,7 +135,7 @@ export interface GenerateImageResult {
   /** true when input.spend was given and the cost landed on ai_tool_usage (or was already there). */
   booked?: boolean
   error?: string
-  errorCode?: "no_api_key" | "rate_limit" | "content_policy" | "auth" | "blob_failed" | "unknown"
+  errorCode?: "no_api_key" | "rate_limit" | "content_policy" | "auth" | "blob_failed" | "unknown" | "budget"
 }
 
 const DEFAULT_SIZES: Record<ImagePurpose, ImageSize> = {
@@ -209,7 +209,7 @@ async function callGptImage1Gateway(
   }
 }
 
-export async function generateImage(input: GenerateImageInput): Promise<GenerateImageResult> {
+async function generateImageBehindTheDoor(input: GenerateImageInput): Promise<GenerateImageResult> {
   const size = input.size ?? DEFAULT_SIZES[input.purpose]
   const quality = input.quality ?? "standard"
   const style = input.style ?? "natural"
@@ -597,4 +597,38 @@ function buildBrandAwarePrompt(input: GenerateImageInput): string {
 
 function randomSlug(): string {
   return Math.random().toString(36).slice(2, 8)
+}
+
+/**
+ * THE PAID IMAGE DOOR (wave 156, lane 156S). generateImage booked its spend on ai_tool_usage (139C) but never asked the
+ * budget: an over-budget tenant's image still reached the model. It now goes through the ONE paid-egress composition
+ * (lib/vendor-governance/budget-gate.ts runPaidEgress): the tenant's vendor budget BEFORE the provider is reached (priced
+ * at the DALL-E 3 list price of this size / quality, the dearer of the two legs — the pre-flight never under-asks), an
+ * action receipt, and `book: "caller"` — the spend stays on ai_tool_usage exactly as before (generateImageBehindTheDoor's
+ * logAIImageUsage, once per input.spend.idempotencyKey). The receipt carries NO idempotency key on purpose: that key names
+ * the charge (a retry books nothing), and a retry after a storage failure must still be able to produce an image.
+ * A call with no `spend` (the two callers that book on their own ledger) has no tenant here and is not budget-gated by
+ * this door — named in docs/operations/WAVE156-RENDER-AND-QUEUE.md.
+ */
+export async function generateImage(input: GenerateImageInput): Promise<GenerateImageResult> {
+  const { runPaidEgress } = await import("@/lib/vendor-governance/budget-gate")
+  const size = input.size ?? DEFAULT_SIZES[input.purpose]
+  const quality = input.quality ?? "standard"
+  const estimate = priceImageGeneration({ model: "dall-e-3", quality, size }).costUsd
+  const paid = await runPaidEgress<GenerateImageResult>({
+    brokerageId: input.spend?.brokerageId ?? null, vendor: "openai", usageType: "image_generation", action: "image.ai.generate",
+    estimatedCostUsd: estimate, units: 1, book: "caller",
+    subject: { type: "image", id: null, ref: input.spend?.feature ?? input.purpose },
+    actor: input.spend?.userId ? { type: "user", userId: input.spend.userId } : { type: "system" },
+    systemSource: input.spend?.feature ?? "image_generation",
+    metadata: { purpose: input.purpose, size, quality },
+  }, () => generateImageBehindTheDoor(input), (r) => ({
+    // Charged when the provider returned bytes — a storage failure after that is still a charge (it carries a cost).
+    ok: r.success || (typeof r.cost === "number" && r.cost > 0),
+    costUsd: r.cost, error: r.success ? null : (r.error ?? r.errorCode ?? null),
+  }))
+  if (!paid.ran) {
+    return { success: false, errorCode: "budget", error: paid.reason === "budget_refused" ? `Vendor budget exceeded — image generation paused (${paid.detail})` : paid.detail }
+  }
+  return paid.result
 }
