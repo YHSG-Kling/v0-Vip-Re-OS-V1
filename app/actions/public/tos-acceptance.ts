@@ -70,7 +70,7 @@ async function servedTermsHash(svc: any, claimed: string | null): Promise<{ ok: 
   const current = String((data as any)?.tos_version ?? "2026-07-01")
   if (claimed !== null && claimed !== current) return { ok: false, error: "These terms are not the current version — reload the page and accept the current terms. Nothing was recorded." }
   const [{ servedTermsDocument }, { resolveProductBrand }] = await Promise.all([import("@/lib/branding/platform-rights-notice"), import("@/lib/platform/product-brand")])
-  const text = servedTermsDocument({ tosVersion: current, holder: resolveProductBrand((data as any)?.product_brand).name, year: new Date().getUTCFullYear() })
+  const text = servedTermsDocument({ tosVersion: current, holder: resolveProductBrand((data as any)?.product_brand)?.name ?? "", year: new Date().getUTCFullYear() })
   if (text === null) return { ok: false, error: "The text of the current terms version could not be resolved — your acceptance was NOT recorded." }
   const { createHash } = await import("node:crypto")
   return { ok: true, version: current, sha256: createHash("sha256").update(text, "utf8").digest("hex") }
