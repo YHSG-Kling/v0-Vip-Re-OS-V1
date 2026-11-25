@@ -11,6 +11,7 @@ import {
   getRecruitingAnalyticsByYear,
   listRecruitableAgents,
   getRecruitingNeeds,
+  getRecruitingFunnel,
 } from "@/app/actions/recruiting-roi"
 import { YearlyRevenueChart } from "./yearly-revenue-chart"
 import { BreakEvenChart } from "./breakeven-chart"
@@ -158,6 +159,10 @@ export default async function RecruitingROIPage() {
   const recruitingNeeds = await getRecruitingNeeds().catch((e) => ({
     needs: [], missions: [], workforceLine: null, twinAt: null,
     blindSpots: [`recruiting needs unavailable: ${e instanceof Error ? e.message : String(e)}`],
+  }))
+  const recruitingFunnel = await getRecruitingFunnel().catch((e) => ({
+    stages: [] as Array<{ key: string; label: string; count: number | null }>, declined: 0,
+    blindSpots: [`the recruiting funnel is unavailable: ${e instanceof Error ? e.message : String(e)}`],
   }))
 
   return (
@@ -325,6 +330,20 @@ export default async function RecruitingROIPage() {
                 What counts as rising demand, an agent&apos;s capacity or a luxury territory is brokerage policy —{" "}
                 <a className="underline" href="/dashboard/admin/manager-trust#workforce-thresholds">tune the workforce thresholds</a>.
               </p>
+            </CardContent>
+          </Card>
+          {/* WAVE 156 (156K) — the funnel from persisted events (app/actions/recruiting-roi.ts getRecruitingFunnel). */}
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">Recruiting funnel</CardTitle>
+              <CardDescription>Counted from recorded events only. A stage that could not be read shows a dash, never zero.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-1 text-sm">
+              {recruitingFunnel.stages.map((s) => (
+                <div key={s.key} className="flex justify-between"><span>{s.label}</span><span className="font-medium">{s.count ?? "—"}</span></div>
+              ))}
+              <div className="flex justify-between text-muted-foreground"><span>Declined</span><span>{recruitingFunnel.declined}</span></div>
+              {recruitingFunnel.blindSpots.map((b) => <p key={b} className="text-xs text-muted-foreground">Not shown: {b}</p>)}
             </CardContent>
           </Card>
           <RecruitingPipelineClient recruits={(recruitRows as any[]) ?? []} brokerageId={profile.brokerage_id} />

@@ -340,3 +340,79 @@ export async function addRecruitingCost(
 
   return data?.[0]
 }
+
+/**
+ * WAVE 156 (lane 156K) — THE RECRUITING FUNNEL on the recruiting ROI surface, from persisted events only
+ * (lib/recruiting/recruiting-roi-compute.ts computeRecruitingFunnel holds the stage rules). Same gate as every sibling
+ * (requireRecruitingCaller: tenant from the SESSION, the tenant-admin roster); then the service client, every read pinned to
+ * that tenant. The "producing" stage reads recruiting_analytics — the brokerage's books — so it is answered only for a seat
+ * that may read the books (BROKERAGE_FINANCE_ADMIN_USER_TYPES or the compliance officer, the same seats the live
+ * can_read_brokerage_books() admits inside a brokerage); anyone else gets it as a published blind spot, never a number.
+ * A refused read is a blind spot and its stage is null, never 0.
+ */
+export async function getRecruitingFunnel(): Promise<{
+  stages: Array<{ key: string; label: string; count: number | null }>
+  declined: number
+  blindSpots: string[]
+}> {
+  const { client, userId, brokerageId } = await requireRecruitingCaller()
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const { computeRecruitingFunnel } = await import("@/lib/recruiting/recruiting-roi-compute")
+  const { BROKERAGE_FINANCE_ADMIN_USER_TYPES } = await import("@/lib/auth/resolve-user-role")
+  const svc = createServiceClient() as any
+  const blindSpots: string[] = []
+
+  const { data: me } = await client.from("users").select("user_type").eq("id", userId).maybeSingle()
+  const myType = String((me as { user_type?: string | null } | null)?.user_type ?? "").toLowerCase()
+  const readsBooks = BROKERAGE_FINANCE_ADMIN_USER_TYPES.has(myType) || myType === "compliance_officer"
+
+  const { data: recruitRows, error: recErr } = await svc.from("recruits")
+    .select("id, status, provisioned, provisioned_user_id").eq("brokerage_id", brokerageId).limit(5000)
+  if (recErr) throw new Error(`Could not read the recruiting pipeline: ${recErr.message}`)
+  const recruits = (recruitRows ?? []) as Array<{ id: string; status: string | null; provisioned: boolean | null; provisioned_user_id: string | null }>
+
+  let recordedMoves: Record<string, string[]> | null = {}
+  const { data: moves, error: movesErr } = await svc.from("agent_action_ledger")
+    .select("subject_id, detail").eq("brokerage_id", brokerageId).eq("action", "recruiting.recruit.advance_stage").eq("status", "executed").limit(20000)
+  if (movesErr) { recordedMoves = null; blindSpots.push(`recorded stage moves unreadable (${movesErr.message})`) }
+  else for (const m of (moves ?? []) as Array<{ subject_id: string | null; detail: { to?: unknown } | null }>) {
+    if (!m.subject_id || typeof m.detail?.to !== "string") continue
+    ;(recordedMoves[m.subject_id] ??= []).push(m.detail.to)
+  }
+
+  let approvedOutreach: string[] | null = []
+  const { data: msgs, error: msgErr } = await svc.from("agent_client_messages")
+    .select("entity_id").eq("brokerage_id", brokerageId).eq("agent_kind", "recruiting_manager").eq("entity_type", "recruit").in("status", ["approved", "sent"]).limit(20000)
+  if (msgErr) { approvedOutreach = null; blindSpots.push(`recruiting outreach unreadable (${msgErr.message})`) }
+  else approvedOutreach = ((msgs ?? []) as Array<{ entity_id: string | null }>).map((m) => m.entity_id).filter((x): x is string => !!x)
+
+  const seatUserIds = recruits.filter((r) => r.provisioned && r.provisioned_user_id).map((r) => r.provisioned_user_id as string)
+  let seats: Record<string, { active: boolean | null; certified: boolean | null; producing: boolean | null }> | null = {}
+  if (seatUserIds.length > 0) {
+    const { data: agentRows, error: agErr } = await svc.from("agents").select("id, user_id, is_active").eq("brokerage_id", brokerageId).in("user_id", seatUserIds)
+    if (agErr) { seats = null; blindSpots.push(`recruited seats unreadable (${agErr.message})`) }
+    else {
+      const agents = (agentRows ?? []) as Array<{ id: string; user_id: string; is_active: boolean | null }>
+      const agentIds = agents.map((a) => a.id)
+      const certified = new Set<string>(), producing = new Set<string>()
+      let certOk = true, prodOk = readsBooks
+      if (agentIds.length > 0) {
+        const { data: certs, error: certErr } = await svc.from("agent_certifications").select("agent_id").eq("brokerage_id", brokerageId).in("agent_id", agentIds)
+        if (certErr) { certOk = false; blindSpots.push(`certifications unreadable (${certErr.message})`) }
+        else for (const c of (certs ?? []) as Array<{ agent_id: string }>) certified.add(c.agent_id)
+        if (readsBooks) {
+          const { data: prod, error: prodErr } = await svc.from("recruiting_analytics").select("recruited_agent_id, transaction_count").eq("brokerage_id", brokerageId).in("recruited_agent_id", agentIds)
+          if (prodErr) { prodOk = false; blindSpots.push(`production unreadable (${prodErr.message})`) }
+          else for (const p of (prod ?? []) as Array<{ recruited_agent_id: string; transaction_count: number | null }>) if (Number(p.transaction_count ?? 0) > 0) producing.add(p.recruited_agent_id)
+        }
+      }
+      if (!readsBooks) blindSpots.push("production is read from the brokerage's books, which your seat does not read")
+      for (const uid of seatUserIds) {
+        const a = agents.find((x) => x.user_id === uid)
+        seats[uid] = { active: a ? a.is_active !== false : false, certified: certOk ? (a ? certified.has(a.id) : false) : null, producing: prodOk ? (a ? producing.has(a.id) : false) : null }
+      }
+    }
+  }
+  const out = computeRecruitingFunnel({ recruits, recordedMoves, approvedOutreach, seats })
+  return { stages: out.stages, declined: out.declined, blindSpots }
+}
