@@ -507,13 +507,14 @@ export interface CapabilityRoute {
 export function routeCapability(
   capability: ProviderCapability,
   health: Partial<Record<ContactDataProvider, CapabilityProviderHealth | null>>,
-  exclude: ReadonlySet<string> = new Set(),
+  exclude: ReadonlySet<string> = new Set(), /** Wave 156 (156G): when given, a provider whose activation is not `active` is left out (failover only where licensed). */ activation?: Partial<Record<string, { state: string }>>,
 ): CapabilityRoute {
   const providers: ContactDataProvider[] = []
   const skipped: Array<{ provider: ContactDataProvider; reason: string }> = []
   for (const e of CONTACT_PROVIDER_ROUTES[capability] ?? []) {
     const h = health[e.provider]
     if (exclude.has(e.provider)) skipped.push({ provider: e.provider, reason: "excluded by the caller" })
+    else if (activation?.[e.provider] && activation[e.provider]!.state !== "active") skipped.push({ provider: e.provider, reason: `license: ${activation[e.provider]!.state} — not licensed for activation, never a failover target` })
     else if (h?.routeAround) skipped.push({ provider: e.provider, reason: `provider_failing (${h.state}): ${h.reason}` })
     else providers.push(e.provider)
   }
@@ -637,7 +638,7 @@ export async function runVersiumContactLeg(
   if (!req.hasEmail) missing.push("email")
   if (req.stage === "contact" && !req.hasPhone) missing.push("phone")
   const none = { demographicsProfile: null, demographicCategories: [] as string[], fieldProvenance: {} as Record<string, VersiumProvenance> }
-  if (missing.length === 0) return { answered: false, emails: [], phones: [], cost: 0, skipped: "nothing_to_append", ...none }
+  if (missing.length === 0) return { answered: false, emails: [], phones: [], cost: 0, skipped: "nothing_to_append", ...none }; { const plan = decidePrePull({ capability: "owner_contact", materialFields: missing, providers: ["versium"] }); if (plan.stage === "held") return { answered: false, emails: [], phones: [], cost: 0, skipped: `license_held: ${plan.reasons.join("; ")}`, ...none } } // wave 156 (156G): the pre-pull waterfall's rights step — a Versium not licensed for activation is never paid
   // Wave 106A — THE DATA SPEND GATE: only the missing fields that could change the declared decision
   // are bought (fail closed on an undeclared decision; the per-decision USD cap is tenant policy).
   const { shouldPurchaseEnrichment, loadResourceAllocationPolicy } = await import("@/lib/kernel/resource-allocation")
@@ -1800,3 +1801,84 @@ export const PROVIDER_ACTIVATION: Readonly<Record<ScorecardProvider, ProviderAct
     activationEvidence: { contract: null, incrementalCoverage: null, unitEconomics: "published plans 100/$19 · 1K/$99 · 5K/$499 · 10k/$749 · 50k/$3,499 per month (datafiniti.co/data/people-data, read 2026-11-16) — a public indicative plan, not a negotiated platform quote" },
   },
 })
+
+// ═════════════════════════════════════════════════════════════════════════════
+// THE PRE-PULL WATERFALL (wave 156, lane 156G — directive 156G "Explicit pre-pull waterfall"). ONE pure decision over the ONE
+// router above (routeCapability + CONTACT_PROVIDER_ROUTES), never a second router: it adds the steps the router never asked —
+// own record first, free count first, rights / budget held with an explanation, the cheapest LICENSED provider for only the
+// missing material fields, a narrowly scoped supplement for a verified gap, and raw evidence (never an asserted person)
+// when identity is insufficient. A purchase is a `buy` line; every other stage buys nothing. Callers: runVersiumContactLeg
+// (the rights step, above) and the proof scripts/wave156-g-provider-economics-guard.ts, which drives every stage.
+// ═════════════════════════════════════════════════════════════════════════════
+
+export type PrePullStage = "reuse_own_record" | "already_purchased" | "free_count" | "nothing_found" | "held" | "keep_raw_evidence" | "buy"
+
+export interface PrePullNeed {
+  capability: ProviderCapability
+  /** The material fields the decision needs (only these may be bought). */
+  materialFields: readonly string[]
+  /** What OUR own record already holds, per field: verified + age in days. Absent = not held. */
+  held?: Readonly<Record<string, { verified: boolean; ageDays: number | null }>>
+  /** A held field older than this is stale (re-asked). Default 180 days. */
+  maxAgeDays?: number
+  /** The subject (property / person key) was already purchased inside its window — never bought twice. */
+  alreadyPurchased?: boolean
+  /** A free count / cached summary: `available` = the provider offers one; `count` = its answer once asked (null = not asked). */
+  freeCount?: { available: boolean; count: number | null }
+  /** The caller's budget verdict. undefined = the caller's own budget gate runs after this plan (it must); null = unreadable → held. */
+  budgetAllowed?: boolean | null
+  /** Identity strong enough to assert a person (a normalized address / name + geography / verified contact point). Default true. */
+  identitySufficient?: boolean
+  /** Restrict the route to these providers (a leg that walks one provider). */
+  providers?: readonly ContactDataProvider[]
+  /** Which material fields each provider supplies (field scorecard). Absent provider = supplies every material field. */
+  supplies?: Partial<Record<ContactDataProvider, readonly string[]>>
+  health?: Partial<Record<ContactDataProvider, CapabilityProviderHealth | null>>
+  /** Activation per provider — defaults to PROVIDER_ACTIVATION (a reviewed declaration, never a runtime flag). */
+  activation?: Partial<Record<string, { state: string }>>
+}
+
+export interface PrePullDecision {
+  stage: PrePullStage
+  /** Paid lines, in order: the cheapest licensed provider first, then at most ONE narrowly scoped supplement for the gap. */
+  buy: Array<{ provider: ContactDataProvider; fields: string[]; unitCostUsd: number }>
+  /** Material fields still missing after the plan (a supplement's gap, or everything when nothing is bought). */
+  gap: string[]
+  reasons: string[]
+}
+
+/** PURE — the pre-pull waterfall for ONE subject. Deterministic; reads no network and spends nothing. */
+export function decidePrePull(n: PrePullNeed): PrePullDecision {
+  const maxAge = n.maxAgeDays ?? 180
+  const held = n.held ?? {}
+  const missing = n.materialFields.filter((f) => { const h = held[f]; return !(h && h.verified && h.ageDays !== null && h.ageDays <= maxAge) })
+  const out = (stage: PrePullStage, reasons: string[], buy: PrePullDecision["buy"] = [], gap: string[] = missing): PrePullDecision => ({ stage, buy, gap, reasons })
+  if (missing.length === 0) return out("reuse_own_record", [`every material field is already in our own verified record within ${maxAge} days — $0 pull`])
+  if (n.alreadyPurchased) return out("already_purchased", ["this subject was already purchased inside its window — reuse that result; the same subject is never bought twice"])
+  if (n.freeCount?.available && n.freeCount.count === null) return out("free_count", ["the provider offers a free count / cached summary — ask it first; nothing is downloaded or charged by a count"])
+  if (n.freeCount?.available && n.freeCount.count === 0) return out("nothing_found", ["the free count found no records — nothing to buy"])
+  const activation = n.activation ?? (PROVIDER_ACTIVATION as unknown as Record<string, { state: string }>)
+  const only = n.providers ? new Set<string>(n.providers) : null
+  const exclude = new Set<string>((CONTACT_PROVIDER_ROUTES[n.capability] ?? []).map((e) => e.provider).filter((p) => only !== null && !only.has(p)))
+  const route = routeCapability(n.capability, n.health ?? {}, exclude, activation)
+  const notExcluded = route.skipped.filter((s) => !exclude.has(s.provider))
+  if (route.providers.length === 0) return out("held", [`no licensed, healthy provider for ${n.capability} — dormant / held, nothing is bought`, ...notExcluded.map((s) => `${s.provider}: ${s.reason}`)])
+  if (n.budgetAllowed === null) return out("held", ["the budget could not be read — held (fail closed), nothing is bought"])
+  if (n.budgetAllowed === false) return out("held", ["over budget — held, nothing is bought"])
+  if (n.identitySufficient === false) return out("keep_raw_evidence", ["identity / freshness is insufficient to assert a person — keep the raw evidence; no purchase, no asserted person"])
+  const cost = (p: ContactDataProvider) => (CONTACT_PROVIDER_ROUTES[n.capability] ?? []).find((e) => e.provider === p)?.unitCostUsd ?? 0
+  const suppliedBy = (p: ContactDataProvider, fields: readonly string[]) => fields.filter((f) => (n.supplies?.[p] ?? fields).includes(f))
+  const buy: PrePullDecision["buy"] = []
+  let gap = [...missing]
+  const first = route.providers.find((p) => suppliedBy(p, gap).length > 0)
+  if (!first) return out("held", [`no licensed provider on the ${n.capability} route supplies ${missing.join(", ")} — held`])
+  buy.push({ provider: first, fields: suppliedBy(first, gap), unitCostUsd: cost(first) })
+  gap = gap.filter((f) => !buy[0].fields.includes(f))
+  const reasons = [`cheapest licensed provider for the missing material fields: ${first} (${buy[0].fields.join(", ")})`, ...notExcluded.map((s) => `${s.provider} skipped — ${s.reason}`)]
+  if (gap.length > 0) {
+    const supp = route.providers.find((p) => p !== first && suppliedBy(p, gap).length > 0)
+    if (supp) { const f = suppliedBy(supp, gap); buy.push({ provider: supp, fields: f, unitCostUsd: cost(supp) }); gap = gap.filter((x) => !f.includes(x)); reasons.push(`narrow supplement from ${supp} for the verified gap only (${f.join(", ")})`) }
+    else reasons.push(`no licensed provider supplies the remaining gap (${gap.join(", ")}) — left missing, never bought from an unlicensed source`)
+  }
+  return out("buy", reasons, buy, gap)
+}

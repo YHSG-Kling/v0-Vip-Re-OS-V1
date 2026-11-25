@@ -434,3 +434,117 @@ export async function resolveRentcastEligibility(
       : "RentCast is eligible for this tenant: no tenant IDX Broker connection, the platform key resolves, and the tenant is within its monthly vendor budget.",
   }
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// THE PLATFORM'S OWN RENTCAST HARD CUTOFF (wave 156, lane 156G).
+//
+// RentCast, verbatim (developers.rentcast.io/reference/billing-and-pricing, read 2026-11-25): "We do not currently support
+// hard usage caps or automatic API request blocking when you reach your current plan's monthly request limit. If you
+// require this functionality, we recommend implementing usage monitoring and API request blocking in your own application
+// code" — and "you will be charged an overage fee for each additional request". The per-TENANT vendor budget above is an
+// ADVISORY cap that fails open by contract; nothing stopped the ONE platform account from running into paid overage. This
+// is that stop: a PLATFORM-WIDE monthly request ceiling asked immediately before every real RentCast egress (the REST door
+// in lib/property/rentcast.ts and the MCP tool door in lib/external/rentcast-ai-tools.ts). A cache hit makes no request
+// and is never counted or refused.
+//
+// THE CEILING — no invented number: `platform_settings.provider_request_caps.rentcast.monthly_requests` when the owner set
+// it (m1019); otherwise the requests INCLUDED in the plan this repo already prices RentCast at (RENTCAST_USD_PER_REQUEST
+// $0.074 = Foundation $74 / 1,000 — lib/property/rentcast.ts), i.e. ZERO paid overage until the owner authorizes some.
+// An unreadable setting or an unreadable ledger REFUSES (CLAUDE.md §4 — "nobody checked" never reads as "under the cap").
+//
+// COUNTED: successful requests only (RentCast bills "an HTTP request … that returns a 200 status code and a response body";
+// "you will also not be billed for requests that return an error"), read from the ONE cost ledger (vendor_usage_tracking,
+// vendor 'rentcast', units_used — meterCall books a success only, wave 156) for the CALENDAR month in UTC, plus the requests
+// THIS instance reserved since that read. BLIND SPOTS (published, not hidden): RentCast's billing period is anchored to the
+// day the plan was activated, not the 1st, so the calendar month is an approximation the owner can tighten with the cap;
+// ledger rows are written fire-and-forget, so two serverless instances can each overshoot by the requests in flight between
+// ledger reads (LEDGER_TTL_MS); the connector-health probe (lib/agentic-os/connector-probe.ts, RentCast /markets) is a
+// separate, unmetered door this counter cannot see.
+// ═════════════════════════════════════════════════════════════════════════════
+
+/** Requests included in the plan RENTCAST_USD_PER_REQUEST is derived from (Foundation: $74 / 1,000 — rentcast.ts). */
+export const RENTCAST_PLAN_INCLUDED_REQUESTS = 1000
+
+export interface RentcastPlatformCapVerdict {
+  allowed: boolean
+  /** The ceiling in force and where it came from. null = the ceiling could not be read (refused). */
+  cap: number | null
+  capSource: "owner_setting" | "plan_included_requests" | "unreadable"
+  /** Successful requests counted this month (ledger + this instance's reservations). null = the ledger could not be read. */
+  used: number | null
+  reason: string
+}
+
+/**
+ * PURE — the cutoff decision. Refuses on a missing cap or an unreadable count (fail closed); otherwise one more request is
+ * allowed only while `used < cap`.
+ * @proofSeam scripts/wave156-g-provider-economics-guard.ts drives every branch directly and through the REST/MCP doors
+ */
+export function decideRentcastPlatformCap(input: { cap: number | null; capSource: RentcastPlatformCapVerdict["capSource"]; used: number | null }): RentcastPlatformCapVerdict {
+  const { cap, capSource, used } = input
+  if (cap === null || !Number.isFinite(cap) || cap < 0) return { allowed: false, cap: null, capSource: "unreadable", used, reason: "RentCast platform request ceiling could not be read — no request is made until it can (fail closed)" }
+  if (used === null || !Number.isFinite(used)) return { allowed: false, cap, capSource, used: null, reason: "RentCast request ledger could not be read — no request is made until the month's count is known (fail closed)" }
+  if (used >= cap) {
+    return { allowed: false, cap, capSource, used, reason: `RentCast platform hard cutoff reached: ${used} of ${cap} requests this month (${capSource === "owner_setting" ? "the owner's ceiling" : "the plan's included requests — no paid overage is authorized"}); RentCast itself has no cap, so the platform stops here` }
+  }
+  return { allowed: true, cap, capSource, used, reason: `${used} of ${cap} RentCast requests used this month` }
+}
+
+const RENTCAST_CAP_ABSENT_COLUMN = new Set(["42703", "PGRST204"])
+const LEDGER_TTL_MS = 30_000
+
+/** In-process state: the last ledger read and the reservations made since it (reset when the month or the read changes). */
+const capState: { month: string; ledgerUsed: number | null; cap: number | null; capSource: RentcastPlatformCapVerdict["capSource"]; readAt: number; reserved: number } = {
+  month: "", ledgerUsed: null, cap: null, capSource: "unreadable", readAt: 0, reserved: 0,
+}
+
+/** @proofSeam scripts/wave156-g-provider-economics-guard.ts resets the in-process counter between driven scenarios */
+export function resetRentcastPlatformCapState(): void {
+  capState.month = ""; capState.ledgerUsed = null; capState.cap = null; capState.capSource = "unreadable"; capState.readAt = 0; capState.reserved = 0
+}
+
+type CapSvc = { from: (table: string) => any }
+
+async function readRentcastCapAndLedger(svc: CapSvc, monthStartIso: string): Promise<{ cap: number | null; capSource: RentcastPlatformCapVerdict["capSource"]; used: number | null }> {
+  let cap: number | null = null
+  let capSource: RentcastPlatformCapVerdict["capSource"] = "unreadable"
+  const s = await svc.from("platform_settings").select("provider_request_caps").eq("id", true).maybeSingle()
+  if (s.error && !RENTCAST_CAP_ABSENT_COLUMN.has(String(s.error.code ?? ""))) {
+    cap = null
+  } else {
+    const configured = Number((s.data as { provider_request_caps?: { rentcast?: { monthly_requests?: unknown } } } | null)?.provider_request_caps?.rentcast?.monthly_requests)
+    if (!s.error && (s.data as { provider_request_caps?: { rentcast?: { monthly_requests?: unknown } } } | null)?.provider_request_caps?.rentcast?.monthly_requests != null && Number.isFinite(configured) && configured >= 0) {
+      cap = Math.floor(configured); capSource = "owner_setting"
+    } else { cap = RENTCAST_PLAN_INCLUDED_REQUESTS; capSource = "plan_included_requests" }
+  }
+  const l = await svc.from("vendor_usage_tracking").select("units_used").eq("vendor_name", "rentcast").gte("created_at", monthStartIso).limit(200000)
+  const used = l.error ? null : ((l.data ?? []) as Array<{ units_used: number | null }>).reduce((a, r) => a + (Number(r.units_used) || 0), 0)
+  return { cap, capSource, used: used === null ? null : Math.round(used * 1000) / 1000 }
+}
+
+/**
+ * RESERVE one RentCast request against the platform cutoff, immediately before the egress. On `allowed`, the caller MUST
+ * `settle(ok)` once the vendor answered: a failed request is not billed by RentCast and its reservation is released.
+ * Never throws (an exception refuses).
+ */
+export async function reserveRentcastPlatformRequest(opts: { svc?: CapSvc; now?: Date } = {}): Promise<
+  | { allowed: true; verdict: RentcastPlatformCapVerdict; settle: (ok: boolean) => void }
+  | { allowed: false; verdict: RentcastPlatformCapVerdict }
+> {
+  try {
+    const now = opts.now ?? new Date()
+    const month = now.toISOString().slice(0, 7)
+    if (capState.month !== month || capState.ledgerUsed === null || now.getTime() - capState.readAt > LEDGER_TTL_MS) {
+      const svc = opts.svc ?? ((await import("@/lib/supabase/service")).createServiceClient() as unknown as CapSvc)
+      const r = await readRentcastCapAndLedger(svc, `${month}-01T00:00:00.000Z`)
+      capState.month = month; capState.cap = r.cap; capState.capSource = r.capSource; capState.ledgerUsed = r.used; capState.readAt = now.getTime(); capState.reserved = 0
+    }
+    const verdict = decideRentcastPlatformCap({ cap: capState.cap, capSource: capState.capSource, used: capState.ledgerUsed === null ? null : capState.ledgerUsed + capState.reserved })
+    if (!verdict.allowed) return { allowed: false, verdict }
+    capState.reserved++
+    let settled = false
+    return { allowed: true, verdict, settle: (ok: boolean) => { if (settled) return; settled = true; if (!ok) capState.reserved = Math.max(0, capState.reserved - 1) } }
+  } catch (e) {
+    return { allowed: false, verdict: { allowed: false, cap: null, capSource: "unreadable", used: null, reason: `RentCast cutoff could not be evaluated (${e instanceof Error ? e.message : String(e)}) — refused` } }
+  }
+}

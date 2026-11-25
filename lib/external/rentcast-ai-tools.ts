@@ -80,10 +80,15 @@ export async function rentCastMcpTools(ctx: RentcastAiToolsContext): Promise<Rec
       description: t.description || `RentCast MCP tool: ${t.name}`,
       inputSchema: jsonSchema(t.inputSchema as any),
       execute: async (args: Record<string, unknown>) => {
+        // Wave 156 (156G): an MCP call is billed as an API request — it reserves against the platform's own RentCast hard
+        // cutoff first (RentCast has none), and only a SUCCESSFUL call is booked (RentCast does not bill an error).
+        const slot = await (await import("@/lib/property/rentcast-eligibility")).reserveRentcastPlatformRequest()
+        if (!slot.allowed) return { success: false, error: slot.verdict.reason }
         const result = await callRentcastMcp(t.name, args ?? {})
+        slot.settle(result.ok)
         // Never let metering failure mask the tool's own result — fire-and-forget, same
         // posture as every other meterVendorSpend call site in this repo.
-        void meterVendorSpend({
+        if (result.ok) void meterVendorSpend({
           vendorName: "rentcast",
           usageType: `mcp_${t.name}`,
           cost: RENTCAST_USD_PER_REQUEST,

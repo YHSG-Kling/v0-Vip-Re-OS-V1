@@ -71,6 +71,10 @@ export async function getServicesRegistry() {
         .eq("brokerage_id", brokerageId)
     : { data: [] }
 
+  // Wave 156 (156G): the platform's activation declaration, read at request time (server-side dynamic import — no static weight).
+  const { PROVIDER_ACTIVATION } = await import("@/lib/ai-isa/property-lookup-rail")
+  const DORMANT_STATE: Record<string, boolean> = { batchdata: PROVIDER_ACTIVATION.batchdata.state !== "active", peopledatalabs: PROVIDER_ACTIVATION.peopledata.state !== "active" }
+
   // Merge DB status with hardcoded defaults
   const services = SERVICE_DEFAULTS.map((svc) => {
     const dbRecord = (dbIntegrations ?? []).find(
@@ -86,7 +90,10 @@ export async function getServicesRegistry() {
       // are platform-held env secrets with no per-brokerage store, so nothing
       // consumes the list. It stays on SERVICE_DEFAULTS as the ops record of
       // which env vars each integration needs.
-      status: dbRecord?.status ?? (process.env[svc.env_key] ? "connected" : "not_configured"),
+      // Wave 156 (156G): a platform env key being SET is not a connection — it reads "configured" (never live-verified here),
+      // and a provider the platform keeps DORMANT (PROVIDER_ACTIVATION — e.g. BatchData / PeopleData, owner ruling R9) reads
+      // "dormant" whether or not a key is set: it is not in use, so it is never shown as connected.
+      status: dbRecord?.status ?? (DORMANT_STATE[svc.id] ? "dormant" : process.env[svc.env_key] ? "configured" : "not_configured"),
       last_checked_at: dbRecord?.last_health_check_at ?? null,
       last_error: dbRecord?.last_error ?? null,
     }

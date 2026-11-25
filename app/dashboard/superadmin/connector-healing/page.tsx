@@ -504,6 +504,17 @@ export default async function ConnectorHealingPage() {
               <div>Contact conversion (leads from raw): {economics.contactConversion === null ? "n/a" : `${(economics.contactConversion * 100).toFixed(1)}%`}</div>
               <div>Appointments / accepted relationships / attributed transactions: {economics.appointments ?? "—"} / {economics.acceptedRelationships ?? "—"} / {economics.attributedTransactions ?? "—"}</div>
             </div>
+            {/* Wave 156 (156G): cohort finance — the fully loaded cost per USABLE PERSON; an unmeasured part is shown as unknown. */}
+            {economics.cohort && (
+              <div className="grid gap-2 sm:grid-cols-3 text-xs">
+                <div>Known cost (person data + acquisition): <strong>${economics.cohort.knownCostUsd.toFixed(2)}</strong>{economics.cohort.complete ? "" : " — incomplete: every figure below is a LOWER BOUND"}</div>
+                <div>Cost per usable person: {economics.cohort.costPerUsablePersonUsd === null ? "unknown (no blinded match verification)" : `$${economics.cohort.costPerUsablePersonUsd.toFixed(4)}`}</div>
+                <div>Cost per promoted Lead: {economics.cohort.costPerPromotedLeadUsd === null ? "n/a" : `$${economics.cohort.costPerPromotedLeadUsd.toFixed(4)}`}</div>
+                <div>Cost per AI-ISA-qualified Contact: {economics.cohort.costPerQualifiedContactUsd === null ? "n/a" : `$${economics.cohort.costPerQualifiedContactUsd.toFixed(4)}`}</div>
+                <div>Cost per closed opportunity: {economics.cohort.costPerClosedOpportunityUsd === null ? "unknown (roi-ledger attribution)" : `$${economics.cohort.costPerClosedOpportunityUsd.toFixed(2)}`}</div>
+                <ul className="list-disc pl-5 text-[11px] text-muted-foreground sm:col-span-3">{economics.cohort.unknowns.map((c) => <li key={c}>{c}</li>)}</ul>
+              </div>
+            )}
             <ul className="list-disc pl-5 text-[11px] text-muted-foreground">{economics.caveats.map((c) => <li key={c}>{c}</li>)}</ul>
           </CardContent>
         </Card>

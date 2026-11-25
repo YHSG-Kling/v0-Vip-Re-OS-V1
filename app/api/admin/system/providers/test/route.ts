@@ -86,14 +86,10 @@ async function testHousecanary(): Promise<TestResponse> {
   const key = process.env.HOUSECANARY_API_KEY
   const secret = process.env.HOUSECANARY_API_SECRET
   if (!key || !secret) return { ok: false, message: "HOUSECANARY_API_KEY / SECRET not set" }
-  const res = await callConnector({
-    connector: "housecanary", baseUrl: "https://api.housecanary.com", path: "/v2/property/value", method: "GET",
-    query: { address: "1600 Amphitheatre Pkwy", zipcode: "94043" },
-    auth: { style: "basic", username: key, password: secret },
-  })
-  if (res.status === 401 || res.status === 403) return { ok: false, message: "Auth rejected" }
-  if (!res.ok) return { ok: false, message: `HTTP ${res.status}` }
-  return { ok: true, message: "OK" }
+  // Wave 156 (156G): this "test" used to request a VALUATION of a real address — a billed property-value call made by a
+  // button. No free credential check is documented to us, so none is made: the presence of the credential is reported and
+  // nothing is spent. (The valuation survivor is lib/avm/provider-chain.ts requestPropertyValuation.)
+  return { ok: false, message: "Credential present — not tested: the only documented check is a billed valuation call, so no request is made" }
 }
 
 const TESTERS: Record<string, () => Promise<TestResponse>> = {
@@ -119,7 +115,11 @@ export async function POST(req: NextRequest) {
 
   try {
     const result = await timed(tester)
-    return NextResponse.json(result)
+    // Wave 156 (156G): an accepted credential is NOT "connected" for a provider the platform keeps dormant (PROVIDER_ACTIVATION,
+    // owner ruling R9) — the console must say it is not routed, never show it as a live connection.
+    const { PROVIDER_ACTIVATION } = await import("@/lib/ai-isa/property-lookup-rail")
+    const activation = (PROVIDER_ACTIVATION as Record<string, { state: string }>)[provider]?.state ?? null
+    return NextResponse.json({ ...result, routing: activation === null ? "not_on_the_data_route" : activation })
   } catch (err: any) {
     return NextResponse.json({ ok: false, message: err?.message ?? "Test failed" }, { status: 500 })
   }

@@ -265,7 +265,7 @@ function ServiceCard({ id, name, type, status, description, last_checked_at, las
           </div>
           <div className="flex items-center gap-2">
             <Badge variant={connected ? "default" : "secondary"}>
-              {connected ? "Connected" : "Not Configured"}
+              {connected ? "Connected" : status === "configured" ? "Key configured (not live-verified)" : status === "dormant" ? "Dormant (not in use)" : "Not Configured"}
             </Badge>
             <Button variant="outline" size="sm" onClick={() => setIsExpanded(!isExpanded)}>
               {isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
