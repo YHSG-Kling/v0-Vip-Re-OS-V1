@@ -64,7 +64,7 @@ import type { ManagerKey } from "@/lib/kernel/manager-registry"
 import {
   withActionLedger,
   ledgerToolCall,
-  governanceRecord,
+  governanceRecord, recordNonAction, decisionRefFromRow,
   isAiIsaSystemSource,
   settleDispatchResult,
   replayDispatchResult,
@@ -260,7 +260,7 @@ async function originAtSink(params: DispatchActorContext, channel: "email" | "sm
     brokerageId: params.brokerageId, action: `comms.${channel}.propose`, channel, actor: params.userId ? { type: "user", userId: params.userId } : { type: "system" },
     subject, riskClass: "COMMUNICATION", systemSource: params.systemSource ?? null, cycle: o.cycle ?? null, trustClass: o.trustClass ?? null,
     approvalBasis: o.sink?.verification?.kind === "authorized_human" ? "human_approval" : "policy_permitted", dependencies: [{ type: subject.type, id: subject.id, version: null }, ...(o.dependencies ?? [])],
-    sink: o?.sink ?? null,
+    sink: o?.sink ?? null, detail: { held_send: heldSendEnvelope(params, channel) }, // 156M: a HOLD keeps what a person may later approve (approveHeldSend)
   }, run)
   if ("providerKey" in r) return r
   return { success: false, providerKey: "governance" in r ? "sink_rule_gate" : "action_ledger_gate", error: r.error ?? "This proposal was already handled — not sent again." }
@@ -533,7 +533,7 @@ async function vendorBudgetPreflight(args: {
       outcome: "escalated",
       detail: {
         flow: "egress_subscription_blocked", channel: args.channel, connector: args.vendorKey,
-        reason: `The brokerage's subscription does not currently cover ${channelLabel} sends — update billing to resume`,
+        reason: `Your subscription does not currently cover ${channelLabel} sends — update billing to resume`,
         access_reason: verdict.reason,
         system_source: args.systemSource ?? "dispatch",
       },
@@ -1061,7 +1061,7 @@ export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchRe
       const complianceResult = await evaluateOutboundCompliance({
         contact: recipient,
         channel: "sms",
-        content: params.message,
+        content: params.message, channelPurpose: channelPurposeFor(params), // 156N via 156M: a campaign text never rides a representation as consent
         actorContext: {
           brokerageId: params.brokerageId,
           // ONE ISA predicate (lib/kernel/action-ledger.ts isAiIsaSystemSource — ghost_recovery and
@@ -2152,4 +2152,106 @@ function deconflictVerdictPatch(params: object | undefined): Record<string, unkn
 function withDeconflictVerdict(s: ReturnType<typeof settleDispatchResult>, params: object | undefined): ReturnType<typeof settleDispatchResult> {
   const patch = deconflictVerdictPatch(params)
   return patch.deconflict ? { ...s, governancePatch: patch } : s
+}
+
+// ─── WAVE 156 (lane 156M, round 2) — A HELD SEND IS RELEASED CARRYING THE APPROVAL'S DECISION ─────────────────────────────────
+// Before this, a stated-origin send the sink HELD ("a person verifies") wrote one `comms.decision.wait` row and nothing could act on
+// it: the hold named a human next trigger with no door behind it. Now:
+//   1. the hold row keeps the send's envelope (heldSendEnvelope — the same params the dispatcher would have used, minus origin / ledger);
+//   2. approveHeldSend: an authorized person's approval is ONE decision row (plane approval, verdict approved → ALLOW) on THIS tenant, with
+//      an expiry and the conversation head it saw (thread_head: the newest message id for the contact) as its known fact;
+//   3. releaseApprovedSend: re-reads the approval and the hold tenant-pinned, re-reads the thread head FRESH, and re-dispatches the held
+//      send CARRYING decisionRefFromRow(approval) — so the sink (lib/kernel/action-ledger.ts sinkRule) refuses an expired approval or one
+//      superseded by a newer message; another tenant's approval is never found by the pinned read. The release is keyed on the approval
+//      (cycle `release:<approval id>`), so a double click sends at most once; every gate of the dispatcher runs again on fresh facts.
+// The caller resolves the tenant and the approver from the SESSION (CLAUDE.md §4) and checks the approver's authority first.
+
+/** What a person may approve later: the held send's own params, minus origin / ledger. Withheld (null) above the replay size cap. */
+function heldSendEnvelope(params: DispatchActorContext, channel: "email" | "sms"): { kind: "email" | "sms"; params: Record<string, unknown> } | null {
+  const { origin: _o, ledger: _l, ...rest } = params as unknown as Record<string, unknown>
+  void _o; void _l
+  try {
+    const json = JSON.stringify(rest)
+    return json.length <= SEND_INTENT_REPLAY_MAX_BYTES ? { kind: channel, params: JSON.parse(json) as Record<string, unknown> } : null
+  } catch { return null }
+}
+
+/** The fact a send approval rests on: the newest message in the contact's thread (tenant-pinned). null = refused / unreadable. */
+async function threadHeadFact(svc: { from: (t: string) => any }, brokerageId: string, contactId: string | null): Promise<{ type: string; id: string | null; version: string } | null> {
+  if (!contactId) return { type: "thread_head", id: null, version: "no_contact" }
+  const { data, error } = await svc.from("messages").select("id, created_at").eq("brokerage_id", brokerageId).eq("contact_id", contactId).order("created_at", { ascending: false }).limit(1)
+  if (error) return null
+  const top = Array.isArray(data) && data[0] ? (data[0] as { id: string }) : null
+  return { type: "thread_head", id: contactId, version: top?.id ?? "empty" }
+}
+
+/** The approval TTL: a person's approval of a held send is valid for this long, then a fresh decision is needed. */
+export const HELD_SEND_APPROVAL_TTL_MINUTES = 24 * 60
+
+/**
+ * A person approves ONE held send. Refused when the hold is not this tenant's, is not a held `comms.*.propose`, kept no envelope, or the
+ * thread cannot be read. Idempotent per hold (one approval row; a second approve returns the same decision). Never sends.
+ */
+export async function approveHeldSend(
+  svc: { from: (t: string) => any },
+  a: { brokerageId: string; holdId: string; approverUserId: string; authority: string; ttlMinutes?: number; now?: Date },
+): Promise<{ ok: true; approvalId: string } | { ok: false; error: string }> {
+  if (!a.brokerageId || !a.holdId || !a.approverUserId || !a.authority?.trim()) return { ok: false, error: "approval_incomplete: tenant, hold, approver and authority are required" }
+  const { data: hold, error } = await svc.from("agent_action_ledger").select("id, action, status, subject_type, subject_id, detail").eq("id", a.holdId).eq("brokerage_id", a.brokerageId).maybeSingle()
+  if (error) return { ok: false, error: `hold_read_refused: ${error.message}` }
+  const h = hold as { id: string; action: string; status: string; subject_type: string; subject_id: string | null; detail: Record<string, any> | null } | null
+  if (!h) return { ok: false, error: "hold_not_found: no held send with that id in this tenant" }
+  if (h.action !== "comms.decision.wait" || h.status !== "skipped" || !/^comms\.(?:sms|email)\.propose$/.test(String(h.detail?.proposed_action ?? ""))) return { ok: false, error: "not_a_held_send: only a held outbound proposal can be approved here" }
+  if (!h.detail?.held_send) return { ok: false, error: "no_envelope: the hold kept no send to release (too large, or held before 156M) — the proposal must be made again" }
+  const now = a.now ?? new Date()
+  const contactId = h.subject_type === "contact" ? h.subject_id : null
+  const head = await threadHeadFact(svc, a.brokerageId, contactId)
+  if (!head) return { ok: false, error: "thread_unreadable: the conversation could not be read — nothing approved (fail closed)" }
+  const expiresAt = new Date(now.getTime() + (a.ttlMinutes ?? HELD_SEND_APPROVAL_TTL_MINUTES) * 60_000).toISOString()
+  const verification = { kind: "authorized_human" as const, userId: a.approverUserId, authority: a.authority.trim(), at: now.toISOString() }
+  const key = `${a.brokerageId}:held_send_approval:${h.id}`
+  const r = await recordNonAction({
+    brokerageId: a.brokerageId, domain: "comms", decision: "send_touch", actor: { type: "user", userId: a.approverUserId }, subject: { type: h.subject_type, id: h.subject_id },
+    reasonCode: "HUMAN_REQUESTED", reasonDetail: `approved the held ${String(h.detail.proposed_action)} (hold ${h.id})`, idempotencyKey: key,
+    detail: { approves: h.id, governance: governanceRecord({
+      plane: "approval", verdict: "approved", scope: { brokerageId: a.brokerageId, userId: a.approverUserId }, actor: { type: "user", id: a.approverUserId },
+      entity: { type: h.subject_type, id: h.subject_id, version: null }, objective: String(h.detail.proposed_action), rationale: `an authorized person approved the held send (${a.authority.trim()})`,
+      trustClass: "authorized_human", approvalBasis: "human_approval", dependencies: [head], expiresAt, verification,
+      approver: { required: true, userIds: [a.approverUserId], expiresAt },
+    }) },
+  }, { client: svc })
+  if (r.id) return { ok: true, approvalId: r.id }
+  // 23505: already approved — return the existing approval (one per hold).
+  const { data: prior } = await svc.from("agent_action_ledger").select("id").eq("brokerage_id", a.brokerageId).eq("idempotency_key", key).maybeSingle()
+  const id = (prior as { id?: string } | null)?.id ?? null
+  return id ? { ok: true, approvalId: id } : { ok: false, error: `approval_not_recorded: ${r.error ?? "unknown"}` }
+}
+
+/**
+ * Release the held send an approval names, CARRYING that approval's decision reference through the sink. The approval and the hold are
+ * read tenant-pinned (another tenant's approval → `approval_gate` refusal, nothing else read); the thread head is read fresh, so an
+ * approval made before a newer message is SUPERSEDED at the sink; an expired approval is refused there too. At most once per approval.
+ */
+export async function releaseApprovedSend(svc: { from: (t: string) => any }, a: { brokerageId: string; approvalId: string }): Promise<DispatchResult> {
+  const refuse = (error: string): DispatchResult => ({ success: false, providerKey: "approval_gate", error })
+  const { data: row, error } = await svc.from("agent_action_ledger").select("id, brokerage_id, action, actor_user_id, actor_manager_key, detail").eq("id", a.approvalId).eq("brokerage_id", a.brokerageId).maybeSingle()
+  if (error) return refuse(`approval_read_refused: ${error.message}`)
+  if (!row || (row as { action: string }).action !== "comms.decision.send_touch") return refuse("approval_not_found: no send approval with that id in this tenant")
+  const decision = decisionRefFromRow(row as never)
+  if (!decision) return refuse("approval_not_a_permission: the row is not an ALLOW decision")
+  const holdId = String((row as { detail?: Record<string, any> }).detail?.approves ?? "")
+  const { data: hold, error: hErr } = await svc.from("agent_action_ledger").select("id, subject_type, subject_id, detail").eq("id", holdId).eq("brokerage_id", a.brokerageId).maybeSingle()
+  if (hErr || !hold) return refuse(`hold_not_found: ${hErr?.message ?? "the held send is gone"}`)
+  const h = hold as { subject_type: string; subject_id: string | null; detail: Record<string, any> | null }
+  const env = h.detail?.held_send as { kind: "email" | "sms"; params: Record<string, unknown> } | undefined
+  if (!env?.params) return refuse("no_envelope: the hold kept no send to release")
+  const head = await threadHeadFact(svc, a.brokerageId, h.subject_type === "contact" ? h.subject_id : null)
+  if (!head) return refuse("thread_unreadable: the conversation could not be read — not released (fail closed)")
+  const approver = (row as { actor_user_id?: string | null }).actor_user_id ?? decision.decider
+  const origin: NonNullable<DispatchActorContext["origin"]> = {
+    trustClass: (h.detail?.governance?.trust_class as string | null) ?? null, cycle: `release:${a.approvalId}`, dependencies: [head],
+    sink: { decision, verification: { kind: "authorized_human", userId: approver, authority: `send approval ${a.approvalId}` } },
+  }
+  const params = { ...env.params, brokerageId: a.brokerageId, origin }
+  return env.kind === "sms" ? dispatchSms(params as unknown as DispatchSmsParams) : dispatchEmail(params as unknown as DispatchEmailParams)
 }

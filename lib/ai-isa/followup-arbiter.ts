@@ -308,7 +308,7 @@ function evaluateChannelReadiness(input: ChannelReadinessInput): ChannelCheck[] 
     // COST / BUDGET.
     const unit = COSTED.has(channel) ? (input.unitCostUsd[channel] === undefined ? null : input.unitCostUsd[channel]) : undefined
     const spendTier = tierOf(unit)
-    if (COSTED.has(channel) && input.sendsBlocked) refuse(`the brokerage's subscription does not currently cover sends (${input.sendsBlocked}) — the dispatcher's billing gate would refuse it`)
+    if (COSTED.has(channel) && input.sendsBlocked) refuse(`the subscription does not currently cover sends (${input.sendsBlocked}) — the dispatcher's billing gate would refuse it`)
     else if (typeof unit === "number" && unit > 0 && typeof input.budgetRemainingUsd === "number" && unit > input.budgetRemainingUsd) refuse("over the brokerage's remaining platform usage this period — the dispatcher's budget pre-flight would refuse it")
     else if (unit === null && ok) reasons.push("caveat: this channel's unit price is unknown on the vendor row — the send books it with price_state 'unknown', never a guess")
     else if (typeof unit === "number" && unit > 0 && input.budgetRemainingUsd === undefined && ok) reasons.push("caveat: the usage budget was not read here — the dispatcher's mayUseAndAfford pre-flight decides")
