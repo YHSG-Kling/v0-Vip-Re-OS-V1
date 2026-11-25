@@ -29,7 +29,7 @@
 // Not server-only: the proof (scripts/wave156-h-calculators-guard.ts) drives every function here on the in-memory client
 // with counted seams. Providers, the kernel and the ledger are lazy imports at their call.
 
-import { CALCULATOR_KINDS, CALCULATOR_SPECS, runCalculator, type CalculatorKind, type CalculatorOutcome, type AgreedCommission } from "./engine"
+import { CALCULATOR_KINDS, CALCULATOR_SPECS, calculatorSpec, runCalculator, type CalculatorKind, type CalculatorOutcome, type AgreedCommission } from "./engine"
 import { CALCULATOR_JURISDICTIONS } from "./rate-sources"
 import type { LeadMagnetAttribution } from "@/lib/lead-magnets/attribution"
 
@@ -64,7 +64,7 @@ export function normalizeCalculatorArtifactConfig(raw: unknown): { ok: true; con
   if (!(CALCULATOR_KINDS as readonly string[]).includes(kind)) errors.push(`choose a calculator (one of: ${CALCULATOR_KINDS.join(", ")})`)
   const jRaw = r.jurisdiction == null || r.jurisdiction === "" ? null : String(r.jurisdiction).trim().toUpperCase()
   if (jRaw !== null && !(CALCULATOR_JURISDICTIONS as readonly string[]).includes(jRaw)) errors.push(`"${jRaw}" has no verified source yet — choose one of ${CALCULATOR_JURISDICTIONS.join(", ")} or none (visitors then enter every figure)`)
-  const spec = (CALCULATOR_KINDS as readonly string[]).includes(kind) ? CALCULATOR_SPECS[kind as CalculatorKind] : null
+  const spec = calculatorSpec(kind) // the engine's own null-safe lookup (lib/calculators/engine.ts calculatorSpec) — one spelling of "is this a calculator kind"
   const hidden = Array.isArray(r.hiddenFields) ? r.hiddenFields.map(String) : []
   for (const h of hidden) {
     const f = spec?.fields.find((x) => x.key === h)

@@ -104,7 +104,7 @@ export const PROVIDER_TENANCY: ProviderTenancy[] = [
     provider: "peopledata",
     models: ["platform_metered"],
     why: "Contact/person enrichment for the lead pipeline (PeopleData/PDL rail) — platform key, enrichment lands via the merge/column-map so tenant records stay canonical. Same NON-FCRA legal line as all enrichment data.",
-    envVars: ["PEOPLEDATA_API_KEY", "PDL_API_KEY"],
+    envVars: ["PEOPLEDATA_API_KEY"], // wave 156: the second spelling PDL_API_KEY is RETIRED — nothing reads it (lib/external/peopledata-client.ts:53 reads this one name)
   },
   {
     provider: "rentcast",

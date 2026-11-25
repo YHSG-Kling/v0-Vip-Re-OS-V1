@@ -14,7 +14,7 @@ import type { NavigationConfig, NavItem } from '@/app/types/navigation'
 import type { UserContext } from '@/app/types/roles'
 import { GlobalSearch } from './global-search'
 import { UserMenu } from './user-menu'
-import { NotificationBell } from '@/app/components/notifications/notification-bell'
+import { NotificationBell } from '@/app/components/notifications/notification-bell' // TOMBSTONE (wave 156): the three-line re-export shim app/components/layout/notification-bell.tsx is DELETED — this was its only importer; survivor: app/components/notifications/notification-bell.tsx (the bell, popover and read tracking)
 import { Menu, Inbox, Sparkles, FileText } from 'lucide-react'
 import { useShell } from './shell-context'
 
