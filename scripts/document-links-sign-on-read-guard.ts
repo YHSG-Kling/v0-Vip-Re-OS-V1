@@ -269,6 +269,8 @@ const MEDIA_SITE_CLASSES: Array<{ file: string; frag: string; cls: MediaClass; a
   { file: "app/actions/transaction-milestones.ts", frag: "res.pdfUrl", cls: "UPSTREAM", at: "lib/kernel/appraiser-packet.ts:890" },
   { file: "app/actions/vendor-verification.ts", frag: "certificateUrl", cls: "INPUT", at: "app/actions/vendor-verification.ts:176" },
   { file: "app/components/features/education/EducationEditor.tsx", frag: "videoUrl", cls: "VENDOR", at: "app/components/features/education/EducationEditor.tsx:310" },
+  // Wave 156 (156H): a calculator's explainer is the https link its author TYPED (validated, stored as given) on a public page.
+  { file: "app/components/calculators/CalculatorArtifact.tsx", frag: "p.explainer.videoUrl", cls: "INPUT", at: "lib/calculators/artifact.ts:86" },
   { file: "app/components/features/lead-magnets/BookProjectPanel.tsx", frag: "pdfUrl", cls: "UPSTREAM", at: P_DOC },
   { file: "app/components/features/offers/offer-document-panel.tsx", frag: "documentUrl", cls: "UPSTREAM", at: "app/components/features/offers/offer-workspace.tsx:476" },
   { file: "app/components/portal/NetSheetCalculator.tsx", frag: "pdfUrl", cls: "UPSTREAM", at: P_DOC },

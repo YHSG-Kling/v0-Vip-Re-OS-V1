@@ -319,21 +319,22 @@ async function defaultAgreedCommission(brokerageId: string): Promise<AgreedCommi
 }
 
 // ── performance (observable) ──────────────────────────────────────────────────
-/** The calculator funnel for one artifact, tenant-pinned: scans → opens → completions → opt-ins → submissions. */
-export async function getCalculatorFunnel(client: Db, input: { brokerageId: string; formId: string }): Promise<{ success: boolean; funnel?: Record<string, number>; error?: string }> {
+/** The calculator funnel for one artifact, tenant-pinned: scans → opens → completions → opt-ins → submissions. Rows are read
+ *  (capped at FUNNEL_READ_CAP per source, and `capped` says when the cap was reached) and counted here. */
+export const FUNNEL_READ_CAP = 5000
+export async function getCalculatorFunnel(client: Db, input: { brokerageId: string; formId: string }): Promise<{ success: boolean; funnel?: Record<string, number>; capped?: boolean; error?: string }> {
   const { data: form, error: fErr } = await client.from("lead_capture_forms").select("id").eq("id", input.formId).eq("brokerage_id", input.brokerageId).maybeSingle()
   if (fErr) return { success: false, error: fErr.message }
   if (!form) return { success: false, error: "Calculator not found in this brokerage" }
+  const names = ["qr_scan", ...CALCULATOR_EVENTS].map((e) => `lead_magnet_${e}`)
+  const { data: evs, error } = await client.from("lifecycle_events").select("event_type").eq("brokerage_id", input.brokerageId).eq("entity_type", "lead_capture_form").eq("entity_id", input.formId).in("event_type", names).limit(FUNNEL_READ_CAP)
+  if (error) return { success: false, error: error.message }
   const funnel: Record<string, number> = {}
-  for (const e of ["qr_scan", ...CALCULATOR_EVENTS]) {
-    const { count, error } = await client.from("lifecycle_events").select("id", { count: "exact", head: true }).eq("brokerage_id", input.brokerageId).eq("entity_type", "lead_capture_form").eq("entity_id", input.formId).eq("event_type", `lead_magnet_${e}`)
-    if (error) return { success: false, error: error.message }
-    funnel[e] = count ?? 0
-  }
-  const { count: subs, error: sErr } = await client.from("form_submissions").select("id", { count: "exact", head: true }).eq("brokerage_id", input.brokerageId).eq("form_id", input.formId)
+  for (const n of names) funnel[n.replace(/^lead_magnet_/, "")] = ((evs ?? []) as Array<{ event_type: string }>).filter((e) => e.event_type === n).length
+  const { data: subs, error: sErr } = await client.from("form_submissions").select("id").eq("brokerage_id", input.brokerageId).eq("form_id", input.formId).limit(FUNNEL_READ_CAP)
   if (sErr) return { success: false, error: sErr.message }
-  funnel.submissions = subs ?? 0
-  return { success: true, funnel }
+  funnel.submissions = (subs ?? []).length
+  return { success: true, funnel, capped: (evs ?? []).length >= FUNNEL_READ_CAP || (subs ?? []).length >= FUNNEL_READ_CAP }
 }
 
 // ── brand at FIRST render (tenant voice, never a generic shell) ───────────────

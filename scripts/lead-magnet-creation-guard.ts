@@ -410,7 +410,7 @@ async function main() {
     /publish_state:\s*"draft"/.test(builder) && /draftLeadMagnetWithAiAction\(/.test(builder) && /onCheckedChange=\{setNotifyByEmail\}/.test(raw("app/components/features/lead-magnets/MagnetBuilder.tsx")))
   const page = code("app/lm/[slug]/page.tsx")
   check("H4 the public page parses attribution from the query string and hands it to BOTH capture forms",
-    /parseLeadMagnetAttribution\(sp\)/.test(page) && (page.match(/attribution=\{attribution\}/g) ?? []).length === 2)
+    /parseLeadMagnetAttribution\(sp\)/.test(page) && (page.match(/attribution=\{attribution\}/g) ?? []).length === (/<CalculatorArtifact/.test(page) ? 3 : 2)) // wave 156H: the calculator artifact is a third capture surface on the page
   check("H5 a draft preview is served only to a member of the owning tenant (session brokerage === form brokerage), never by a query parameter",
     /ctx\.brokerageId === formBrokerageId/.test(page) && /viewerMayPreview\(draft\.brokerage_id\)/.test(page))
   const action = code("app/actions/lead-magnet-capture.ts")
