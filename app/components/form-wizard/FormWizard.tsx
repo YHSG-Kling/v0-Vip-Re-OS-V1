@@ -276,7 +276,7 @@ export function FormWizard({ mode: initialMode, contact, brokerageId, agentUserI
   // yet, [] = loaded but empty.
   const [providerForms, setProviderForms] = useState<ProviderFormItem[] | null>(null)
   const [providerFormsLoading, setProviderFormsLoading] = useState(false)
-  const [providerFormsError, setProviderFormsError] = useState<string | null>(null)
+  const [providerFormsError, setProviderFormsError] = useState<string | null>(null); const [providerPage, setProviderPage] = useState<ProviderDirectoryPage | null>(null) // wave 156 (156C): the WHOLE authorized library, chunk by chunk
   const [esignProvider, setEsignProvider] = useState<string | null>(null)
   // ── Packet preload (optional) — only active when documentId prop is set ──
   const [stagedPacket, setStagedPacket] = useState<StagedPacket | null>(null)
@@ -861,26 +861,42 @@ export function FormWizard({ mode: initialMode, contact, brokerageId, agentUserI
               providerForms={providerForms}
               providerFormsLoading={providerFormsLoading}
               providerFormsError={providerFormsError}
-              onLoadProviderForms={async () => {
-                if (providerForms !== null || providerFormsLoading) return
+              providerPage={providerPage}
+              onLoadProviderForms={async (more?: boolean) => {
+                // WAVE 156 (156C): the provider library is WALKED — the first call loads the first chunk, "Load more" continues from
+                // the provider's cursor until it is exhausted; the real total and the loaded count are shown. Never one silent page.
+                if (providerFormsLoading) return
+                if (!more && providerForms !== null) return
+                if (more && !providerPage?.nextCursor) return
                 if (!providerInfo || providerInfo === "loading") return
                 setProviderFormsLoading(true)
                 setProviderFormsError(null)
                 try {
                   const params = new URLSearchParams()
                   if (state.propertyState) params.set("state", state.propertyState)
-                  params.set("category", mode === "offer" ? "offer" : "listing")
+                  if (more && providerPage?.nextCursor) params.set("cursor", providerPage.nextCursor)
                   const res = await fetch(`/api/forms/provider-library?${params.toString()}`)
                   const json = await res.json()
                   if (!res.ok) {
-                    setProviderFormsError(json?.error ?? "Could not load provider forms.")
-                    setProviderForms([])
+                    setProviderFormsError(json?.refusal?.message ?? json?.error ?? "Could not load provider forms.")
+                    setProviderPage(p => ({ ...(p ?? { total: null, nextCursor: null, completeness: "complete", adopted: {}, refusal: null, paging: null }), refusalHref: json?.refusal?.recoverHref ?? null }))
+                    if (!more) setProviderForms([])
                   } else {
-                    setProviderForms(json.forms ?? [])
+                    const got: ProviderFormItem[] = json.forms ?? []
+                    setProviderForms(prev => {
+                      const base = more ? (prev ?? []) : []
+                      const seen = new Set(base.map(f => f.formId))
+                      return [...base, ...got.filter(f => !seen.has(f.formId))]
+                    })
+                    const adopted: Record<string, string> = { ...(more ? providerPage?.adopted ?? {} : {}) }
+                    for (const e of (json.entries ?? []) as Array<{ providerFormId: string | null; adoptedFromProvider: boolean; source: string }>) {
+                      if (e.adoptedFromProvider && e.providerFormId) adopted[e.providerFormId] = e.source
+                    }
+                    setProviderPage({ total: json.total ?? null, nextCursor: json.nextCursor ?? null, completeness: json.completeness ?? "complete", adopted, refusal: json.refusal?.message ?? null, refusalHref: json.refusal?.recoverHref ?? null, paging: json.pagingEvidence ?? null })
                   }
                 } catch (err: any) {
                   setProviderFormsError(err?.message ?? "Network error loading provider forms.")
-                  setProviderForms([])
+                  if (!more) setProviderForms([])
                 } finally {
                   setProviderFormsLoading(false)
                 }
@@ -1383,7 +1399,7 @@ function Step1Context({ mode, state, update }: { mode: "offer" | "listing"; stat
 
 // ─── Step 2 — Form Selection ─────────────────────────────────────────────────
 
-function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, providerInfo, providerForms, providerFormsLoading, providerFormsError, onLoadProviderForms }: {
+function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, providerInfo, providerForms, providerFormsLoading, providerFormsError, onLoadProviderForms, providerPage }: {
   mode: "offer" | "listing"
   state: WizardState
   update: <K extends keyof WizardState>(k: K, v: WizardState[K]) => void
@@ -1394,7 +1410,8 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
   providerForms: ProviderFormItem[] | null
   providerFormsLoading: boolean
   providerFormsError: string | null
-  onLoadProviderForms: () => void
+  onLoadProviderForms: (more?: boolean) => void
+  providerPage: ProviderDirectoryPage | null
 }) {
   const selected = state.selectedForms
   const [uploading, setUploading] = useState(false)
@@ -1529,6 +1546,8 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
         {showRecommendationNote && <p className="text-[11px] text-muted-foreground">Required forms and the agency disclosure come from the state&apos;s verified package; an addendum is recommended only when a term you answered calls for it (financing, inspection, appraisal, escalation, a sale contingency, a pre-1978 home, an association). The coach never adds a form nobody has.</p>}
       </div>
 
+      {stateCode.length === 2 && <DealPacketPanel kind={mode} stateCode={stateCode} />}
+
       <Tabs defaultValue="my-forms">
         <TabsList className="w-full">
           <TabsTrigger value="my-forms" className="flex-1">My Forms</TabsTrigger>
@@ -1537,6 +1556,9 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
         </TabsList>
 
         <TabsContent value="my-forms" className="mt-3 space-y-3">
+          {/* WAVE 156 (156C): "Add a form or packet" lives on the Forms page (app/dashboard/forms — app/components/forms/add-form-or-packet.tsx);
+              linked, not mounted, because this wizard is in app/crm/page.tsx's graph, which sits AT the 1,300-module budget (test:proxy-graph-budget). */}
+          <a href={`/dashboard/forms?add=1${state.propertyState ? `&state=${encodeURIComponent(state.propertyState)}` : ""}#add-forms`} target="_blank" rel="noopener noreferrer" className="text-xs underline">Add a form or packet</a>
           <StatePackagePanel mode={mode} stateCode={state.propertyState} myForms={myForms} selected={selected} onSelect={(forms) => {
             const add = forms.filter(f => !selected.find(s => s.source === "my_forms" && s.formRef === f.path))
             if (add.length) update("selectedForms", [...selected, ...add.map(f => ({ source: "my_forms" as const, formRef: f.path, name: f.name, scope: f.scope }))])
@@ -1567,6 +1589,7 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
                         catalogue
                       </Badge>
                     )}
+                    {packetRowIdOf(f.path) && <FormReadButton packetId={packetRowIdOf(f.path) as string} formName={f.name} onApply={(values) => update("fieldValues", { ...(state.fieldValues ?? {}), [f.path]: values })} current={state.fieldValues?.[f.path] ?? {}} />}
                   </label>
                 )
               })}
@@ -1574,7 +1597,7 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
           )}
         </TabsContent>
 
-        <TabsContent value="provider" className="mt-3" onFocus={onLoadProviderForms} onClick={onLoadProviderForms}>
+        <TabsContent value="provider" className="mt-3" onFocus={() => onLoadProviderForms()} onClick={() => onLoadProviderForms()}>
           {providerInfo === "loading" && (
             <div className="flex items-center justify-center py-8">
               <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
@@ -1613,7 +1636,7 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
               {providerFormsError && !providerFormsLoading && (
                 <Alert variant="destructive">
                   <AlertCircle className="h-4 w-4" />
-                  <AlertDescription>{providerFormsError}</AlertDescription>
+                  <AlertDescription>{providerFormsError}{providerPage?.refusalHref && <>{" "}<a href={providerPage.refusalHref} className="underline">Fix it here</a></>}</AlertDescription>
                 </Alert>
               )}
               {!providerFormsLoading && !providerFormsError && providerForms && providerForms.length === 0 && (
@@ -1634,9 +1657,12 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
                         <div className="flex-1 min-w-0">
                           <p className="text-sm font-medium truncate">{f.name}</p>
                           <p className="text-xs text-muted-foreground truncate">
-                            {[f.issuer, f.stateCode, f.category].filter(Boolean).join(" · ")}
+                            {[f.issuer, f.stateCode, f.category, f.version ? `v ${f.version}` : null].filter(Boolean).join(" · ")}
                           </p>
                         </div>
+                        {providerPage?.adopted[f.formId] && (
+                          <Badge variant="secondary" className="text-[10px] shrink-0">In your {providerPage.adopted[f.formId]} library</Badge>
+                        )}
                         {f.previewUrl && (
                           <a href={f.previewUrl} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="text-xs text-muted-foreground hover:text-foreground shrink-0">
                             <ExternalLink className="h-3 w-3" />
@@ -1645,6 +1671,20 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
                       </label>
                     )
                   })}
+                </div>
+              )}
+              {providerForms && providerForms.length > 0 && providerPage && (
+                <div className="flex items-center justify-between gap-2 pt-1">
+                  <p className="text-xs text-muted-foreground">
+                    Showing {providerForms.length}{providerPage.total != null ? ` of ${providerPage.total}` : ""} forms
+                    {providerPage.completeness === "unknown_possibly_truncated" ? " — this provider does not report paging, so its library may hold more than it returned. Open the provider's window to search the rest." : providerPage.nextCursor ? "" : " — the whole authorized library."}
+                    {providerPage.paging && !providerPage.paging.verified && <span className="block">Paging {providerPage.paging.note}</span>}
+                  </p>
+                  {providerPage.nextCursor && (
+                    <Button type="button" variant="outline" size="sm" disabled={providerFormsLoading} onClick={() => onLoadProviderForms(true)}>
+                      {providerFormsLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : "Load more"}
+                    </Button>
+                  )}
                 </div>
               )}
             </div>
@@ -2595,4 +2635,124 @@ function PacketBanner({
       )}
     </div>
   )
+}
+
+/**
+ * WAVE 156 (156C): THE BROKERAGE'S PACKET FOR THIS DEAL — the ONE bundle (team › office › brokerage) for the state and kind, from
+ * app/api/forms/directory (lib/forms/form-packet-bundles.ts resolveDealPacket). Each item shows its status; a required form the
+ * brokerage holds no licensed file for says so, with where to fix it — it never pretends the form exists. Read-only here.
+ */
+function DealPacketPanel({ kind, stateCode }: { kind: "offer" | "listing"; stateCode: string }) {
+  const [packet, setPacket] = useState<{ bundle: { name: string } | null; items: Array<{ itemId: string; name: string; required: boolean; status: string; recoverHref: string | null; source: string }>; missingRequired: number } | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    fetch(`/api/forms/directory?kind=${kind}&state=${encodeURIComponent(stateCode)}`)
+      .then(async (r) => { const j = await r.json(); if (!live) return; if (!r.ok) { setError(j?.error ?? "Your brokerage's packet could not be read."); return } setPacket(j) })
+      .catch((e) => { if (live) setError(e instanceof Error ? e.message : "Network error") })
+    return () => { live = false }
+  }, [kind, stateCode])
+  if (error) return <p className="text-xs text-destructive">{error}</p>
+  if (!packet?.bundle) return null
+  const label: Record<string, string> = { ready: "ready", replaced: "current revision", retired: "retired", license_expired: "license expired", not_configured: "not configured" }
+  return (
+    <div className="rounded-lg border p-3 space-y-2">
+      <p className="text-sm font-medium">{packet.bundle.name}{packet.missingRequired > 0 ? ` — ${packet.missingRequired} required form(s) not available yet` : ""}</p>
+      <ul className="space-y-1">
+        {packet.items.map((i) => (
+          <li key={i.itemId} className="flex items-center justify-between gap-2 text-xs">
+            <span className="truncate">{i.name}{i.required ? "" : " (optional)"}</span>
+            <span className="flex items-center gap-2 shrink-0">
+              <Badge variant={i.status === "ready" || i.status === "replaced" ? "secondary" : "destructive"} className="text-[10px]">{label[i.status] ?? i.status}</Badge>
+              {i.recoverHref && <a href={i.recoverHref} className="underline text-muted-foreground">Request access / add licensed file</a>}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+/** WAVE 156 (156C): the library row id of a REGISTERED packet path (`brokerage|teams/{owner}/packets/{rowId}/{file}.pdf`), else null. */
+function packetRowIdOf(path: string): string | null {
+  const m = /^(?:brokerage|teams)\/[0-9a-f-]{36}\/packets\/([0-9a-f-]{36})\/[^/]+\.pdf$/i.exec(path)
+  return m ? m[1] : null
+}
+
+/**
+ * WAVE 156 (156C): THE AI FORM READER, REVIEWABLE — app/api/forms/document-read (lib/forms/form-document-reader.ts). Shows what the
+ * reader found in THIS form — fields, signature boxes, the legal description, governing clauses, requirements — each with the quote
+ * it rests on. Nothing is applied: the agent reviews and fills (the CDA is refused by the reader — the agent fills the CDA).
+ */
+function FormReadButton({ packetId, formName, current, onApply }: { packetId: string; formName: string; current: Record<string, string>; onApply: (values: Record<string, string>) => void }) {
+  const [open, setOpen] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [res, setRes] = useState<{ refused?: string; error?: string; structure?: { fields: string[] }; suggestions?: Array<{ kind: string; target: string; value?: string | null; evidence: { quote: string }; status?: string }>; notes?: string[] } | null>(null)
+  // ROUND 2: the reviewer decides EACH suggestion; only accepted ones reach the Step 3 fill fields, and only on "Use accepted".
+  const [decisions, setDecisions] = useState<Record<number, "accept" | "reject">>({})
+  const [applied, setApplied] = useState<string | null>(null)
+  async function read(e: React.MouseEvent) {
+    e.preventDefault(); e.stopPropagation()
+    setOpen(true)
+    if (res || busy) return
+    setBusy(true)
+    try {
+      const r = await fetch("/api/forms/document-read", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ packet_id: packetId }) })
+      setRes(await r.json())
+    } catch (err) { setRes({ error: err instanceof Error ? err.message : "Network error" }) } finally { setBusy(false) }
+  }
+  function useAccepted(e: React.MouseEvent) {
+    e.preventDefault(); e.stopPropagation()
+    // The accept step is lib/forms/form-read-apply.ts applyAcceptedSuggestions, run by the reader's own route (no client import —
+    // this wizard is at the module budget): only the suggestions marked "accept" come back as fill values.
+    void fetch("/api/forms/document-read", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "apply", form_name: formName, fields: res?.structure?.fields ?? [], current, suggestions: res?.suggestions ?? [], decisions }) })
+      .then(async (r) => {
+        const out = await r.json()
+        if (!r.ok || out.ok === false) { setApplied(out.refused ?? out.error ?? "Nothing was applied."); return }
+        onApply(out.values)
+        setApplied(out.applied.length ? `Put into the fill fields: ${out.applied.join(", ")} — review them in step 3.` : "Nothing accepted — nothing was filled.")
+      })
+      .catch((err) => setApplied(err instanceof Error ? err.message : "Network error — nothing was applied."))
+  }
+  const fillable = (s: { kind: string; value?: string | null }) => (s.kind === "field" || s.kind === "legal_description") && !!s.value
+  return (
+    <span className="shrink-0" onClick={(e) => e.stopPropagation()}>
+      <button type="button" className="text-[11px] underline text-muted-foreground" onClick={read}>{busy ? "Reading…" : "AI read (review)"}</button>
+      {open && res && (
+        <span className="block max-w-sm text-[11px] text-muted-foreground mt-1">
+          {res.refused ?? res.error ?? null}
+          {(res.suggestions ?? []).slice(0, 20).map((s, i) => (
+            <span key={i} className="block">
+              {s.kind}: {s.target}{s.value ? ` = ${s.value}` : ""} — “{s.evidence.quote.slice(0, 120)}”
+              {fillable(s) && (
+                <span className="ml-1">
+                  <button type="button" className={decisions[i] === "accept" ? "font-semibold underline" : "underline"} onClick={(e) => { e.preventDefault(); e.stopPropagation(); setDecisions((d) => ({ ...d, [i]: "accept" })) }}>accept</button>
+                  {" / "}
+                  <button type="button" className={decisions[i] === "reject" ? "font-semibold underline" : "underline"} onClick={(e) => { e.preventDefault(); e.stopPropagation(); setDecisions((d) => ({ ...d, [i]: "reject" })) }}>reject</button>
+                </span>
+              )}
+            </span>
+          ))}
+          {(res.suggestions ?? []).some(fillable) && <button type="button" className="underline block mt-1" onClick={useAccepted}>Use accepted values in the fill</button>}
+          {applied && <span className="block">{applied}</span>}
+          {(res.notes ?? []).map((n, i) => <span key={`n${i}`} className="block italic">{n}</span>)}
+        </span>
+      )}
+    </span>
+  )
+}
+
+/** WAVE 156 (156C): where the provider-library walk stands — app/api/forms/provider-library/route.ts. */
+interface ProviderDirectoryPage {
+  /** The provider's own total for the query, when it reports one. */
+  total: number | null
+  /** The cursor the next "Load more" continues from; null once the provider is exhausted. */
+  nextCursor: string | null
+  completeness: string
+  /** Provider form id → the tenant library source that already adopted it (shown once, labelled). */
+  adopted: Record<string, string>
+  refusal: string | null
+  /** ROUND 2: where the seat fixes a provider refusal, and what the provider's published docs say about paging (verified or not). */
+  refusalHref?: string | null
+  paging?: { verified: boolean; note: string; source: string | null } | null
 }

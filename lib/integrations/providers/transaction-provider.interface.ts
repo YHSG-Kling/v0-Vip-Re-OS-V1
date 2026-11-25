@@ -167,6 +167,8 @@ export interface ListFormsRequest {
   query?: string
   /** Pagination — page size. Providers may cap this. Default 100. */
   pageSize?: number
+  /** Pagination — the provider's opaque cursor from the previous page's `nextCursor` (wave 156, lane 156C). Absent = first page. */
+  cursor?: string
 }
 
 export interface ProviderForm {
@@ -184,12 +186,29 @@ export interface ProviderForm {
   version?: string
   /** Optional URL the agent can preview before selecting. */
   previewUrl?: string
+  /** County the form is specific to, when the provider tags one (wave 156, lane 156C — the directory's county filter). */
+  county?: string
+  /** The provider marks the form retired / superseded; never selectable. */
+  retired?: boolean
+  /** The provider's replacement for a retired form. */
+  replacedByFormId?: string
+  /** false = the provider lists the form but this account is NOT licensed to use it (never offered, refused by id). */
+  licensed?: boolean
+  /** Offices / teams the provider restricts the form to (empty / absent = the whole account). */
+  officeIds?: string[]
+  teamIds?: string[]
 }
 
 export interface ListFormsResponse {
   success: boolean
   forms?:  ProviderForm[]
   error?:  string
+  /** The HTTP status of a refused call, so a refusal is classified by status and not by prose (wave 156, lane 156C). */
+  status?: number | null
+  /** The cursor for the next page; null/absent = the provider reported no further page (or does not page — see `total`). */
+  nextCursor?: string | null
+  /** The provider's own total for the query, when it reports one. */
+  total?: number | null
 }
 
 /**

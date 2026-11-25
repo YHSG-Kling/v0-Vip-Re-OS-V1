@@ -315,7 +315,7 @@ export class DotloopProvider implements ITransactionProvider {
 
       const response = await this.request<{ data?: any[] }>(apiKey, `/profile/${profileId}/form`, { query })
       if (!response.ok) {
-        return { success: false, error: `Dotloop listForms ${response.status}: ${response.error}` }
+        return { success: false, status: response.status, error: `Dotloop listForms ${response.status}: ${response.error}` }
       }
       const data = response.data
       const forms: ProviderForm[] = ((data?.data ?? (Array.isArray(data) ? data : [])) as any[]).map((f: any) => ({
@@ -327,7 +327,7 @@ export class DotloopProvider implements ITransactionProvider {
         version:   f.version,
         previewUrl: f.preview_url ?? f.url,
       }))
-      return { success: true, forms }
+      return { success: true, forms, total: typeof (data as any)?.meta?.total === "number" ? (data as any).meta.total : null } // 156C: meta.total when sent — a total above the returned count is labelled possibly-truncated
     } catch (err: any) {
       console.error("[v0] Dotloop listForms error:", err)
       return { success: false, error: err.message }

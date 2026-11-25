@@ -105,6 +105,9 @@ export interface PacketActor {
   ledTeamId: string | null
   /** In the brokerage's library oversight class. */
   oversight: boolean
+  /** The person's OFFICE (users.location_id, verified to be a location of `brokerageId`) — wave 156 (156C) office-specific packets.
+   *  Optional so an actor built by hand keeps compiling; absent = on no office. */
+  locationId?: string | null
 }
 
 export interface TenantPacketRow {
@@ -124,9 +127,27 @@ export interface TenantPacketRow {
   license_expires_at: string | null
   source_platform_packet_id: string | null
   uploaded_by: string | null
+  // ── wave 156 (lane 156C, m1005): provenance, office / agent scope, jurisdiction, revision, checksum, rights, retired replacement ──
+  location_id?: string | null
+  scope_user_id?: string | null
+  source_kind?: string | null
+  provider_name?: string | null
+  provider_form_id?: string | null
+  provider_form_version?: string | null
+  purpose?: string | null
+  county?: string | null
+  effective_on?: string | null
+  revision_date?: string | null
+  checklist_keys?: string[] | null
+  signer_roles?: string[] | null
+  field_mapping?: Record<string, string> | null
+  checksum_sha256?: string | null
+  rights_basis?: string | null
+  replaced_by_id?: string | null
+  retired_at?: string | null
 }
 
-const PACKET_COLUMNS = "id, brokerage_id, team_id, name, state, packet_type, form_code, description, storage_path, field_count, version, is_active, license_note, license_expires_at, source_platform_packet_id, uploaded_by"
+const PACKET_COLUMNS = "id, brokerage_id, team_id, name, state, packet_type, form_code, description, storage_path, field_count, version, is_active, license_note, license_expires_at, source_platform_packet_id, uploaded_by, location_id, scope_user_id, source_kind, provider_name, provider_form_id, provider_form_version, purpose, county, effective_on, revision_date, checklist_keys, signer_roles, field_mapping, checksum_sha256, rights_basis, replaced_by_id, retired_at"
 
 // ── PURE ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -154,18 +175,30 @@ export function parseTenantPacketPath(path: string | null | undefined): { kind: 
 const todayIso = (now: Date = new Date()) => now.toISOString().slice(0, 10)
 
 /** PURE: may THIS actor see THIS packet row right now? The reason names the rule that refused. */
-function packetVisibleTo(row: Pick<TenantPacketRow, "brokerage_id" | "team_id" | "is_active" | "license_expires_at">, actor: PacketActor, today: string): { visible: boolean; reason: string | null } {
+function packetVisibleTo(row: Pick<TenantPacketRow, "brokerage_id" | "team_id" | "is_active" | "license_expires_at" | "location_id" | "scope_user_id">, actor: PacketActor, today: string): { visible: boolean; reason: string | null } {
   if (row.brokerage_id !== actor.brokerageId) return { visible: false, reason: "the packet belongs to another brokerage" }
   if (!row.is_active) return { visible: false, reason: "the packet was retired" }
   if (row.license_expires_at && row.license_expires_at < today) return { visible: false, reason: `the packet's license expired on ${row.license_expires_at}` }
   if (row.team_id && row.team_id !== actor.teamId && !actor.oversight) return { visible: false, reason: "the packet is shared with another team" }
+  // wave 156 (156C): an OFFICE packet reaches that office's seats; an agent-authorized supplemental form reaches its own agent only.
+  if (row.location_id && row.location_id !== (actor.locationId ?? null) && !actor.oversight) return { visible: false, reason: "the packet is shared with another office" }
+  if (row.scope_user_id && row.scope_user_id !== actor.userId && !actor.oversight) return { visible: false, reason: "the packet is another agent's own supplemental form" }
   return { visible: true, reason: null }
 }
 
-/** PURE: may this actor share (or retire) a packet with the whole brokerage (teamId null) or with one team? */
+/** PURE: may this actor share (or retire) a packet with the whole brokerage (teamId null) or with one team? (An office packet and an
+ *  agent's own supplemental form — wave 156, 156C — are decided by mayManagePacketOwner below.) */
 export function mayManagePacketScope(actor: PacketActor, teamId: string | null): boolean {
   if (!teamId) return actor.oversight
   return actor.oversight || actor.ledTeamId === teamId
+}
+
+/** PURE (wave 156, 156C): authority over a row's FULL owner — brokerage or office (the oversight class), team (its lead or
+ *  oversight), or an agent's own supplemental form (that agent, or oversight). */
+export function mayManagePacketOwner(actor: PacketActor, owner: { teamId: string | null; locationId?: string | null; scopeUserId?: string | null }): boolean {
+  if (owner.scopeUserId) return owner.scopeUserId === actor.userId || actor.oversight
+  if (owner.locationId) return actor.oversight
+  return mayManagePacketScope(actor, owner.teamId)
 }
 
 /** PURE: is this packet offered for this deal? A listing packet is not offered to an offer; transaction / disclosure / custom go to both. */
@@ -183,7 +216,7 @@ function packetOffered(row: Pick<TenantPacketRow, "state" | "packet_type">, q: {
  */
 export async function resolvePacketActor(svc: Svc, userId: string): Promise<{ ok: true; actor: PacketActor } | { ok: false; error: string }> {
   if (!userId || !UUID.test(userId)) return { ok: false, error: "no signed-in user" }
-  const { data: me, error: meErr } = await svc.from("users").select("brokerage_id, user_type, status, deleted_at, platform_role").eq("id", userId).maybeSingle()
+  const { data: me, error: meErr } = await svc.from("users").select("brokerage_id, user_type, status, deleted_at, platform_role, location_id").eq("id", userId).maybeSingle()
   if (meErr) return { ok: false, error: `your account could not be read: ${meErr.message}` }
   const brokerageId = (me as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
   if (!brokerageId) return { ok: false, error: "your account is not attached to a brokerage" }
@@ -219,8 +252,22 @@ export async function resolvePacketActor(svc: Svc, userId: string): Promise<{ ok
   const { withTenantRoleGrants } = await import("@/lib/auth/role-grants")
   const granted = await withTenantRoleGrants(svc, { userId, grantedRoles: null as readonly string[] | null }, brokerageId)
   if (granted.note) console.warn(`[tenant-form-packets] ${granted.note}`)
-  const oversight = PACKET_OVERSIGHT_USER_TYPES.has(String(userType ?? "")) || (granted.actor.grantedRoles ?? []).some((r) => PACKET_OVERSIGHT_USER_TYPES.has(r))
-  return { ok: true, actor: { userId, brokerageId, userType, teamId, ledTeamId, oversight } }
+  let oversight = PACKET_OVERSIGHT_USER_TYPES.has(String(userType ?? "")) || (granted.actor.grantedRoles ?? []).some((r) => PACKET_OVERSIGHT_USER_TYPES.has(r))
+  // wave 156 (156C, round 2) — TIER PARITY, the existing owner rule (lib/auth/require-caller.ts requireTenantAdminOrSoloOwner): a
+  // solo-tier subscriber IS their own broker, so a solo agent manages their own library and bundles. A refused tier read never widens.
+  if (!oversight) {
+    const { data: b, error: bErr } = await svc.from("brokerages").select("plan_tier").eq("id", brokerageId).maybeSingle()
+    if (bErr) console.warn(`[tenant-form-packets] plan tier unreadable — the seat alone decides: ${bErr.message}`)
+    else if ((b as { plan_tier?: string | null } | null)?.plan_tier === "solo_agent") oversight = true
+  }
+  // wave 156 (156C): the office is trusted only when it is a location of THIS brokerage (a cross-tenant id is dropped, never trusted).
+  let locationId = ((me as { location_id?: string | null } | null)?.location_id ?? null)
+  if (locationId) {
+    const { data: loc, error: locErr } = await svc.from("locations").select("id").eq("id", locationId).eq("brokerage_id", brokerageId).maybeSingle()
+    if (locErr) return { ok: false, error: `your office could not be verified: ${locErr.message}` }
+    if (!loc) locationId = null
+  }
+  return { ok: true, actor: { userId, brokerageId, userType, teamId, ledTeamId, oversight, locationId } }
 }
 
 // ── READS ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -237,6 +284,8 @@ export interface TenantPacketView {
   formCode: string | null
   state: string | null
   licenseNote: string | null
+  /** wave 156 (156C): the full owner — an office packet and an agent's own supplemental form read as their own source. */
+  owner?: "brokerage" | "office" | "team" | "agent"
 }
 
 /**
@@ -259,7 +308,7 @@ export async function listFormPacketsForActor(
     seen.add(row.storage_path)
     packets.push({
       packetId: row.id, name: row.name, path: row.storage_path, scope: row.team_id ? "team" : "brokerage",
-      origin: row.source_platform_packet_id ? "platform_catalogue" : "library", formCode: row.form_code, state: row.state, licenseNote: row.license_note,
+      origin: row.source_platform_packet_id ? "platform_catalogue" : "library", formCode: row.form_code, state: row.state, licenseNote: row.license_note, owner: packetOwnerKind(row),
     })
   }
   // Loose files directly in the owners' folders (the layout the wizard listed before the library recorded paths).
@@ -371,6 +420,41 @@ export interface RegisterTenantPacketInput {
   /** The packet's PDF. null = a field-schema-only library entry (the AI form-fill engine's mapping, no master to fill). */
   fileName: string | null
   bytes: Uint8Array | null
+  /** wave 156 (156C): share with ONE office (locations.id of this brokerage) — the oversight class's act. */
+  locationId?: string | null
+  /** wave 156 (156C): an agent's OWN supplemental form (only that agent sees it) — must be the actor (or oversight acting for them). */
+  scopeUserId?: string | null
+  /** wave 156 (156C): provenance, jurisdiction, revision, checklist / signer / field mapping — validated by lib/forms/form-directory-intake.ts. */
+  provenance?: PacketProvenance | null
+  /** A new REVISION of an existing row (lib/forms/form-directory-intake.ts reviseLibraryForm) carries the next version number. */
+  version?: number
+}
+
+/** wave 156 (156C, m1005): what every added form records beyond its name — where it came from, under what right, for what. */
+export interface PacketProvenance {
+  sourceKind: string
+  rightsBasis: string
+  purpose: string
+  county?: string | null
+  effectiveOn?: string | null
+  revisionDate?: string | null
+  checklistKeys?: string[] | null
+  signerRoles?: string[] | null
+  fieldMapping?: Record<string, string> | null
+  providerName?: string | null
+  providerFormId?: string | null
+  providerFormVersion?: string | null
+}
+
+/** PURE (wave 156, 156C): the owner kind of a row. */
+export function packetOwnerKind(row: Pick<TenantPacketRow, "team_id" | "location_id" | "scope_user_id">): "brokerage" | "office" | "team" | "agent" {
+  return row.scope_user_id ? "agent" : row.team_id ? "team" : row.location_id ? "office" : "brokerage"
+}
+
+/** PURE: the master's fingerprint — sha256 hex of the stored bytes (provenance; a duplicate upload of the same revision is refused). */
+export async function packetChecksum(bytes: Uint8Array): Promise<string> {
+  const { createHash } = await import("node:crypto")
+  return createHash("sha256").update(bytes).digest("hex")
 }
 
 const isPdf = (b: Uint8Array) => b.length > 5 && b[0] === 0x25 && b[1] === 0x50 && b[2] === 0x44 && b[3] === 0x46 // %PDF
@@ -400,28 +484,48 @@ async function teamInBrokerage(svc: Svc, actor: PacketActor, teamId: string): Pr
  */
 export async function registerTenantFormPacket(svc: Svc, actor: PacketActor, input: RegisterTenantPacketInput): Promise<{ ok: true; packet: TenantPacketRow } | { ok: false; error: string }> {
   const teamId = input.teamId || null
+  const locationId = input.locationId || null
+  const scopeUserId = input.scopeUserId || null
   const bad = validatePacketMeta(input)
   if (bad) return { ok: false, error: bad }
-  if (!mayManagePacketScope(actor, teamId)) {
-    return { ok: false, error: teamId ? "Only that team's lead or a brokerage admin can share a packet with the team." : "Only a brokerage admin can share a packet with the whole brokerage — a team lead shares with their own team." }
+  if ([teamId, locationId, scopeUserId].filter(Boolean).length > 1) return { ok: false, error: "A packet is shared with ONE owner — the brokerage, one office, one team, or one agent." }
+  if (scopeUserId && scopeUserId !== actor.userId && !actor.oversight) return { ok: false, error: "You can add a supplemental form for yourself only." }
+  if (!mayManagePacketOwner(actor, { teamId, locationId, scopeUserId })) {
+    return { ok: false, error: locationId ? "Only a brokerage admin can share a packet with an office." : teamId ? "Only that team's lead or a brokerage admin can share a packet with the team." : "Only a brokerage admin can share a packet with the whole brokerage — a team lead shares with their own team." }
   }
   if (teamId) { const t = await teamInBrokerage(svc, actor, teamId); if (t) return { ok: false, error: t } }
+  if (locationId) {
+    if (!UUID.test(locationId)) return { ok: false, error: "That is not an office id." }
+    const { data: loc, error: locErr } = await svc.from("locations").select("id").eq("id", locationId).eq("brokerage_id", actor.brokerageId).maybeSingle()
+    if (locErr) return { ok: false, error: `The office could not be verified: ${locErr.message}` }
+    if (!loc) return { ok: false, error: "That office is not in your brokerage." }
+  }
   const id = crypto.randomUUID()
   let fieldCount = 0
   let path: string | null = null
+  let checksum: string | null = null
   if (input.bytes) {
     if (!isPdf(input.bytes)) return { ok: false, error: "The file is not a PDF." }
     if (input.bytes.length > FORM_PACKET_MAX_BYTES) return { ok: false, error: `The PDF is larger than ${FORM_PACKET_MAX_BYTES / (1024 * 1024)} MB.` }
     try { fieldCount = (await listPdfFields(input.bytes)).length } catch (e) { return { ok: false, error: `The PDF could not be read: ${e instanceof Error ? e.message : "unreadable"}` } }
+    checksum = await packetChecksum(input.bytes)
+    // The storage layout (m853 CHECK) knows brokerage/ and teams/ owners; an office or agent form lives under the brokerage's prefix
+    // and its row's location_id / scope_user_id narrow who may see it.
     path = packetPathFor({ brokerageId: actor.brokerageId, teamId }, id, input.fileName ?? "packet.pdf")
     const { error: upErr } = await svc.storage.from(FORM_PACKET_BUCKET).upload(path, Buffer.from(input.bytes), { contentType: "application/pdf", upsert: false })
     if (upErr) return { ok: false, error: `The packet could not be stored: ${upErr.message}` }
   }
+  const pv = input.provenance ?? null
   const { data, error } = await svc.from("brokerage_form_library").insert({
     id, brokerage_id: actor.brokerageId, team_id: teamId, name: input.name.trim(), description: input.description?.trim() || null,
     state: input.state.trim().toUpperCase(), packet_type: input.packetType, form_code: input.formCode?.trim() || null,
-    storage_path: path, pdf_url: null, field_schema: input.fieldSchema ?? null, field_count: fieldCount, version: 1, is_active: true,
+    storage_path: path, pdf_url: null, field_schema: input.fieldSchema ?? null, field_count: fieldCount, version: input.version ?? 1, is_active: true,
     license_note: input.licenseNote?.trim() || null, license_expires_at: input.licenseExpiresAt || null, uploaded_by: actor.userId,
+    location_id: locationId, scope_user_id: scopeUserId, checksum_sha256: checksum,
+    source_kind: pv?.sourceKind ?? (scopeUserId ? "agent_upload" : "brokerage_upload"), rights_basis: pv?.rightsBasis ?? null, purpose: pv?.purpose ?? null,
+    county: pv?.county ?? null, effective_on: pv?.effectiveOn ?? null, revision_date: pv?.revisionDate ?? null, checklist_keys: pv?.checklistKeys ?? null,
+    signer_roles: pv?.signerRoles ?? null, field_mapping: pv?.fieldMapping ?? null, provider_name: pv?.providerName ?? null,
+    provider_form_id: pv?.providerFormId ?? null, provider_form_version: pv?.providerFormVersion ?? null,
   }).select(PACKET_COLUMNS)
   if (error || !data || data.length === 0) {
     const { data: removed } = path ? await svc.storage.from(FORM_PACKET_BUCKET).remove([path]) : { data: [] }
@@ -473,13 +577,16 @@ export async function updateTenantFormPacket(svc: Svc, actor: PacketActor, packe
 }
 
 /** Retire a packet: agents stop being offered it and the fill action refuses it immediately. Tenant-pinned and counted. */
-export async function retireTenantFormPacket(svc: Svc, actor: PacketActor, packetId: string): Promise<{ ok: true } | { ok: false; error: string }> {
+export async function retireTenantFormPacket(svc: Svc, actor: PacketActor, packetId: string, opts: { replacedById?: string | null } = {}): Promise<{ ok: true } | { ok: false; error: string }> {
   if (!UUID.test(packetId)) return { ok: false, error: "That is not a packet id." }
-  const { data: row, error: readErr } = await svc.from("brokerage_form_library").select("id, team_id, is_active").eq("id", packetId).eq("brokerage_id", actor.brokerageId).maybeSingle()
+  const { data: row, error: readErr } = await svc.from("brokerage_form_library").select("id, team_id, is_active, location_id, scope_user_id").eq("id", packetId).eq("brokerage_id", actor.brokerageId).maybeSingle()
   if (readErr) return { ok: false, error: `The packet could not be read: ${readErr.message}` }
   if (!row) return { ok: false, error: "That packet is not in your brokerage." }
-  if (!mayManagePacketScope(actor, (row as { team_id: string | null }).team_id)) return { ok: false, error: "You cannot retire a packet shared by another team." }
-  const { data, error } = await svc.from("brokerage_form_library").update({ is_active: false, updated_at: new Date().toISOString() })
+  const r = row as { team_id: string | null; location_id?: string | null; scope_user_id?: string | null }
+  if (!mayManagePacketOwner(actor, { teamId: r.team_id, locationId: r.location_id ?? null, scopeUserId: r.scope_user_id ?? null })) return { ok: false, error: "You cannot retire a packet shared by another team, office or agent." }
+  if (opts.replacedById && (!UUID.test(opts.replacedById) || opts.replacedById === packetId)) return { ok: false, error: "The replacement must be another packet of your brokerage." }
+  const now = new Date().toISOString()
+  const { data, error } = await svc.from("brokerage_form_library").update({ is_active: false, updated_at: now, retired_at: now, ...(opts.replacedById ? { replaced_by_id: opts.replacedById } : {}) })
     .eq("id", packetId).eq("brokerage_id", actor.brokerageId).eq("is_active", true).select("id")
   if (error) return { ok: false, error: `The packet was not retired: ${error.message}` }
   if (!data || data.length !== 1) return { ok: false, error: "The packet was not retired — it is already retired." }
@@ -518,4 +625,33 @@ export async function registerCopiedPacket(
     return { ok: false, error: `The packet was not added (${error?.message ?? "no row returned"}); ${removed?.length ?? 0} copied file(s) removed.` }
   }
   return { ok: true, packet: (data as TenantPacketRow[])[0], existing: false }
+}
+
+// ── WAVE 156 (lane 156C): THE TENANT HALF OF THE ONE FORM PICKER ────────────────────────────────────────────────────────────────────
+
+/**
+ * Every ACTIVE library row this actor may use, as directory rows — including the ones with no master of their own (a provider-form
+ * REFERENCE, or a named state requirement not yet configured), which the fill list (listFormPacketsForActor) leaves out because there
+ * is nothing to fill. lib/forms/provider-form-directory.ts mergeFormDirectory joins these with the provider's library so an adopted
+ * provider form is listed ONCE. A refused read is an error (fail closed).
+ */
+export async function listDirectoryRowsForActor(
+  svc: Svc,
+  actor: PacketActor,
+  q: { stateCode?: string | null; now?: Date } = {},
+): Promise<{ ok: true; rows: Array<{ packetId: string; name: string; path: string | null; scope: "brokerage" | "office" | "team" | "agent"; providerName: string | null; providerFormId: string | null; state: string | null; formCode: string | null; status: "ready" | "not_configured"; canManage: boolean; version: number | null }> } | { ok: false; error: string }> {
+  const today = todayIso(q.now)
+  const { data, error } = await svc.from("brokerage_form_library").select(PACKET_COLUMNS).eq("brokerage_id", actor.brokerageId).eq("is_active", true)
+  if (error) return { ok: false, error: `your brokerage's form library could not be read: ${error.message}` }
+  const rows = []
+  for (const row of (data ?? []) as TenantPacketRow[]) {
+    if (!packetVisibleTo(row, actor, today).visible) continue
+    if (q.stateCode && row.state && row.state.toUpperCase() !== q.stateCode.toUpperCase()) continue
+    rows.push({
+      packetId: row.id, name: row.name, path: row.storage_path, scope: packetOwnerKind(row), providerName: row.provider_name ?? null,
+      providerFormId: row.provider_form_id ?? null, state: row.state, formCode: row.form_code,
+      status: (row.storage_path || row.provider_form_id ? "ready" : "not_configured") as "ready" | "not_configured", canManage: mayManagePacketOwner(actor, { teamId: row.team_id, locationId: row.location_id ?? null, scopeUserId: row.scope_user_id ?? null }), version: row.version ?? null,
+    })
+  }
+  return { ok: true, rows }
 }

@@ -202,7 +202,7 @@ export class FormSimplicityProvider implements ITransactionProvider {
       if (this.accountId)    query.accountId = this.accountId
 
       const res = await this.request<{ forms?: any[]; items?: any[] }>("/forms", { query })
-      if (!res.ok) return { success: false, error: `FormSimplicity listForms ${res.status}: ${res.error}` }
+      if (!res.ok) return { success: false, status: res.status, error: `FormSimplicity listForms ${res.status}: ${res.error}` }
       const items: any[] = res.data?.forms ?? res.data?.items ?? (Array.isArray(res.data) ? (res.data as any[]) : [])
       const forms: ProviderForm[] = items.map((f) => ({
         formId:     String(f.formId ?? f.id),

@@ -312,12 +312,12 @@ export class DocusignProvider implements ITransactionProvider {
     try {
       // DocuSign's form library lives as Templates. /templates returns the
       // account's saved templates which can be reused as offer/listing forms.
-      const query: Record<string, string> = { count: String(request.pageSize ?? 100), order_by: "name" }
+      const query: Record<string, string> = { count: String(request.pageSize ?? 100), order_by: "name", start_position: String(Number(request.cursor ?? 0) || 0) }
       if (request.query) query.search_text = request.query
 
-      const res = await this.request<{ envelopeTemplates?: any[] }>("/templates", { query })
+      const res = await this.request<{ envelopeTemplates?: any[]; totalSetSize?: string; endPosition?: string }>("/templates", { query })
       if (!res.ok) {
-        return { success: false, error: `DocuSign listTemplates ${res.status}: ${res.error}` }
+        return { success: false, status: res.status, error: `DocuSign listTemplates ${res.status}: ${res.error}` }
       }
       let forms: ProviderForm[] = (res.data?.envelopeTemplates ?? []).map((t: any) => {
         const name = String(t.name ?? "Template")
@@ -348,7 +348,7 @@ export class DocusignProvider implements ITransactionProvider {
       if (request.category) {
         forms = forms.filter(f => f.category === request.category)
       }
-      return { success: true, forms }
+      const total = Number(res.data?.totalSetSize), end = Number(res.data?.endPosition); return { success: true, forms, total: Number.isFinite(total) ? total : null, nextCursor: Number.isFinite(total) && Number.isFinite(end) && end + 1 < total ? String(end + 1) : null } // wave 156 (156C): pages by start_position until totalSetSize
     } catch (err: any) {
       return { success: false, error: err?.message ?? "DocuSign listForms failed" }
     }
