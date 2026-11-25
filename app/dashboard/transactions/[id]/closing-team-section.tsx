@@ -27,6 +27,7 @@ import {
   confirmClosingPartyFactAction,
   setSettlementAgentAction,
   updateClosingChecksAction,
+  assignClosingResponsibilityAction,
 } from "@/app/actions/transactions"
 
 type Team = Extract<Awaited<ReturnType<typeof getClosingTeamAction>>, { success: true }>
@@ -120,6 +121,7 @@ export function ClosingTeamSection({ transactionId }: { transactionId: string })
                   <Badge variant="outline">{p.onPlatform ? "on the platform" : "not on the platform"}</Badge>
                   <Badge variant="outline">{p.factsConfirmed ? "confirmed" : "not confirmed"}</Badge>
                 </div>
+                {(() => { const row = team.participants.find((x) => x.id === p.id); return row?.fact_evidence ? <p className="mt-1 text-xs text-muted-foreground">Confirmed{row.fact_confirmed_at ? ` ${String(row.fact_confirmed_at).slice(0, 10)}` : ""}: {row.fact_evidence}</p> : null })()}
                 {!p.factsConfirmed && (
                   <div className="mt-2 flex flex-wrap items-end gap-2">
                     <Input className="h-8 max-w-md" placeholder="How they confirmed (e.g. email from the attorney, 11/20)" value={evidence[p.id] ?? ""} onChange={(e) => setEvidence({ ...evidence, [p.id]: e.target.value })} />
@@ -194,6 +196,12 @@ export function ClosingTeamSection({ transactionId }: { transactionId: string })
                 <strong>{d.label}</strong> <span className="text-muted-foreground">({words(d.status)})</span> — {d.owner.applies
                   ? (d.owner.participantName ? `${d.owner.participantName}${d.owner.offPlatform ? " (not on the platform)" : ""}` : "unassigned: the deal's agent or coordinator obtains it from the verified party")
                   : d.owner.reason}
+                {d.id && !team.schemaPending && parties.length > 0 && (
+                  <select aria-label={`Responsible party for ${d.label}`} className="ml-2 h-7 rounded border px-1 text-xs" value={d.responsibleParticipantId ?? ""}
+                    onChange={(e) => act(() => assignClosingResponsibilityAction(transactionId, { target: "document", id: d.id as string, participantId: e.target.value || null }), "Responsible party saved.")}>
+                    <option value="">Responsible party…</option>{parties.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                )}
               </li>
             ))}
           </ul>

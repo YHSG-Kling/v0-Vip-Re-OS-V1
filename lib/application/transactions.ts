@@ -3654,7 +3654,7 @@ const isMissingColumn = (e: { code?: string | null; message?: string | null } | 
   !!e && (e.code === "42703" || e.code === "PGRST204" || /column .* does not exist|Could not find the '.*' column/i.test(String(e.message ?? "")))
 
 const PARTY_BASE_COLS = "id, name, company, email, phone, role, license_number, notes"
-const PARTY_M1010_COLS = "party_role, represents, vendor_id, fact_source, fact_confirmed_at"
+const PARTY_M1010_COLS = "party_role, represents, vendor_id, fact_source, fact_confirmed_at, fact_confirmed_by, fact_evidence"
 const SETTLEMENT_BASE_COLS = "id, title_company_name, escrow_company_name, escrow_number, closing_scheduled_date, closing_location"
 const SETTLEMENT_M1010_COLS = "settlement_agent_kind, settlement_agent_participant_id, settlement_agent_basis, title_file_number, payoff_status, hoa_estoppel_status, recording_status"
 
@@ -3704,7 +3704,7 @@ function closingTeamInput(facts: Extract<Awaited<ReturnType<typeof readClosingFa
   const s = facts.settlement
   return {
     stateCode: facts.tx.property_state ?? null, financingType: facts.tx.financing_type ?? null, dealType: facts.tx.deal_type ?? null,
-    participants: facts.participants.map((p) => ({ id: p.id as string, name: (p.name ?? null) as string | null, company: p.company ?? null, email: p.email ?? null, phone: p.phone ?? null, role: p.role ?? null, party_role: p.party_role ?? null, represents: p.represents ?? null, vendor_id: p.vendor_id ?? null, fact_source: p.fact_source ?? null, fact_confirmed_at: p.fact_confirmed_at ?? null })),
+    participants: facts.participants.map((p) => ({ id: p.id as string, name: (p.name ?? null) as string | null, company: p.company ?? null, email: p.email ?? null, phone: p.phone ?? null, role: p.role ?? null, party_role: p.party_role ?? null, represents: p.represents ?? null, vendor_id: p.vendor_id ?? null, fact_source: p.fact_source ?? null, fact_confirmed_at: p.fact_confirmed_at ?? null, fact_confirmed_by: (p.fact_confirmed_by ?? null) as string | null, fact_evidence: (p.fact_evidence ?? null) as string | null })),
     settlement: s ? { kind: s.settlement_agent_kind ?? null, participantId: s.settlement_agent_participant_id ?? null, basis: s.settlement_agent_basis ?? null, titleFileNumber: s.title_file_number ?? null, escrowNumber: s.escrow_number ?? null, closingLocation: s.closing_location ?? null, closingDate: s.closing_scheduled_date ?? null, payoffStatus: s.payoff_status ?? null, hoaEstoppelStatus: s.hoa_estoppel_status ?? null, recordingStatus: s.recording_status ?? null, titleCompanyName: s.title_company_name ?? null } : null,
     insuranceOnFile: null,
   }
@@ -3763,12 +3763,12 @@ export async function recordClosingParty(input: {
   const name = input.name.trim().slice(0, 200)
   const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
   return resultFamily(await ledgerSessionAction({ brokerageId: gate.brokerageId, action: "transaction.closing_party.record", actor: { type: "user", userId: gate.actorUserId }, subject: { type: "transaction", id: gate.transactionId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { effective_user_id: gate.userId, party_role: draft.partyRole, represents: draft.represents, on_platform: !!input.vendor_id } }, async () => {
-    const row = {
-      transaction_id: gate.transactionId, brokerage_id: gate.brokerageId, role: draft.partyRole, name,
+    const fields = {
+      role: draft.partyRole, name,
       company: input.company ?? null, email: input.email ?? null, phone: input.phone ?? null, license_number: input.license_number ?? null, notes: input.notes ?? null,
       party_role: draft.partyRole, represents: draft.represents, vendor_id: input.vendor_id ?? null, fact_source: factSource,
     }
-    const { data, error } = await db.from("transaction_participants").insert(row).select("id")
+    const { data, error } = await db.from("transaction_participants").insert({ ...fields, transaction_id: gate.transactionId, brokerage_id: gate.brokerageId }).select("id")
     if (error) return { success: false as const, error: isMissingColumn(error) ? CLOSING_SCHEMA_PENDING : error.message }
     if (!data || data.length !== 1) return { success: false as const, error: "The party was not recorded (no row came back)." }
     const participantId = (data[0] as { id: string }).id
@@ -3808,7 +3808,7 @@ export async function confirmClosingPartyFact(participantId: string, input: { ev
   }
   const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
   return resultFamily(await ledgerSessionAction({ brokerageId: gate.brokerageId, action: "transaction.closing_party.confirm", actor: { type: "user", userId: gate.actorUserId }, subject: { type: "transaction_participant", id: participantId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { transaction_id: gate.transactionId, represents: patch.represents ?? null } }, async () => {
-    const { data: upd, error } = await db.from("transaction_participants").update(patch).eq("id", participantId).eq("transaction_id", gate.transactionId).select("id")
+    const { data: upd, error } = await db.from("transaction_participants").update(withoutRowIdentity(patch)).eq("id", participantId).eq("transaction_id", gate.transactionId).select("id")
     if (error) return { success: false as const, error: isMissingColumn(error) ? CLOSING_SCHEMA_PENDING : error.message }
     if (!upd || upd.length !== 1) return { success: false as const, error: "The confirmation was not recorded (no row matched)." }
     const { data: closed, error: closeErr } = await db.from("transaction_tasks").update({ status: "completed", completed_at: new Date().toISOString(), completed_by: gate.actorUserId })
@@ -3899,6 +3899,8 @@ export async function assignClosingResponsibility(transactionId: string, input: 
     if (error) return { success: false as const, error: `Could not read the party: ${error.message}` }
     if (!p) return { success: false as const, error: "That party is not on this deal." }
   }
+
+  // The write below is to the deal's documents / tasks (never to the four deal-detail tables above); it is pinned to the desk's deal.
   const table = input?.target === "task" ? "transaction_tasks" : input?.target === "document" ? "transaction_documents" : null
   if (!table) return { success: false as const, error: "Choose a document or a task." }
   const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
