@@ -84,7 +84,7 @@ export interface LeadMagnetField {
 export interface CreateLeadMagnetInput {
   title: string
   description: string
-  magnetType: "home_valuation" | "buyer_guide" | "seller_guide" | "market_report" | "listing_alert" | "open_house" | "generic_form"
+  magnetType: "home_valuation" | "buyer_guide" | "seller_guide" | "market_report" | "listing_alert" | "open_house" | "generic_form" | "calculator"
   brokerageId: string
   agentId: string
   createdBy: string
@@ -274,7 +274,7 @@ export interface TrackMagnetEventInput {
    * scan reporter can choose which brokerage's ledger it writes into.
    */
   brokerageId?: string
-  eventType: "view" | "form_start" | "form_submit" | "qr_scan" | "link_click"
+  eventType: "view" | "form_start" | "form_submit" | "qr_scan" | "link_click" | "calculator_open" | "calculation_completed" | "calculator_opt_in"
   metadata?: Record<string, unknown>
   contactId?: string
   ipAddress?: string
@@ -1665,13 +1665,13 @@ export async function generateQRCode(
 // ============================================================================
 
 export async function trackMagnetEvent(
-  input: TrackMagnetEventInput
+  input: TrackMagnetEventInput, opts: LeadMagnetClientOpts = {},
 ): Promise<TrackMagnetEventOutput> {
   if (!input.magnetId || !input.eventType) {
     return { success: false, error: "Missing required fields: magnetId, eventType" }
   }
 
-  const supabase = createServiceClient()
+  const supabase = opts.client ?? createServiceClient()
 
   // ── THE TENANT COMES FROM THE MAGNET, NOT FROM THE CALLER (§4) ────────────
   // This wrote lifecycle_events (and qr_scan_events) stamped to whatever
@@ -1765,7 +1765,7 @@ export async function trackMagnetEvent(
       actorUserId: null,
       brokerageId: tenantId,
       metadata: { ...input.metadata, contactId: input.contactId },
-      auditOnly: true,
+      auditOnly: true, client: supabase,
     }))
 
   if (error) {

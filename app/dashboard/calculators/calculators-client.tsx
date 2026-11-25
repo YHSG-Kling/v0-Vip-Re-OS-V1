@@ -91,6 +91,10 @@ function SellerNetTab({ brokerageId }: { brokerageId: string }) {
   const [repairsConcessions, setRepairsConcessions] = useState("")
   const [stagingCost, setStagingCost] = useState("")
   const [movingCost, setMovingCost] = useState("")
+  // Wave 156 (156H): the figures the sheet used to invent (title 0.7%, escrow 1.5%, a 0.1% transfer tax) are now the seller's.
+  const [titleEscrowFees, setTitleEscrowFees] = useState("")
+  const [transferTaxAmount, setTransferTaxAmount] = useState("")
+  const [buyerBrokerCompPct, setBuyerBrokerCompPct] = useState("")
 
   const US_STATES = [
     "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA",
@@ -117,6 +121,9 @@ function SellerNetTab({ brokerageId }: { brokerageId: string }) {
         stagingCost: stagingCost ? parseFloat(stagingCost) : undefined,
         movingCost: movingCost ? parseFloat(movingCost) : undefined,
         brokerageId,
+        titleEscrowFees: titleEscrowFees ? parseFloat(titleEscrowFees) : undefined,
+        transferTaxAmount: transferTaxAmount ? parseFloat(transferTaxAmount) : undefined,
+        buyerBrokerCompPct: buyerBrokerCompPct ? parseFloat(buyerBrokerCompPct) : undefined,
       })
       setResult(res)
       setSaveMsg(null)
@@ -136,7 +143,7 @@ function SellerNetTab({ brokerageId }: { brokerageId: string }) {
     })
   }
 
-  const canCalculate = !!homeValue && !!location && !!state
+  const canCalculate = !!homeValue && !!location && !!state && titleEscrowFees !== ""
 
   return (
     <div className="space-y-6">
@@ -189,6 +196,21 @@ function SellerNetTab({ brokerageId }: { brokerageId: string }) {
             </div>
           </div>
 
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="space-y-1.5">
+              <Label>Title, escrow &amp; settlement ($ — from a quote)</Label>
+              <Input type="number" placeholder="required" value={titleEscrowFees} onChange={(e) => setTitleEscrowFees(e.target.value)} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Transfer tax ($ — blank uses the cited statute for FL, CA or NY; enter 0 if none)</Label>
+              <Input type="number" placeholder="cited statute" value={transferTaxAmount} onChange={(e) => setTransferTaxAmount(e.target.value)} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Buyer-broker compensation the seller pays (%, optional)</Label>
+              <Input type="number" placeholder="not included" value={buyerBrokerCompPct} onChange={(e) => setBuyerBrokerCompPct(e.target.value)} />
+            </div>
+          </div>
+
           <div className="border-t pt-4">
             <p className="text-sm text-muted-foreground mb-3">Optional adjustments</p>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -205,7 +227,7 @@ function SellerNetTab({ brokerageId }: { brokerageId: string }) {
                 <Label>Repairs / Concessions ($)</Label>
                 <Input
                   type="number"
-                  placeholder="auto"
+                  placeholder="0"
                   value={repairsConcessions}
                   onChange={(e) => setRepairsConcessions(e.target.value)}
                 />
@@ -223,7 +245,7 @@ function SellerNetTab({ brokerageId }: { brokerageId: string }) {
                 <Label>Moving Cost ($)</Label>
                 <Input
                   type="number"
-                  placeholder="2000"
+                  placeholder="0"
                   value={movingCost}
                   onChange={(e) => setMovingCost(e.target.value)}
                 />
@@ -236,6 +258,10 @@ function SellerNetTab({ brokerageId }: { brokerageId: string }) {
           </Button>
         </CardContent>
       </Card>
+
+      {result && !result.success && (
+        <p role="alert" className="text-sm text-destructive">{result.error}</p>
+      )}
 
       {result && result.success && (
         <>
@@ -289,6 +315,18 @@ function SellerNetTab({ brokerageId }: { brokerageId: string }) {
               </div>
             </CardContent>
           </Card>
+
+          {"assumptions" in result && Array.isArray(result.assumptions) && (
+            <Card>
+              <CardHeader><CardTitle className="text-base">Assumptions · {result.period}</CardTitle></CardHeader>
+              <CardContent className="space-y-1 text-sm">
+                {result.assumptions.map((a) => (
+                  <p key={a.key}><span className="font-medium">{a.label}:</span> {a.display} <span className="text-xs text-muted-foreground">({a.basis.replace(/_/g, " ")}{a.source ? ` — ${a.source.citation}, read ${a.source.retrievedOn}` : ""})</span></p>
+                ))}
+                {result.disclaimers.map((d) => <p key={d} className="text-xs text-muted-foreground">{d}</p>)}
+              </CardContent>
+            </Card>
+          )}
 
           {/* AI Scenarios */}
           {result.scenarios && result.scenarios.length > 0 && (

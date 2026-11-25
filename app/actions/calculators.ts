@@ -111,40 +111,12 @@ function boundPublicText(value: string | null | undefined): string | null {
 // ============================================
 
 /**
- * TOMBSTONE — `getLocalTitleCost(location, homeValue)` and
- * `getLocalEscrowFees(location, homeValue)` stood here. Both accepted `location` and
- * read NOT ONE CHARACTER of it while returning a flat national percentage, so the
- * word "Local" in the name was the only local thing about the number — and this
- * number is printed to a SELLER as their title insurance and escrow cost.
- *
- * The parameter is deleted rather than wired because wiring it would mean inventing a
- * per-jurisdiction rate table, and a fabricated rate presented as local is a worse
- * defect than an honest national estimate. Renamed so the name states what the number
- * actually is. The place where jurisdiction genuinely does move the figure is
- * `calculateTransferTax(homeValue, state)` directly below, which carries a real
- * per-state table — that is the survivor of the "local" idea in this file, and the
- * shape any future title/escrow table should follow.
+ * TOMBSTONE (wave 156, lane 156H) — `estimateTitleInsuranceNational` (0.7% of value), `estimateEscrowFeesNational` (1.5%)
+ * and `calculateTransferTax` (a four-state table whose `|| homeValue * 0.001` charged an invented 0.1% to every other state —
+ * and, because Texas's row was 0, to Texas too) stood here. SURVIVORS: title / escrow are the seller's QUOTED figures (a
+ * required input of lib/calculators/engine.ts "seller_net_sheet"); transfer tax is the entered amount or a cited statute from
+ * lib/calculators/rate-sources.ts CITED_RATE_SOURCES (Fla. Stat. 201.02, Cal. R&T 11911, N.Y. Tax Law 1402), else "enter a value".
  */
-async function estimateTitleInsuranceNational(homeValue: number): Promise<number> {
-  // Title insurance typically ranges from 0.5% to 1% of home value (national typical).
-  return homeValue * 0.007
-}
-
-async function estimateEscrowFeesNational(homeValue: number): Promise<number> {
-  // Escrow fees typically range from 1-2% of home value (national typical).
-  return homeValue * 0.015
-}
-
-function calculateTransferTax(homeValue: number, state: string): number {
-  const transferTaxRates: Record<string, number> = {
-    TX: 0, // Texas has no state transfer tax
-    CA: homeValue * 0.0011, // $1.10 per $1,000
-    FL: homeValue * 0.007, // $0.70 per $100
-    NY: homeValue * 0.004, // $4 per $1,000
-  }
-
-  return transferTaxRates[state] || homeValue * 0.001
-}
 
 /**
  * WAVE 155 (lane 155R19) — THE SESSION GATE FOR THE FOUR MODEL-BACKED CALCULATORS (seller net, mortgage comparison,
@@ -171,6 +143,12 @@ export async function calculateSellerNet(data: {
   stagingCost?: number
   movingCost?: number
   brokerageId: string
+  /** Wave 156 (156H): title, escrow and settlement charges from a quote — REQUIRED (it was an invented 0.7% + 1.5%). */
+  titleEscrowFees?: number
+  /** Transfer tax in dollars; blank → the cited statute for the state (lib/calculators/rate-sources.ts), else "enter a value". */
+  transferTaxAmount?: number
+  /** Buyer-broker compensation the seller agrees to pay, as a percent — optional, never assumed. */
+  buyerBrokerCompPct?: number
 }) {
   const actor = await calcSessionActor()
   if (!actor.ok) return { success: false as const, error: actor.error }
@@ -180,92 +158,43 @@ export async function calculateSellerNet(data: {
   if (!tenant.ok) return { success: false as const, error: "Not authorized for that brokerage" }
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   return ledgerSessionAction({ brokerageId: tenant.brokerageId, action: "calculator.seller_net.run", actor: { type: "user", userId: actor.userId }, subject: { type: "brokerage", id: tenant.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
-  const supabase = await createClient()
-
-  // Get brokerage commission structure
-  const commissionStructure = await getDefaultCommissionStructure(tenant.brokerageId)
-  const totalCommissionRate = commissionStructure.agentBuyerSideRate + commissionStructure.agentListingSideRate
-
-  const costs = {
-    agent_commission: data.homeValue * totalCommissionRate,
-    title_insurance: await estimateTitleInsuranceNational(data.homeValue),
-    escrow_fees: await estimateEscrowFeesNational(data.homeValue),
-    transfer_tax: calculateTransferTax(data.homeValue, data.state),
-    hoa_fees: data.hoaFees || 0,
-    repairs_concessions: data.repairsConcessions || data.homeValue * 0.02, // Default 2%
-    staging: data.stagingCost || 0,
-    moving: data.movingCost || 2000,
-  }
-
-  const totalCosts = Object.values(costs).reduce((a, b) => a + b, 0)
-  const netProceeds = data.homeValue - data.mortgageBalance - totalCosts
-
-  // AI-powered market scenarios
-  const prompt = `You are a real estate market analyst. Predict appreciation scenarios:
-
-Home Value: $${data.homeValue.toLocaleString()}
-Location: ${data.location}, ${data.state}
-Current Net Proceeds: $${netProceeds.toLocaleString()}
-
-Predict realistic scenarios for:
-1. Sell now (current proceeds)
-2. Sell in 6 months (with market appreciation/depreciation)
-3. Sell in 1 year (with market appreciation/depreciation)
-
-Consider current market trends. Respond with JSON:
-
-{
-  "scenarios": [
-    {
-      "timeframe": "Sell now",
-      "estimated_home_value": ${data.homeValue},
-      "net_proceeds": ${netProceeds},
-      "reasoning": "Current market conditions"
+  // WAVE 156 (lane 156H) — ONE ENGINE. This sheet priced title at an invented 0.7% of value, escrow at 1.5%, repairs at 2%
+  // when blank, moving at $2,000 when blank, a 0.1% transfer tax for every state without a row (Texas's 0 fell through `||`
+  // to it), charged the AGENT's split of the commission twice as "agent_commission", and asked a model to predict 6- and
+  // 12-month appreciation for a seller. TOMBSTONE — all of it removed; SURVIVOR: lib/calculators/engine.ts runCalculator
+  // ("seller_net_sheet") reached through lib/calculators/artifact.ts computeInternalSellerNet, which prices the listing
+  // commission from the brokerage's agreed structure for an authorized seat and refuses to guess any other figure.
+  const { computeInternalSellerNet } = await import("@/lib/calculators/artifact")
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const ctx = await getAgentContext()
+  const extra = (data.stagingCost ?? 0) + (data.movingCost ?? 0)
+  const r = await computeInternalSellerNet({
+    inputs: {
+      salePrice: data.homeValue, mortgagePayoff: data.mortgageBalance, titleEscrowFees: data.titleEscrowFees,
+      includeTransferTax: "yes", transferTaxAmount: data.transferTaxAmount, buyerBrokerCompPct: data.buyerBrokerCompPct,
+      hoaAtClosing: data.hoaFees, repairCredits: data.repairsConcessions, otherCosts: extra > 0 ? extra : undefined,
     },
-    {
-      "timeframe": "Sell in 6 months",
-      "estimated_home_value": 465000,
-      "net_proceeds": 95000,
-      "reasoning": "Market expected to appreciate 3%",
-      "market_outlook": "stable"
-    },
-    {
-      "timeframe": "Sell in 1 year",
-      "estimated_home_value": 475000,
-      "net_proceeds": 105000,
-      "reasoning": "Continued appreciation expected",
-      "market_outlook": "bullish"
-    }
-  ],
-  "recommendation": "Consider waiting 6 months if not urgent - market trending upward"
-}`
-
-  try {
-    const aiScenarios = await generateAIJSON(prompt)
-
-    return {
-      success: true as const,
-      home_value: data.homeValue,
-      mortgage_payoff: data.mortgageBalance,
-      total_costs: totalCosts,
-      cost_breakdown: costs,
-      net_proceeds: netProceeds,
-      scenarios: aiScenarios.data?.scenarios || [],
-      recommendation: aiScenarios.data?.recommendation,
-    }
-  } catch (error) {
-    console.error("[v0] Error in calculateSellerNet:", error)
-    return {
-      success: true as const,
-      home_value: data.homeValue,
-      mortgage_payoff: data.mortgageBalance,
-      total_costs: totalCosts,
-      cost_breakdown: costs,
-      net_proceeds: netProceeds,
-      scenarios: [
-        { timeframe: "Sell now", net_proceeds: netProceeds, estimated_home_value: data.homeValue },
-      ],
-    }
+    jurisdiction: data.state ? `US-${String(data.state).trim().toUpperCase()}` : null,
+  }, { userId: actor.userId, brokerageId: tenant.brokerageId, userType: ctx.role })
+  if (!r.success) return { success: false as const, error: r.error }
+  const o = r.outcome
+  if (!o.ok) return { success: false as const, error: [...o.missing.map((m) => m.message), ...o.refused.map((x) => `${x.label}: ${x.reason}`)].join("; "), missing: o.missing }
+  const payoff = Number(o.lines.find((l) => l.key === "mortgagePayoff")?.amount ?? 0)
+  const cost_breakdown = Object.fromEntries(o.lines.filter((l) => l.key !== "mortgagePayoff" && l.amount !== 0).map((l) => [l.label, l.amount]))
+  const net = Number(o.outputs.estimatedNet ?? 0)
+  return {
+    success: true as const,
+    home_value: data.homeValue,
+    mortgage_payoff: payoff,
+    total_costs: Math.round((Number(o.outputs.totalDeductions ?? 0) - payoff) * 100) / 100,
+    cost_breakdown,
+    net_proceeds: net,
+    scenarios: [{ timeframe: "Sell now", net_proceeds: net, estimated_home_value: data.homeValue }],
+    recommendation: undefined as string | undefined,
+    period: o.period,
+    assumptions: o.assumptions,
+    notes: o.notes,
+    disclaimers: o.disclaimers,
   }
   }).then((r) => ("home_value" in r ? r : { success: false as const, error: ("error" in r && r.error) || "Not recorded" }))
 }
