@@ -10,7 +10,7 @@ marked as quoted.
 in this wave because of how the code was wired, not because the product grew too large. The cuts made here
 are wiring changes: an importer that took one name from a re-export barrel now imports it from the module
 that defines it, and one small ledger module moved out of a large registry. Those cuts lowered the heaviest
-page by 36 modules and the union by 61 without deleting a line of product code. Section 6 explains what the
+page by 36 modules and the union by 60 without deleting a line of product code. Section 6 explains what the
 budget cannot fix and which decisions belong to the owner.
 
 ## 2. What each ceiling protects
@@ -37,14 +37,14 @@ unchanged re-run passed. The type-check is split in two (`tsconfig.app.json`, 11
 |---|---|---|---|
 | `app/crm/page.tsx` | 1,300 | **1,307** (red) | **1,271** |
 | `app/dashboard/agent/page.tsx` | | 1,282 | 1,227 |
-| `app/dashboard/listings/[id]/lifecycle/page.tsx` | | 1,271 | 1,240 |
+| `app/dashboard/listings/[id]/lifecycle/page.tsx` | | 1,271 | 1,241 |
 | `app/dashboard/marketing/studio/page.tsx` | | 1,235 | 1,200 |
 | `app/api/marketing/content-command/route.ts` | | 1,213 | 1,177 |
-| Union of 1,024 app entries | 5,272 | **5,306** (red) | **5,245** |
+| Union of 1,024 app entries | 5,272 | **5,306** (red) | **5,246** |
 
 The "after" column includes +3 modules for re-hosting "Add a form or packet" in FormWizard (brief step 4) and
 +1 for the new ledger leaf. Both budget rules are now green: heaviest entry 1,271 of 1,300 (29 modules of
-headroom), union 5,245 of 5,300 (55 of headroom). `scripts/wave156-l-guard.ts` re-derives every number above
+headroom), union 5,246 of 5,300 (54 of headroom). `scripts/wave156-l-guard.ts` re-derives every number above
 on each run and pins none of them.
 
 ### Why a CRM page reached 1,307 modules
@@ -75,7 +75,7 @@ on each run and pins none of them.
 2. **43 more barrels across the app.** 62 importers. Barrels with a `"use client"` or `"use server"`
    directive, or with a side-effect import, were excluded by rule. Four barrels that scripts stub by name were
    left alone: `lib/kernel` (`import "server-only"`), `lib/brokerage`, `lib/identity` and `lib/buyer-offer`.
-   Union 5,295 → 5,244.
+   Union 5,295 → 5,244 (5,245 once one importer of `lib/communications` went back to the barrel, because test:deal-desk stubs that module by path).
 3. **The reaper_runs ledger** (`recordReaperRun`, `loadRecentReaperActivity`) moved verbatim to
    `lib/intelligence/reaper-runs-ledger.ts`. It is re-exported from `reaper-net.ts`, with a tombstone at
    `reaper-net.ts:271`. Every heavy entry dropped by about 25 modules.
@@ -164,6 +164,6 @@ Compare against today's two programs (11.47 GB / 8.03 GB peak RSS, 295 s + 117 s
 
 ## 8. State of the tree after this lane
 
-Both budget rules are green with 29 / 55 modules of headroom. Batch 2's other lanes will add modules. Each new
+Both budget rules are green with 29 / 54 modules of headroom. Batch 2's other lanes will add modules. Each new
 module, page or route file counts against the union. The next wave should take option (c) for the render
 worker, or option (a), before the headroom is used up.
