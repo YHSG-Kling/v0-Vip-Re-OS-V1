@@ -1,0 +1,194 @@
+# Wave 156 — census truth
+
+Appendix to `docs/operations/WAVE156-FINAL-REPORT.md` (section 7). The lists behind the reconciliation of the coverage census (`scripts/os-coverage-ledger.ts`) between the pre-wave tree `e79a13b8` (3,011 rows: 2,880 working, 72 owner-held, 59 missing) and the integrated tree (3,053 rows: 2,921 working, 73 owner-held, 59 missing). Produced by comparing the census's own JSON output on the two trees, row id by row id; nothing here was typed by hand. A "working" row has a trigger, a registered owner, a decision gate, a receipt and a reader on its path; it is a statement about the code's wiring, not about a deployment.
+
+## Added executable paths (45)
+- `http:/api/forms/directory` — working — owner: compliance_officer — proof: test:wave156-c-forms-directory, test:wave156-canaries
+- `http:/api/forms/document-read` — working — owner: cron_manager — proof: test:transfer-classification, test:wave156-c-forms-directory
+- `manager_signal:corridor_radar_brief` — working — owner: campaign_orchestrator — proof: test:ai-by-your-side, test:autonomous-budgeting, test:brand-listening (+39)
+- `server_action:app/actions/calculator-artifacts.ts#computeCalculatorArtifactAction` — working — owner: data_steward — proof: test:wave156-h-calculators
+- `server_action:app/actions/calculator-artifacts.ts#createCalculatorArtifactAction` — working — owner: data_steward — proof: test:wave156-h-calculators
+- `server_action:app/actions/calculator-artifacts.ts#optInCalculatorArtifactAction` — working — owner: data_steward — proof: test:wave156-h-calculators
+- `server_action:app/actions/calculator-artifacts.ts#recordCalculatorOpenAction` — working — owner: data_steward — proof: test:wave156-h-calculators
+- `server_action:app/actions/calculators.ts#runCalculatorTool` — working — owner: data_steward — proof: test:ai-tools-hub-honesty, test:ai-tools-hub-tenanted-spend, test:client-portal 
+- `server_action:app/actions/compliance/representation-review.ts#attestRepresentationTerms` — working — owner: deal_coordinator — proof: test:wave156-b-representation-gate, test:wave156-canaries, test:wave156-r-seams
+- `server_action:app/actions/compliance/representation-review.ts#recordRepresentationReview` — working — owner: data_steward — proof: test:wave156-b-representation-gate, test:wave156-canaries, test:wave156-r-seams
+- `server_action:app/actions/fraud-network.ts#addFraudBulletinToTopicPool` — working — owner: compliance_officer — proof: test:wave156-canaries, test:wave156-j-fraud-network
+- `server_action:app/actions/fraud-network.ts#addFraudCaseModerationNote` — working — owner: compliance_officer — proof: test:wave156-canaries, test:wave156-j-fraud-network
+- `server_action:app/actions/fraud-network.ts#appealFraudCaseDecision` — working — owner: compliance_officer — proof: test:wave156-canaries, test:wave156-j-fraud-network
+- `server_action:app/actions/fraud-network.ts#clearFraudNameReview` — working — owner: compliance_officer — proof: test:wave156-canaries, test:wave156-j-fraud-network
+- `server_action:app/actions/fraud-network.ts#correctFraudBulletin` — working — owner: compliance_officer — proof: test:wave156-canaries, test:wave156-j-fraud-network
+- `server_action:app/actions/fraud-network.ts#draftFraudBulletinFromCase` — working — owner: compliance_officer — proof: test:wave156-canaries, test:wave156-j-fraud-network
+- `server_action:app/actions/fraud-network.ts#getFraudBulletinHistory` — working — owner: compliance_officer — proof: test:wave156-canaries, test:wave156-j-fraud-network
+- `server_action:app/actions/fraud-network.ts#getFraudCase` — working — owner: compliance_officer — proof: test:wave156-canaries, test:wave156-j-fraud-network
+- `server_action:app/actions/fraud-network.ts#getFraudNetworkMetrics` — working — owner: compliance_officer — proof: test:wave156-canaries, test:wave156-j-fraud-network
+- `server_action:app/actions/fraud-network.ts#getFraudNetworkViewer` — working — owner: compliance_officer — proof: test:wave156-canaries, test:wave156-j-fraud-network
+- `server_action:app/actions/fraud-network.ts#linkFraudCaseToBulletin` — working — owner: compliance_officer — proof: test:wave156-canaries, test:wave156-j-fraud-network
+- `server_action:app/actions/fraud-network.ts#listFraudBulletins` — working — owner: compliance_officer — proof: test:wave156-canaries, test:wave156-j-fraud-network
+- `server_action:app/actions/fraud-network.ts#listFraudModerationQueue` — working — owner: compliance_officer — proof: test:wave156-canaries, test:wave156-j-fraud-network
+- `server_action:app/actions/fraud-network.ts#listMyFraudBulletinReads` — working — owner: compliance_officer — proof: test:wave156-canaries, test:wave156-j-fraud-network
+- `server_action:app/actions/fraud-network.ts#listMyFraudCases` — working — owner: compliance_officer — proof: test:wave156-canaries, test:wave156-j-fraud-network
+- `server_action:app/actions/fraud-network.ts#listMyFraudWarningSubscriptions` — working — owner: compliance_officer — proof: test:wave156-canaries, test:wave156-j-fraud-network
+- `server_action:app/actions/fraud-network.ts#openFraudBulletin` — working — owner: compliance_officer — proof: test:wave156-canaries, test:wave156-j-fraud-network
+- `server_action:app/actions/fraud-network.ts#publishFraudBulletin` — working — owner: compliance_officer — proof: test:wave156-canaries, test:wave156-j-fraud-network
+- `server_action:app/actions/fraud-network.ts#recordFraudSubjectCorrection` — working — owner: compliance_officer — proof: test:wave156-canaries, test:wave156-j-fraud-network
+- `server_action:app/actions/fraud-network.ts#requestFraudBulletinCorrection` — working — owner: compliance_officer — proof: test:wave156-canaries, test:wave156-j-fraud-network
+- `server_action:app/actions/fraud-network.ts#requestFraudEvidenceView` — working — owner: compliance_officer — proof: test:wave156-canaries, test:wave156-j-fraud-network
+- `server_action:app/actions/fraud-network.ts#resolveFraudCorrectionRequest` — working — owner: compliance_officer — proof: test:wave156-canaries, test:wave156-j-fraud-network
+- `server_action:app/actions/fraud-network.ts#setFraudWarningSubscription` — working — owner: compliance_officer — proof: test:wave156-canaries, test:wave156-j-fraud-network
+- `server_action:app/actions/fraud-network.ts#submitFraudIncident` — working — owner: compliance_officer — proof: test:wave156-canaries, test:wave156-j-fraud-network
+- `server_action:app/actions/fraud-network.ts#takeDownFraudBulletin` — working — owner: compliance_officer — proof: test:wave156-canaries, test:wave156-j-fraud-network
+- `server_action:app/actions/fraud-network.ts#updateFraudBulletinDraft` — working — owner: compliance_officer — proof: test:wave156-canaries, test:wave156-j-fraud-network
+- `server_action:app/actions/fraud-network.ts#uploadFraudEvidenceFile` — working — owner: compliance_officer — proof: test:wave156-canaries, test:wave156-j-fraud-network
+- `server_action:app/actions/fraud-network.ts#withdrawFraudCase` — working — owner: compliance_officer — proof: test:wave156-canaries, test:wave156-j-fraud-network
+- `server_action:app/actions/governing-terms.ts#confirmGoverningTermsAction` — working — owner: deal_coordinator — proof: test:deal-desk, test:wave156-r-seams
+- `server_action:app/actions/superadmin/platform-controls.ts#setRentcastRequestCapAction` — working — owner: data_steward — proof: test:healing-policy, test:platform-controls, test:wave156-g-provider-economics
+- `server_action:app/actions/transactions.ts#assignClosingResponsibilityAction` — working — owner: deal_coordinator — proof: test:client-portal, test:closing-terms, test:commission-term-change (+12)
+- `server_action:app/actions/transactions.ts#confirmClosingPartyFactAction` — working — owner: deal_coordinator — proof: test:client-portal, test:closing-terms, test:commission-term-change (+12)
+- `server_action:app/actions/transactions.ts#recordClosingPartyAction` — working — owner: deal_coordinator — proof: test:client-portal, test:closing-terms, test:commission-term-change (+12)
+- `server_action:app/actions/transactions.ts#setSettlementAgentAction` — working — owner: deal_coordinator — proof: test:client-portal, test:closing-terms, test:commission-term-change (+12)
+- `server_action:app/actions/transactions.ts#updateClosingChecksAction` — working — owner: deal_coordinator — proof: test:client-portal, test:closing-terms, test:commission-term-change (+12)
+
+## Retired executable paths (3)
+- `server_action:app/actions/calculators.ts#calculateAffordability` — was working
+- `server_action:app/actions/calculators.ts#calculateRentVsBuy` — was working
+- `server_action:app/actions/lead-intelligence.ts#trackBehavior` — was working
+
+## State changes (1)
+- `server_action:app/actions/lead-intelligence.ts#trackExternalActivity` — working → owner-held — owner-held pending owner decision (wave 156, lanes 156F / integrator): WIRE OR RETIRE WITH ITS READERS? The only writer of external_behavior. Its one caller fab
+
+## Owner-held at end (73)
+- `http:/api/admin/system/providers/test` — owner-held (platform-staff door: requireSuperadminAuth @ app/api/admin/system/providers/test/route.ts:106): Platform-staff acts: only platform_sentinel is a registered platform manager. Is a platform 
+- `kernel_event:agent_work_anniversary` — owner-held pending owner decision 2 (the same question as referral_converted): the award is decided by LIFECYCLE_AWARD_RULES through the one award trigger under recruiting_manager — a rule, not a name
+- `kernel_event:brand_compliance_failed` — owner-held by the event-claims ledger (scripts/event-claims-ledger.ts EVENT_OWNER_HELD, ratcheted by test:event-claims): record or consumer? a failed brand scan — compliance_officer could hold the pie
+- `kernel_event:brand_compliance_passed` — owner-held by the event-claims ledger (scripts/event-claims-ledger.ts EVENT_OWNER_HELD, ratcheted by test:event-claims): record? brand scan passed (lib/kernel/brand-compliance.ts); nothing must act on
+- `kernel_event:buyer_broker_agreement_signed` — owner-held pending owner decision 2 (the same question as referral_converted): the award is decided by LIFECYCLE_AWARD_RULES through the one award trigger under recruiting_manager — a rule, not a name
+- `kernel_event:buyer_disengaged` — owner-held by the event-claims ledger (scripts/event-claims-ledger.ts EVENT_OWNER_HELD, ratcheted by test:event-claims): record? a buyer lifecycle state (lib/kernel/lifecycle.ts map); BUYER_STATE_CHAN
+- `kernel_event:buyer_search_executed` — owner-held by the event-claims ledger (scripts/event-claims-ledger.ts EVENT_OWNER_HELD, ratcheted by test:event-claims): record? a buyer lifecycle state echo (same as above)
+- `kernel_event:cda_generated` — owner-held by the event-claims ledger (scripts/event-claims-ledger.ts EVENT_OWNER_HELD, ratcheted by test:event-claims): record? a CDA row was generated (app/actions/cda-portal.ts); approval is the CD
+- `kernel_event:ce_completed` — owner-held pending owner decision 2 (the same question as referral_converted): the award is decided by LIFECYCLE_AWARD_RULES through the one award trigger under recruiting_manager — a rule, not a name
+- `kernel_event:competency_improved` — owner-held pending owner decision 2 (the same question as referral_converted): the award is decided by LIFECYCLE_AWARD_RULES through the one award trigger under recruiting_manager — a rule, not a name
+- `kernel_event:contact_enrichment_completed` — owner-held by the event-claims ledger (scripts/event-claims-ledger.ts EVENT_OWNER_HELD, ratcheted by test:event-claims): record? enrichment landed (lib/lead-pipeline/enrichment-orchestrator.ts); failu
+- `kernel_event:credit_status_updated` — owner-held by the event-claims ledger (scripts/event-claims-ledger.ts EVENT_OWNER_HELD, ratcheted by test:event-claims): record? the credit status change (app/actions/credit-copilot.ts → logCreditStat
+- `kernel_event:deal_on_hold` — owner-held by the event-claims ledger (scripts/event-claims-ledger.ts EVENT_OWNER_HELD, ratcheted by test:event-claims): record? a buyer lifecycle state echo (lib/kernel/lifecycle.ts)
+- `kernel_event:integration_failed` — owner-held by the event-claims ledger (scripts/event-claims-ledger.ts EVENT_OWNER_HELD, ratcheted by test:event-claims): record? an admin's own integration TEST failed (app/api/integrations/test) — th
+- `kernel_event:lifetime_customer` — owner-held pending owner decision 2 (the same question as referral_converted): the award is decided by LIFECYCLE_AWARD_RULES through the one award trigger under recruiting_manager — a rule, not a name
+- `kernel_event:lifetime_customer_touchpoint_sent` — owner-held pending owner decision 2 (the same question as referral_converted): the award is decided by LIFECYCLE_AWARD_RULES through the one award trigger under recruiting_manager — a rule, not a name
+- `kernel_event:marketing_campaign_approved` — owner-held by the event-claims ledger (scripts/event-claims-ledger.ts EVENT_OWNER_HELD, ratcheted by test:event-claims): record? the approval is decided by decideMarketingApproval (lib/kernel/approval
+- `kernel_event:mentor_session_held` — owner-held pending owner decision 2 (the same question as referral_converted): the award is decided by LIFECYCLE_AWARD_RULES through the one award trigger under recruiting_manager — a rule, not a name
+- `kernel_event:offer_eligible` — owner-held by the event-claims ledger (scripts/event-claims-ledger.ts EVENT_OWNER_HELD, ratcheted by test:event-claims): record? a buyer lifecycle state echo (lib/kernel/lifecycle.ts)
+- `kernel_event:property_recommended` — owner-held by the event-claims ledger (scripts/event-claims-ledger.ts EVENT_OWNER_HELD, ratcheted by test:event-claims): record? a buyer FAVORITED one of our listings (lib/kernel/forms.ts); the prefer
+- `kernel_event:referral_advanced` — owner-held by the event-claims ledger (scripts/event-claims-ledger.ts EVENT_OWNER_HELD, ratcheted by test:event-claims): record or consumer? a referral moved stage (app/actions/referrals) — sphere_of_
+- `kernel_event:referral_converted` — owner-held pending owner decision 2 (does a registered manager's deterministic evidence rule count as the decision owner?): the award is decided by referralEvidenceTransaction (a closed/funded transac
+- `kernel_event:report_emailed` — owner-held by the event-claims ledger (scripts/event-claims-ledger.ts EVENT_OWNER_HELD, ratcheted by test:event-claims): record? a report was EMAILED (lib/kernel/reporting.ts emitEvent fans out; the f
+- `kernel_event:report_exported_csv` — owner-held by the event-claims ledger (scripts/event-claims-ledger.ts EVENT_OWNER_HELD, ratcheted by test:event-claims): record? a report was exported (lib/kernel/reporting.ts emitEvent fans out; the 
+- `kernel_event:report_exported_pdf` — owner-held by the event-claims ledger (scripts/event-claims-ledger.ts EVENT_OWNER_HELD, ratcheted by test:event-claims): record? a report was exported (lib/kernel/reporting.ts emitEvent fans out; the 
+- `kernel_event:report_generated` — owner-held by the event-claims ledger (scripts/event-claims-ledger.ts EVENT_OWNER_HELD, ratcheted by test:event-claims): record? a report was generated (lib/kernel/reporting.ts emitEvent fans out)
+- `kernel_event:seller_declined` — owner-held by the event-claims ledger (scripts/event-claims-ledger.ts EVENT_OWNER_HELD, ratcheted by test:event-claims): record or consumer? a seller DECLINED to list (app/actions/seller-listing/execu
+- `kernel_event:subscription_reminder_sent` — owner-held by the event-claims ledger (scripts/event-claims-ledger.ts EVENT_OWNER_HELD, ratcheted by test:event-claims): record? a reminder was SENT (lib/billing/stripe-subscription-ops.ts) — the send
+- `kernel_event:tour_eligible` — owner-held by the event-claims ledger (scripts/event-claims-ledger.ts EVENT_OWNER_HELD, ratcheted by test:event-claims): record? a buyer lifecycle state echo (lib/kernel/lifecycle.ts)
+- `kernel_event:tour_planned` — owner-held by the event-claims ledger (scripts/event-claims-ledger.ts EVENT_OWNER_HELD, ratcheted by test:event-claims): record? a buyer lifecycle state echo (lib/kernel/lifecycle.ts)
+- `kernel_event:user_account_incomplete` — owner-held by the event-claims ledger (scripts/event-claims-ledger.ts EVENT_OWNER_HELD, ratcheted by test:event-claims): record? self-heal finding on dashboard load (app/dashboard/page.tsx)
+- `kernel_event:user_account_repaired` — owner-held by the event-claims ledger (scripts/event-claims-ledger.ts EVENT_OWNER_HELD, ratcheted by test:event-claims): record? self-heal outcome (lib/kernel/users.ts)
+- `kernel_event:user_brokerage_assigned` — owner-held by the event-claims ledger (scripts/event-claims-ledger.ts EVENT_OWNER_HELD, ratcheted by test:event-claims): record? provisioning step (lib/kernel/users.ts)
+- `kernel_event:user_domain_records_created` — owner-held by the event-claims ledger (scripts/event-claims-ledger.ts EVENT_OWNER_HELD, ratcheted by test:event-claims): record? provisioning step (lib/kernel/users.ts)
+- `kernel_event:user_domain_records_repaired` — owner-held by the event-claims ledger (scripts/event-claims-ledger.ts EVENT_OWNER_HELD, ratcheted by test:event-claims): record? provisioning step (lib/kernel/users.ts)
+- `kernel_event:user_invited` — owner-held by the event-claims ledger (scripts/event-claims-ledger.ts EVENT_OWNER_HELD, ratcheted by test:event-claims): record? an invite was sent (app/actions/admin/invite-user.ts) — the send is the
+- `kernel_event:user_onboarding_completed` — owner-held pending owner decision 2 (the same question as referral_converted): the award is decided by LIFECYCLE_AWARD_RULES through the one award trigger under recruiting_manager — a rule, not a name
+- `kernel_event:user_onboarding_started` — owner-held by the event-claims ledger (scripts/event-claims-ledger.ts EVENT_OWNER_HELD, ratcheted by test:event-claims): record? onboarding started (lib/kernel/onboarding.ts); the onboarding-health sw
+- `kernel_event:user_onboarding_step_completed` — owner-held pending owner decision 2 (the same question as referral_converted): the award is decided by LIFECYCLE_AWARD_RULES through the one award trigger under recruiting_manager — a rule, not a name
+- `orchestrator_event:transaction.closing_soon` — owner-held pending owner decision (lane 155R24): build or retire? A closing gift (closing_gifts.price_cents) is spend; the producer would be the deadline watcher's close-date approach; kept dormant (n
+- `orchestrator_event:transaction.contingency_cleared` — owner-held pending owner decision (lane 155R24): build or retire? Nothing produces the moment — no writer of transactions.*_contingency_removed_at, no trigger, no catalog milestone; the consumer is ke
+- `server_action:app/actions/admin/create-subscriber.ts#retrySubscriberInvite` — owner-held (platform-staff door: gateStaffAction @ app/actions/admin/create-subscriber.ts:229): Platform-staff acts: only platform_sentinel is a registered platform manager. Is a platform act owned by
+- `server_action:app/actions/admin/manager-evals.ts#completeRegionalConventionReview` — owner-held pending owner ruling (lane 155R27): the yearly regional closing-cost convention review is typed as the Finance Manager's (lib/managers/regional-convention-review.ts:51 owner: finance_manage
+- `server_action:app/actions/admin/manager-evals.ts#overrideDeliberationWinner` — owner-held pending owner ruling (lane 155R27): a broker/admin overrides the argued winner of a cross-manager deliberation, recorded on that referral's manager_signals payload (lib/managers/deliberatio
+- `server_action:app/actions/buyer-lifecycle-core.ts#executeBuyerStateTransition` — owner-held pending owner ruling (lane 155R22 part 3 — the census could not derive an accountable manager, and none is typed): Is every buyer lifecycle transition, whatever state it lands in, the Shopp
+- `server_action:app/actions/buyer-offers.ts#startOfferDraft` — owner-held pending owner ruling (lane 155R22 part 3 — the census could not derive an accountable manager, and none is typed): When staff open the offer wizard for a buyer, is that the Shopping Agent's
+- `server_action:app/actions/communications.ts#addContactNote` — owner-held pending the wave-146 owner decision, unchanged (lane 155R29, Q5): should contact notes still sync to the external CRM? The live note door is app/actions/contacts.ts addContactNote; this nam
+- `server_action:app/actions/communications.ts#draftTeamAnnouncementAction` — owner-held pending owner decision 3 (lane 155R18): a model draft returned to the composer, writing only api_response_logs telemetry — reference owner recruiting_manager (its sibling notifyBrokerageAge
+- `server_action:app/actions/communications.ts#notifyBrokerageAgentsAction` — owner-held pending owner decision 3 (lane 155R18), the same question as its sibling draftTeamAnnouncementAction: a principal's in-app announcement to the brokerage / team roster (notifications + a lif
+- `server_action:app/actions/content-compliance.ts#batchEvaluate` — owner-held pending the same owner decision as evaluateCompliance (an explicit compliance evaluation; reference owner compliance_officer)
+- `server_action:app/actions/content-compliance.ts#evaluateCompliance` — owner-held pending owner decision: compliance_events is GENERIC for ownership (lane 155R16) so a gated draft is not compliance_officer's — but is an EXPLICIT compliance evaluation the user asked for? 
+- `server_action:app/actions/email-campaigns.ts#sendEmailCampaign` — @ownerRuled documented-hold — manual counterpart of the send-email-campaigns cron, waiting on an email-campaign management surface (email-campaigns.ts:454)
+- `server_action:app/actions/lead-intelligence.ts#resolveIdentity` — owner-held pending owner decision (lane 155R29, Q1): WIRE OR RETIRE? A staff re-match of one stored visitor signal to a contact. The automatic capture loop (trackBehavior → resolveSignalIdentity) alre
+- `server_action:app/actions/lead-intelligence.ts#trackExternalActivity` — owner-held pending owner decision (wave 156, lanes 156F / integrator): WIRE OR RETIRE WITH ITS READERS? The only writer of external_behavior. Its one caller fabricated off-site views and is gone; the 
+- `server_action:app/actions/lifetime-customer-touchpoints.ts#calculateEngagementScore` — owner-held pending owner decision (lane 155R29, Q2): WIRE (a recalculate control on the past-clients / referrals screen, or the nightly sphere cycle) OR RETIRE WITH ITS READERS? It is the ONLY writer 
+- `server_action:app/actions/listing-lifecycle.ts#scheduleListingAppointment` — owner-held pending owner decision (lane 155R29, Q3): ROUTE THE LISTING-CONSULTATION SCHEDULER THROUGH IT (stage → APPOINTMENT_SET, listings.appointment_at) OR MERGE THOSE TWO WRITES ONTO createAppoint
+- `server_action:app/actions/newsletter/fetch-local-news.ts#fetchLocalNews` — owner-held pending owner ruling (lane 155R22 part 3 — the census could not derive an accountable manager, and none is typed): Are a tenant's local news SOURCES part of the newsletter (the Campaign Orc
+- `server_action:app/actions/notifications.ts#markAllRead` — owner-held (own record: notifications @ app/actions/notifications.ts:127): The seat's own record (lane 155R18 owner decision 3): is a write pinned to the signed-in user's OWN rows that touches nothing
+- `server_action:app/actions/notifications.ts#markNotificationRead` — owner-held (own record: notifications @ app/actions/notifications.ts:96): The seat's own record (lane 155R18 owner decision 3): is a write pinned to the signed-in user's OWN rows that touches nothing 
+- `server_action:app/actions/social/generate-social-post.ts#generateContextualDraft` — owner-held pending owner ruling (lane 155R22 part 3 — the census could not derive an accountable manager, and none is typed): Is a contextual social-post draft — returned to the composer, compliance-c
+- `server_action:app/actions/superadmin/ai-ops.ts#replaySignalAction` — owner-held (platform-staff door: requirePlatformCapability @ app/actions/superadmin/ai-ops.ts:32): Platform-staff acts: only platform_sentinel is a registered platform manager. Is a platform act owned
+- `server_action:app/actions/superadmin/ai-ops.ts#runCredentialRefreshAction` — owner-held (platform-staff door: requirePlatformCapability @ app/actions/superadmin/ai-ops.ts:32): Platform-staff acts: only platform_sentinel is a registered platform manager. Is a platform act owned
+- `server_action:app/actions/superadmin/platform-announcements.ts#postPlatformAnnouncementAction` — owner-held (platform-staff door: requirePlatformCapability @ app/actions/superadmin/platform-announcements.ts:23): Platform-staff acts: only platform_sentinel is a registered platform manager. Is a pl
+- `server_action:app/actions/superadmin/platform-reception.ts#bindPlatformReceptionAction` — owner-held (platform-staff door: requireProviders @ app/actions/superadmin/platform-reception.ts:36): Platform-staff acts: only platform_sentinel is a registered platform manager. Is a platform act ow
+- `server_action:app/actions/superadmin/platform-social.ts#startPlatformSocialConnectAction` — owner-held (platform-staff door: requirePlatformCapability @ app/actions/superadmin/platform-social.ts:38): Platform-staff acts: only platform_sentinel is a registered platform manager. Is a platform 
+- `server_action:app/actions/superadmin/provider-posture.ts#getFullProviderPostureAction` — owner-held (platform-staff door: requirePlatformCapability @ app/actions/superadmin/provider-posture.ts:55): Platform-staff acts: only platform_sentinel is a registered platform manager. Is a platform
+- `server_action:app/actions/superadmin/secret-migration.ts#resealLegacyPlaintextSecretsAction` — owner-held (platform-staff door: gateStaffAction @ app/actions/superadmin/secret-migration.ts:18): Platform-staff acts: only platform_sentinel is a registered platform manager. Is a platform act owned
+- `server_action:app/actions/superadmin/stripe-webhook-events.ts#registerStripeWebhookEventsAction` — owner-held (platform-staff door: platformStaffCan @ app/actions/superadmin/stripe-webhook-events.ts:32): Platform-staff acts: only platform_sentinel is a registered platform manager. Is a platform act
+- `server_action:app/actions/transactions.ts#generateCostBreakdown` — owner-held pending owner decision (lanes 155R28 / 155R30): WIRE, REPLACE OR RETIRE? The only writer of cost_breakdown_tracking (its reader card and the actual-cost input stand on it) is a MODEL-author
+- `server_action:app/actions/transactions.ts#updateTransaction` — owner-held pending owner decision (lanes 155R28 / 155R30): WIRE OR RETIRE? The only door that corrects a deal's own details (property address, client name) after creation. Nothing in the product calls
+- `server_action:app/actions/twin-scenario.ts#simulateTwinScenario` — owner-held pending the own-span rule: it writes only its own evidence row; the twin it projects is read inside the same-file helper project() → readBrokerageTwin — reference owner data_steward (broker
+- `server_action:app/actions/vendor-payments.ts#submitVendorInvoice` — owner-held pending owner decision (lane 155R29, Q4; the wave-146 money_legal ruling still holds): WIRE draft → submit beside createVendorInvoice on the vendor bills panel, OR RETIRE both onto the mult
+- `server_action:app/actions/workflows.ts#logUserActivity` — owner-held pending the own-record ruling (lane 155R18 owner decision 3 / rule C): the seat's OWN session-start row in the audit trail (one verb, its own user id, no tenant column) — is recording one's
+
+## Missing (no link) at end (59)
+- `http:/api/agentic-os/mcp` — trigger — SIMULATED_ONLY
+- `http:/api/errors/collect` — trigger — UNKNOWN
+- `http:/api/v1/[resource]` — trigger — SIMULATED_ONLY
+- `http:/api/voice/relay/plan` — trigger — SIMULATED_ONLY
+- `http:/api/workflow/trigger` — trigger — SIMULATED_ONLY
+- `kernel_event:ad_campaign_created` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:ad_campaign_launched` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:brokerage_affiliation_declared` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:brokerage_archived` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:brokerage_transfer_cancelled` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:brokerage_transfer_completed` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:brokerage_transfer_consented` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:brokerage_transfer_declined` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:brokerage_transfer_requested` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:brokerage_transfer_stalled` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:commission_calculated` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:commission_distributed` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:commission_state_recalculated` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:commission_updated` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:contact_agent_notified` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:contact_archived` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:contact_consented_intake` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:contact_followup_draft_generated` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:contact_merged` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:contact_updated` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:custom_domain_connected` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:custom_domain_error` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:custom_domain_verified` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:enrichment_completed` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:expense_created` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:manager_delegation_requested` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:manager_delegation_state_changed` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:mission_created` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:mission_state_changed` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:next_best_experience_chosen` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:raw_record_created` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:raw_record_deduplicated` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:raw_record_enriched` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:raw_record_identity_gated` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:raw_record_territory_gated` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:raw_record_viability_gated` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:scrape_batch_retried` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:scrape_source_run_completed` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:scrape_source_run_failed` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:scrape_source_run_started` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:scraping_budget_exhausted` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:scraping_cron_completed` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:scraping_cron_failed` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:scraping_cron_started` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:script_approved` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:script_rejected` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:snippet_approved` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:snippet_rejected` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:unknown_sender_dropped` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:unknown_sender_identified_as_lead` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:voice_clone_sample_uploaded` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:voice_clone_training_completed` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:voice_clone_training_failed` — worker — DECLARATIVE_READ_ONLY
+- `kernel_event:webhook_subscription_auto_disabled` — worker — DECLARATIVE_READ_ONLY
