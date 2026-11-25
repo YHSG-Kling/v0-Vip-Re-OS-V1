@@ -94,7 +94,7 @@
 
 import "server-only"
 import {
-  getRentcastAvmAndComps,
+  // TOMBSTONE (wave 156, 156I r3): getRentcastAvmAndComps by name — survivor lib/avm/provider-chain.ts requestPropertyComparables (LAW 3).
   type RentcastAvmAndComps,
   type RentcastComp,
 } from "@/lib/property/rentcast"
@@ -450,7 +450,7 @@ export async function sourceCompsForCma(req: CompSourceRequest): Promise<Sourced
   // function carries a baseline object that says what it knows.
   let avmPull: RentcastAvmAndComps | null = null
   if (rentcastEligibility.eligible) {
-    avmPull = await getRentcastAvmAndComps({
+    avmPull = (await (await import("@/lib/avm/provider-chain")).requestPropertyComparables({
       brokerageId: req.brokerageId,
       agentUserId: req.agentUserId ?? null,
       teamId: req.teamId ?? null,
@@ -461,7 +461,7 @@ export async function sourceCompsForCma(req: CompSourceRequest): Promise<Sourced
       // question the ledger exists to answer.
       systemSource: req.systemSource ?? DEFAULT_COMP_SYSTEM_SOURCE,
       contactId: req.contactId ?? null,
-    })
+    })).pull
     rentcastRows = avmPull.comps
     // The pull meters its own call ONCE (usage_type comps_lookup) and the AVM
     // comes back on that same call at no marginal cost; this only mirrors the
@@ -590,7 +590,7 @@ export async function sourceCompsForCma(req: CompSourceRequest): Promise<Sourced
         wideRows = cached.payload.comps
         notes.push(`RentCast widened comparable supplement served from today's cache for this address (${wideRows.length} row(s)) — no request was re-billed (original request ${cached.costCents}¢).`)
       } else {
-        const wide = await getRentcastAvmAndComps({
+        const wide = (await (await import("@/lib/avm/provider-chain")).requestPropertyComparables({
           brokerageId: req.brokerageId,
           agentUserId: req.agentUserId ?? null,
           teamId: req.teamId ?? null,
@@ -600,7 +600,7 @@ export async function sourceCompsForCma(req: CompSourceRequest): Promise<Sourced
           daysOld: RENTCAST_SUPPLEMENT_DAYS_OLD,
           systemSource: req.systemSource ?? DEFAULT_COMP_SYSTEM_SOURCE,
           contactId: req.contactId ?? null,
-        })
+        })).pull
         costCents += RENTCAST_COMPS_COST_CENTS
         wideRows = wide.comps
         if (wide.avmUnavailableReason === "provider_error" && wideRows.length === 0) {

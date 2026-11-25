@@ -807,3 +807,87 @@ export function parseLengthOfResidence(text: string | null | undefined): number 
   if (isNaN(n)) return null
   return n
 }
+
+// ═══ WAVE 156 (lane 156I round 3 — LAW 3: COMPARABLES ARE A CAPABILITY, NOT A VENDOR) ═══════════════════════════════════════
+// MEASURED AT fec2aa5a: the CMA's comp sourcing (lib/cma/comp-provider.ts) called lib/property/rentcast.ts getRentcastAvmAndComps
+// by NAME, twice (the primary pull and the widened sold-side supplement) — the shape LAW 3 forbids for a home value. This is the
+// comparables capability, beside requestPropertyValuation, asking the same questions in the same order:
+//   1. a tenant and an address on the request (an unattributable paid call is spend nobody can see) — else not available;
+//   2. THE route table + router (CONTACT_PROVIDER_ROUTES.property_valuation through routeCapability, health cool-down and the
+//      caller's exclusions) — comparables ride the valuation route; BatchData's comps pull is retired (comp-provider.ts header),
+//      so only RentCast can answer and a RentCast routed around is an honest "not available";
+//   3. THE one eligibility gate (resolveRentcastEligibility, readKind property_data — the platform key and the budget);
+//   4. THE PLATFORM CEILING, read before the call (rentcastCapStatus) so the answer at the cutoff is NAMED and the vendor is never
+//      reached — the egress reservation inside rentcast.ts stays the binding stop;
+//   5. the pull through getRentcastAvmAndComps — whose read is cachedRentcastRead (rentcastSingleFlight: two concurrent asks for one
+//      address share ONE request) and whose meter books success only (lane 156G).
+// Never throws. The answer is ALWAYS a RentcastAvmAndComps-shaped pull (empty with its reason when not available), so a caller's
+// honest-empty path runs unchanged. Proof: scripts/wave156-i-guard.ts §K.
+
+export interface ComparablesRequest {
+  brokerageId: string | null | undefined
+  agentUserId?: string | null
+  teamId?: string | null
+  address: string
+  limit?: number
+  maxRadiusMiles?: number
+  daysOld?: number
+  systemSource?: string
+  contactId?: string | null
+  exclude?: readonly string[]
+}
+
+export interface ComparablesOutcome {
+  pull: import("@/lib/property/rentcast").RentcastAvmAndComps
+  provider: "rentcast" | null
+  /** null when a provider was asked; otherwise the plain reason nothing was bought. */
+  notAvailable: string | null
+  skipped: Array<{ provider: string; reason: string }>
+}
+
+/** @proofSeam scripts/wave156-i-guard.ts §K — production defaults are the survivors named in the header. */
+export interface ComparablesDeps {
+  providerHealth?: (serviceKey: string) => Promise<{ state: string; routeAround: boolean; reason: string }>
+  capStatus?: () => Promise<{ allowed: boolean; reason: string }>
+}
+
+export async function requestPropertyComparables(req: ComparablesRequest, deps: ComparablesDeps = {}): Promise<ComparablesOutcome> {
+  const rc = await import("@/lib/property/rentcast")
+  const { resolveRentcastEligibility } = await import("@/lib/property/rentcast-eligibility")
+  const skipped: ComparablesOutcome["skipped"] = []
+  const ctx = { brokerageId: (req.brokerageId ?? null) as string, agentUserId: req.agentUserId ?? null, teamId: req.teamId ?? null, readKind: "property_data" as const }
+  const empty = async (notAvailable: string, eligibility?: Awaited<ReturnType<typeof resolveRentcastEligibility>>): Promise<ComparablesOutcome> => ({
+    pull: { comps: [], avm: { value: null, rangeLow: null, rangeHigh: null }, avmAvailable: false, avmUnavailableReason: "not_eligible", eligibility: eligibility ?? await resolveRentcastEligibility(ctx).catch(() => ({ eligible: false } as never)) },
+    provider: null, notAvailable, skipped,
+  })
+  try {
+    if (!req.brokerageId) return await empty("no tenant on the request — comparables are never bought unattributed (§4)")
+    if (!req.address?.trim()) return await empty("no address to find comparables for")
+    const { CONTACT_PROVIDER_ROUTES, routeCapability } = await import("@/lib/ai-isa/property-lookup-rail")
+    const exclude = new Set<string>(["batchdata", ...(req.exclude ?? [])])
+    const healthFn = deps.providerHealth ?? (async (k: string) => (await import("@/lib/agentic-os/connector-gateway")).loadProviderHealth(k))
+    const health: Record<string, { state: string; routeAround: boolean; reason: string } | null> = {}
+    for (const e of CONTACT_PROVIDER_ROUTES.property_valuation) if (!exclude.has(e.provider)) health[e.provider] = await healthFn(e.provider).catch(() => null)
+    const routed = routeCapability("property_valuation", health as never, exclude)
+    skipped.push(...routed.skipped)
+    const eligibility = await resolveRentcastEligibility(ctx)
+    if (!routed.providers.includes("rentcast")) return await empty(`comparables are not available right now: RentCast is routed around (${routed.skipped.map((s) => s.reason).join("; ") || "not on the route"})`, eligibility)
+    if (!eligibility.eligible) return await empty(`comparables are not available: the RentCast gate refused (${eligibility.reason ?? "not eligible"})`, eligibility)
+    const cap = deps.capStatus
+      ? await deps.capStatus()
+      : await (async () => {
+          const { createServiceClient } = await import("@/lib/supabase/service")
+          const { rentcastCapStatus } = await import("@/lib/property/rentcast-eligibility")
+          const s = await rentcastCapStatus(createServiceClient() as never)
+          return { allowed: s.verdict.allowed, reason: s.verdict.reason }
+        })()
+    if (!cap.allowed) return await empty(`comparables are not available: ${cap.reason} — nothing was requested`, eligibility)
+    const pull = await rc.getRentcastAvmAndComps({
+      brokerageId: req.brokerageId, agentUserId: req.agentUserId ?? null, teamId: req.teamId ?? null, address: req.address,
+      limit: req.limit, maxRadiusMiles: req.maxRadiusMiles, daysOld: req.daysOld, systemSource: req.systemSource, contactId: req.contactId ?? null,
+    })
+    return { pull, provider: "rentcast", notAvailable: null, skipped }
+  } catch (e) {
+    return await empty(`comparables capability threw: ${e instanceof Error ? e.message : String(e)}`)
+  }
+}

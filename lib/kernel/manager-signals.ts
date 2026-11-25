@@ -4138,3 +4138,11 @@ export async function loadRecentManagerTalk(
     payload: (r.payload && typeof r.payload === "object" ? r.payload : null) as Record<string, unknown> | null,
   }))
 }
+
+// WAVE 156 (lane 156I round 3, directive 156I row 3) — the corridor brief's consumer, added at the foot (line-neutral above; the
+// registry row is at the foot of lib/kernel/signal-registry.ts). It proposes; it never sends — the gated rail releases.
+SIGNAL_HANDLERS["campaign_orchestrator:corridor_radar_brief"] = async (signal, ctx) => {
+  const { proposeCorridorExplainerToStatedMovers } = await import("@/lib/acquisition-plays/moving-corridor")
+  const r = await proposeCorridorExplainerToStatedMovers(ctx.supabase as never, { brokerageId: ctx.brokerageId, payload: signal.payload })
+  return r.proposed > 0 ? r.summary : null
+}

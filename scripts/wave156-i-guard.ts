@@ -61,13 +61,17 @@ const raw = (f: string): string => { const p = join(ROOT, f); return existsSync(
 
 // ── module hooks: "@/x" resolves under ROOT; provider / session seams are counted stubs ─────────────────────────────────────
 const G = globalThis as any
-G.__I = { socrata: [] as string[], arcgis: [] as string[], permitRows: [] as any[], proposals: [] as any[], compCalls: [] as string[], compFixture: null as any, model: 0 }
+G.__I = { socrata: [] as string[], arcgis: [] as string[], permitRows: [] as any[], proposals: [] as any[], compCalls: [] as string[], compFixture: null as any, model: 0, svcMem: null as any, gateway: [] as any[], usage: [] as any[] }
 const realUrl = (p: string) => pathToFileURL(join(ROOT, p)).href
 const OVERRIDE: Record<string, string> = {
   // The two permit portals — COUNTED; no portal is ever reached.
   "lib/external/socrata-client.ts": "export async function recentPermits(a){ globalThis.__I.socrata.push(a.datasetId); return { ok: true, status: 200, data: globalThis.__I.permitRows.map((r) => ({ ...r })), error: null } }",
   "lib/external/arcgis-permits.ts": "export async function recentArcgisPermits(a){ globalThis.__I.arcgis.push(a.serviceUrl); return { ok: true, status: 200, data: [], error: null } }",
-  "lib/supabase/service.ts": "export function createServiceClient(){ throw new Error('fixture: the guard hands every door its client') }",
+  "lib/supabase/service.ts": "export function createServiceClient(){ if (globalThis.__I.svcMem) return globalThis.__I.svcMem; throw new Error('fixture: the guard hands every door its client') }",
+  // ROUND 3 §K — the RentCast egress and the vendor ledger, COUNTED (the same seams lane 156G's guard uses); no vendor reached.
+  "lib/agentic-os/connector-gateway.ts": "export async function callConnector(req){ globalThis.__I.gateway.push(req); await new Promise((r) => setTimeout(r, 5)); return { ok: true, status: 200, data: { price: 400000, priceRangeLow: 380000, priceRangeHigh: 420000, comparables: [{ formattedAddress: '1 Comp St', price: 395000, squareFootage: 1800, bedrooms: 3, bathrooms: 2, removedDate: '2026-10-01', distance: 0.3, correlation: 0.95 }] }, error: null } }; export async function loadProviderHealth(){ return { state: 'healthy', routeAround: false, reason: 'fixture' } }",
+  "lib/vendor-governance/usage-logger.ts": "export async function logVendorUsage(e){ globalThis.__I.usage.push(e); return { success: true } }",
+  "lib/vendor-governance/meter-vendor.ts": "export async function meterVendorSpend(m){ globalThis.__I.usage.push(m); return true }",
   "lib/supabase/server.ts": "export async function createClient(){ throw new Error('fixture: no session client') }",
   // ROUND 2 §I — the model narrative (counted) and the state rate read (no table here: an empty, honestly-labelled rate set).
   "lib/ai/models.ts": "export async function generateTextRouted(){ globalThis.__I.model++; return { text: 'fixture narrative', usage: {} } }; export async function generateObjectRouted(){ globalThis.__I.model++; return { object: {}, usage: {} } }",
@@ -446,9 +450,133 @@ async function sectionJ() {
   check("J the play sends the buyer nothing (internal task only — no message table written)", !Object.keys(db.tables).some((t) => /messages|outbound|sends/.test(t) && (db.tables[t] ?? []).length > 0))
 }
 
+// ══ ROUND 3 ════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// §K row 4 — comparables are a capability: one paid request per address, the ceiling answered honestly, CMA callers moved.
+async function sectionK() {
+  section("§K row 4: requestPropertyComparables — single-flight, the platform ceiling, success-only booking; the CMA asks the capability")
+  process.env.RENTCAST_API_KEY = process.env.RENTCAST_API_KEY || "fixture-not-a-key"
+  const pc = await load("lib/avm/provider-chain.ts")
+  const el = await load("lib/property/rentcast-eligibility.ts")
+  const world = (used: number) => {
+    G.__I.svcMem = memSupabase({
+      platform_settings: [{ id: true, provider_request_caps: null }],
+      vendor_usage_tracking: Array.from({ length: used }, (_, i) => ({ id: `v${i}`, vendor_name: "rentcast", units_used: 1, total_cost: 0.074, created_at: `${new Date().toISOString().slice(0, 7)}-02T00:00:00.000Z`, request_metadata: {} })),
+    })
+    G.__I.gateway = []; G.__I.usage = []
+    try { el.resetRentcastPlatformCapState?.() } catch { /* base */ }
+  }
+  const rcCalls = () => (G.__I.gateway as any[]).filter((r) => r.connector === "rentcast").length
+  check("the capability exists beside requestPropertyValuation", typeof pc.requestPropertyComparables === "function")
+  if (typeof pc.requestPropertyComparables !== "function") { G.__I.svcMem = null; return }
+  world(0)
+  const ask = (address: string) => pc.requestPropertyComparables({ brokerageId: B1, address, systemSource: "ai_cma" })
+  const [x, y] = await Promise.all([ask("100 Same St, Austin, TX 78701"), ask("100 Same St, Austin, TX 78701")])
+  check("two concurrent valuations of ONE address → ONE paid request (single-flight)", rcCalls() === 1 && x.provider === "rentcast" && y.provider === "rentcast", { calls: rcCalls(), x: x.notAvailable, y: y.notAvailable })
+  check("…both answers carry the comparables (the second rode the first)", x.pull.comps.length >= 1 && y.pull.comps.length >= 1, [x.pull.comps.length, y.pull.comps.length])
+  world(0)
+  await Promise.all([ask("200 One St, Austin, TX 78701"), ask("300 Two St, Austin, TX 78701")])
+  check("POSITIVE CONTROL: two different addresses → two requests", rcCalls() === 2, rcCalls())
+  const included = el.RENTCAST_PLAN_INCLUDED_REQUESTS ?? 1000
+  world(included)
+  const capped = await ask("400 Cap St, Austin, TX 78701")
+  check("at the platform ceiling: an honest 'not available', zero requests", rcCalls() === 0 && capped.provider === null && /not available/.test(String(capped.notAvailable)), { calls: rcCalls(), why: capped.notAvailable })
+  const noTenant = await pc.requestPropertyComparables({ brokerageId: null, address: "1 X St" })
+  check("no tenant on the request → not available, zero requests (never bought unattributed)", noTenant.provider === null && rcCalls() === 0)
+  G.__I.svcMem = null
+  const cp = stripComments(raw("lib/cma/comp-provider.ts"))
+  check("the CMA comp door no longer calls the vendor by name (comment-stripped)", !/getRentcastAvmAndComps\s*\(/.test(cp) && (cp.match(/requestPropertyComparables\s*\(/g) ?? []).length === 2, { byName: (cp.match(/getRentcastAvmAndComps\s*\(/g) ?? []).length })
+  check("…and the tombstone names the survivor", /TOMBSTONE[^\n]*getRentcastAvmAndComps[^\n]*requestPropertyComparables/.test(raw("lib/cma/comp-provider.ts")))
+  const hv = stripComments(raw("app/actions/home-value.ts"))
+  check("the public home-value result offers the tenant's PUBLISHED seller net-sheet calculator (listPublishedCalculators, seller_net_sheet) or nothing", /listPublishedCalculators/.test(hv) && /seller_net_sheet/.test(hv) && /sellerNetCalculator/.test(stripComments(raw("app/home-value/result/[requestId]/page.tsx"))))
+}
+
+// §L row 3 — the corridor brief reaches consented people whose OWN stated destination matches; a proposal, never a send.
+async function sectionL() {
+  section("§L row 3: corridor_radar_brief → Campaign Orchestrator → one gated proposal per consented stated mover; nobody inferred")
+  const reg = await load("lib/kernel/signal-registry.ts")
+  check("the signal is catalogued, handled by the Campaign Orchestrator", reg.SIGNAL_REGISTRY?.corridor_radar_brief?.disposition === "handled" && reg.SIGNAL_REGISTRY.corridor_radar_brief.consumers.includes("campaign_orchestrator"))
+  check("its consumer is registered on the bus (SIGNAL_HANDLERS, source)", /SIGNAL_HANDLERS\["campaign_orchestrator:corridor_radar_brief"\]/.test(stripComments(raw("lib/kernel/manager-signals.ts"))))
+  const mc = await load("lib/acquisition-plays/moving-corridor.ts")
+  const future = new Date(NOW.getTime() + 60 * 86_400_000).toISOString()
+  const ms = (id: string, o: Record<string, unknown>) => ({ id, brokerage_id: B1, captured_by: "person", known_deadline_kind: "relocation_start", known_deadline_at: future, contact_id: null, lead_id: null, stated_destination_label: null, stated_destination_city: null, stated_destination_state: null, ...o })
+  const consent = (contactId: string, brokerage = B1) => ({ id: `ce-${contactId}`, brokerage_id: brokerage, contact_id: contactId, consented: true, channels: ["email"], purposes: ["market_updates"], consent_type: "email", created_at: daysAgo(10).toISOString() })
+  const contact = (id: string, brokerage = B1) => ({ id, brokerage_id: brokerage, email_opt_out: false, email_unsubscribed: false })
+  const seed = () => ({
+    movement_signals: [
+      ms("m-yes", { contact_id: "c-yes", stated_destination_label: "Austin, TX", stated_destination_city: "Austin", stated_destination_state: "TX" }),
+      ms("m-noconsent", { contact_id: "c-noconsent", stated_destination_label: "Austin", stated_destination_city: "Austin", stated_destination_state: "TX" }),
+      ms("m-elsewhere", { contact_id: "c-elsewhere", stated_destination_label: "Denver, CO", stated_destination_city: "Denver", stated_destination_state: "CO" }),
+      ms("m-noplan", { contact_id: "c-noplan" }),
+      ms("m-other", { brokerage_id: "other-tenant", contact_id: "c-other", stated_destination_label: "Austin, TX", stated_destination_city: "Austin", stated_destination_state: "TX" }),
+      ms("m-lead", { lead_id: "l-1", stated_destination_label: "Austin, TX", stated_destination_city: "Austin", stated_destination_state: "TX" }),
+    ],
+    contacts: [contact("c-yes"), contact("c-noconsent"), contact("c-elsewhere"), contact("c-noplan"), contact("c-other", "other-tenant")],
+    contact_consent_events: [consent("c-yes"), consent("c-elsewhere"), consent("c-noplan"), consent("c-other", "other-tenant")],
+    agent_client_messages: [] as any[],
+  })
+  const payload = { announcement_key: "acme robotics|expansion", play: "moving_corridor_radar", market: { id: "m-austin", city: "Austin", state: "TX" }, brief: { announcement: { key: "acme robotics|expansion", employer: "Acme Robotics", eventType: "expansion", citations: [{ url: "https://www.austintexas.gov/news/acme", published: daysAgo(4).toISOString(), title: null, publisher: null, quote: "x" }] } } }
+  G.__I.proposals.length = 0
+  const db = memSupabase(seed())
+  const r1 = typeof mc.proposeCorridorExplainerToStatedMovers === "function" ? await mc.proposeCorridorExplainerToStatedMovers(db, { brokerageId: B1, payload, now: NOW }) : null
+  const to = G.__I.proposals.map((p: any) => p.recipientContactId)
+  check("consented + own stated destination Austin, TX → exactly ONE proposal, to that Contact, on the gated rail", r1?.proposed === 1 && to.length === 1 && to[0] === "c-yes" && G.__I.proposals[0]?.audience === "buyer", { to, summary: r1?.summary })
+  check("no consent → nothing; a stated destination elsewhere → nothing; no stated plan → nothing", !to.includes("c-noconsent") && !to.includes("c-elsewhere") && !to.includes("c-noplan"))
+  check("another tenant's person is never read; a LEAD's stated plan is not proposed (the lead desk's)", !to.includes("c-other") && !G.__I.proposals.some((p: any) => p.recipientLeadId), r1?.skipped)
+  check("the proposal names the person's OWN statement and the dated official source, and claims nothing else", /You mentioned you are planning a move to Austin/.test(String(G.__I.proposals[0]?.body)) && /austintexas\.gov/.test(String(G.__I.proposals[0]?.rationale)))
+  const r2 = await mc.proposeCorridorExplainerToStatedMovers?.(db, { brokerageId: B1, payload, now: NOW })
+  check("a replay of the same brief proposes nothing new", r2?.proposed === 0 && G.__I.proposals.length === 1, r2?.skipped)
+  const refused = memSupabase(seed(), { refuse: { movement_signals: "permission denied (fixture)" } })
+  const r3 = await mc.proposeCorridorExplainerToStatedMovers?.(refused, { brokerageId: B1, payload, now: NOW })
+  check("an unreadable stated-plan read proposes nothing (fail closed)", r3?.proposed === 0 && /unreadable/.test(String(r3?.summary)))
+  const door = await load("lib/relocation/pcs-portal-door.ts")
+  const pdb = memSupabase({ contacts: [{ id: "c-mil", brokerage_id: B1, agent_id: null, contact_persona: "military" }], movement_signals: [{ id: "ms-1", brokerage_id: B1, contact_id: "c-mil" }] })
+  const plan = await door.planPcsMoveForPortalContact(pdb, { brokerageId: B1, contactId: "c-mil", userId: "u-mil", isContactSelf: true },
+    { consentGiven: true, destinationLabel: "Austin, TX", destinationState: "TX", reportDate: future.slice(0, 10) },
+    { now: NOW, recordStatedDate: async () => ({ status: "recorded_no_decision", reason: "fixture", recordId: "ms-1" }) })
+  const row = (pdb.tables.movement_signals ?? [])[0]
+  check("the PCS door stamps the STRUCTURED destination the person typed on their own record (m1030 columns)", plan.ok && row?.stated_destination_city === "Austin" && row?.stated_destination_state === "TX" && row?.stated_destination_label === "Austin, TX", { ok: plan.ok, row })
+  check("an installation name is never turned into a city", typeof door.statedDestinationColumns === "function" && door.statedDestinationColumns({ label: "Fort Cavazos", state: "TX", installationName: "Fort Cavazos" }).stated_destination_city === null)
+}
+
+// §M row 9 — the shortage task names the tenant's consented owners in the area that the agent may see; nothing is sent.
+async function sectionM() {
+  section("§M row 9: the shortage task carries consented owners in the area — the agent's own, a team lead's team; never others")
+  const inv = await load("lib/property-alerts/inventory-friction.ts")
+  const ts = await load("lib/kernel/tenant-scope.ts")
+  const runs = Array.from({ length: 5 }, (_, i) => ({ alert_id: "al-1", brokerage_id: B1, properties_checked: 42, properties_matched: 0, error_message: null, created_at: daysAgo(i * 2 + 1).toISOString() }))
+  const owner = (id: string, agentId: string, o: Record<string, unknown> = {}) => ({ id, brokerage_id: B1, agent_id: agentId, first_name: id.toUpperCase(), last_name: "Owner", zip_code: "78701", city: "Austin", beds: 3, home_owner_status: "owner", deleted_at: null, email_opt_out: false, email_unsubscribed: false, ...o })
+  const grant = (contactId: string, purposes = ["real_estate_services"]) => ({ id: `g-${contactId}`, brokerage_id: B1, contact_id: contactId, consented: true, channels: ["email"], purposes, consent_type: "email", created_at: daysAgo(30).toISOString() })
+  const seed = (taskAgent: string) => ({
+    property_alerts: [{ id: "al-1", brokerage_id: B1, contact_id: "c-buyer", alert_name: "3 bed under 400k", cities: ["Austin"], zip_codes: ["78701"], min_price: null, max_price: 400_000, bedrooms_min: 3, bathrooms_min: 2, is_active: true, created_at: daysAgo(30).toISOString() }],
+    property_alert_delivery_log: runs, property_alert_results: [], agent_action_ledger: [], tasks: [],
+    agents: [{ id: "agent-1", brokerage_id: B1, user_id: "u-agent-1" }, { id: "agent-lead", brokerage_id: B1, user_id: "u-lead" }, { id: "agent-2", brokerage_id: B1, user_id: "u-agent-2" }],
+    teams: [{ id: "team-1", brokerage_id: B1, team_lead_id: "u-lead", deleted_at: null, created_at: daysAgo(400).toISOString() }],
+    team_members: [{ id: "tm-1", team_id: "team-1", brokerage_id: B1, agent_id: "agent-2", is_active: true }],
+    contacts: [
+      { id: "c-buyer", brokerage_id: B1, agent_id: taskAgent, first_name: "Sam", last_name: "Buyer", deleted_at: null },
+      owner("o1", "agent-1"), owner("o2", "agent-1"), owner("o3-noconsent", "agent-1"), owner("o4-narrow", "agent-1"),
+      owner("o5-otheragent", "agent-2"), owner("o6-elsewhere", "agent-1", { zip_code: "80202", city: "Denver" }),
+      { ...owner("o7-othertenant", "agent-1"), brokerage_id: "other-tenant" },
+    ],
+    contact_consent_events: [grant("o1"), grant("o2"), grant("o4-narrow", ["home_valuation"]), grant("o5-otheragent"), grant("o6-elsewhere"), { ...grant("o7-othertenant"), brokerage_id: "other-tenant" }],
+  })
+  const run = async (taskAgent: string) => {
+    const db = memSupabase(seed(taskAgent), { unique: { agent_action_ledger: [["idempotency_key"]] } })
+    await inv.detectInventoryFriction(db, ts.tenantScope(B1, "wave156-i guard"), { now: NOW })
+    return String((db.tables.tasks ?? [])[0]?.description ?? "")
+  }
+  const d1 = await run("agent-1")
+  check("shortage + two consented owners (+ one unconsented, one narrow grant) → the agent's task names TWO", /\b2 of your contacts own a home in this area/.test(d1) && /O1 Owner/.test(d1) && /O2 Owner/.test(d1), d1.slice(-400))
+  check("unconsented, narrow-grant, out-of-area and other-tenant owners never appear", !/O3-NOCONSENT|O4-NARROW|O6-ELSEWHERE|O7-OTHERTENANT/.test(d1))
+  check("an agent sees only their OWN contacts (another agent's consented owner is absent)", !/O5-OTHERAGENT/.test(d1))
+  check("nothing is sent — the line says so and no message is written", /Nothing has been sent to them/.test(d1))
+  const d2 = await run("agent-lead")
+  check("a TEAM LEAD's task includes their team's consented owners (agent-2's contact)", /O5-OTHERAGENT/.test(d2) && /\b1 of your contacts/.test(d2), d2.slice(-300))
+}
+
 async function main() {
   console.log(`wave156-i-guard — grounded market intelligence (modules from ${ROOT === WT ? "this tree" : ROOT})`)
-  for (const s of [sectionA, sectionB, sectionC, sectionD, sectionE, sectionF, sectionG, sectionH, sectionI, sectionJ]) {
+  for (const s of [sectionA, sectionB, sectionC, sectionD, sectionE, sectionF, sectionG, sectionH, sectionI, sectionJ, sectionK, sectionL, sectionM]) {
     try { await s() } catch (e) { check(`${s.name} ran without throwing`, false, e instanceof Error ? `${e.message}\n${e.stack?.split("\n").slice(1, 4).join(" | ")}` : String(e)) }
   }
   console.log(`\n${passed} passed, ${failed} failed`)
