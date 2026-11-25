@@ -148,7 +148,7 @@ export async function sendPortalMessage(params: SendMessageParams): Promise<{
     // service client, so the write goes through the service client too —
     // deliberately, and only after that check.
     const writeClient = isClientSender ? createServiceClient() : supabase
-
+    if (transactionId) { const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i; const { data: tagDeal, error: tagErr } = uuid.test(String(transactionId)) && uuid.test(String(contactId)) ? await createServiceClient().from("transactions").select("id").eq("id", transactionId).eq("brokerage_id", contact.brokerage_id).or(`contact_id.eq.${contactId},buyer_contact_id.eq.${contactId},seller_contact_id.eq.${contactId}`).maybeSingle() : { data: null, error: null }; if (tagErr || !tagDeal) return { success: false, error: "That deal is not one of this contact's deals" } } // wave 156 (156E): the deal TAG is a request value — it must be one of THIS contact's deals, in the contact's tenant
     // Insert message — through the ledgered portal egress (wave 98, lib/portal/portal-message-egress.ts).
     // A human sent it: actor is the session user, reason HUMAN_REQUESTED, no cycle (a person may
     // legitimately send the same words twice).
@@ -393,14 +393,16 @@ export async function generateAIDraft(params: {
 
     // Get transaction stage if available — verify it belongs to brokerage
     let stageContext = ""
-    if (transactionId) {
-      const { data: tx } = await supabase
-        .from("transactions").select("brokerage_id").eq("id", transactionId).maybeSingle()
-      if (tx && tx.brokerage_id === access.brokerageId) {
+    // The deal's record is read only for a deal this seat WORKS (wave 156, lane 156E — lib/transactions/role-guard.ts
+    // requireDealDesk): contact access is not deal access. A deal the desk refuses adds no context — the draft is still the
+    // contact's (this door is keyed on the contact; the deal is optional enrichment), and nothing of that deal reaches the model.
+    const desk = transactionId ? await (await import("@/lib/transactions/role-guard")).requireDealDesk(transactionId) : null
+    if (desk?.ok && desk.brokerageId === access.brokerageId) {
+      {
         const { data: milestones } = await supabase
           .from("transaction_milestones")
           .select("milestone_name, status")
-          .eq("transaction_id", transactionId)
+          .eq("transaction_id", desk.transactionId) // the ADMITTED deal is the pin (an older writer may not have stamped the row)
           .order("created_at", { ascending: false })
           .limit(1)
 

@@ -117,13 +117,13 @@ export async function loadDealWorkAccess(svc: Svc, input: { userId: string; brok
 > {
   const { userId, brokerageId, transactionId } = input
   if (!userId || !brokerageId || !transactionId) return { ok: false, error: "the caller and the deal are required" }
-  const { data: tx, error: txErr } = await svc.from("transactions").select("id, brokerage_id, agent_id, coordinator_id, status, stage").eq("id", transactionId).eq("brokerage_id", brokerageId).maybeSingle()
+  const { data: tx, error: txErr } = await svc.from("transactions").select("id, brokerage_id, agent_id, buyer_agent_id, seller_agent_id, coordinator_id, status, stage").eq("id", transactionId).eq("brokerage_id", brokerageId).maybeSingle()
   if (txErr) return { ok: false, error: `the deal could not be read: ${txErr.message}` }
   if (!tx) {
     const access = resolveDealWork({ sameTenant: false, userType: input.userType, grantedRoles: [], isOwningAgent: false, isAssignedTc: false, isTeamLeadOfDealAgent: false, dealStatus: null, dealStage: null })
     return { ok: true, access, deal: { id: transactionId, agentId: null, status: null, stage: null } }
   }
-  const t = tx as { id: string; agent_id: string | null; coordinator_id: string | null; status: string | null; stage: string | null }
+  const t = tx as { id: string; agent_id: string | null; buyer_agent_id?: string | null; seller_agent_id?: string | null; coordinator_id: string | null; status: string | null; stage: string | null }
   const [meAgent, meTc, grants, assigned] = await Promise.all([
     svc.from("agents").select("id").eq("user_id", userId).eq("brokerage_id", brokerageId).maybeSingle(),
     svc.from("transaction_coordinators").select("id").eq("user_id", userId).eq("brokerage_id", brokerageId),
@@ -136,20 +136,30 @@ export async function loadDealWorkAccess(svc: Svc, input: { userId: string; brok
   const assignedTcIds = new Set([t.coordinator_id, ...((assigned.data ?? []) as Array<{ coordinator_id: string | null }>).map((r) => r.coordinator_id)].filter((x): x is string => !!x))
   const grantedRoles = ((grants.data ?? []) as Array<{ role: string | null; brokerage_id: string | null }>).filter((g) => g.brokerage_id === brokerageId && g.role).map((g) => String(g.role))
 
+  // ONE DEAL ROSTER (wave 156, lane 156E). "Is this person an agent ON the deal" is the deal desk's own definition
+  // (lib/transactions/role-guard.ts agentsOnDeal — every side: agent_id, buyer_agent_id, seller_agent_id, as decideDealDesk reads
+  // them). This file admitted only agent_id, so the buyer-side and seller-side agents the desk lets WORK the deal read "You do
+  // not have access" here; and the team lead of the buyer- or seller-side agent's team, whom the desk admits (its "led_team"),
+  // was refused too. The team anchor stays this file's (agents.team_id → teams.team_lead_id): the desk's own team step
+  // (lib/teams/team-scope.ts) is server-only and this rule is also loaded by pure proofs. test:deal-desk §H round 2 drives the
+  // closing concierge against decideDealDesk for 18 seats and fails on any disagreement — that is what holds the two together.
+  const { agentsOnDeal } = await import("@/lib/transactions/role-guard")
+  const sides = agentsOnDeal(t)
+  const isOwningAgent = !!myAgentId && sides.includes(myAgentId)
   let isTeamLeadOfDealAgent = false
-  if (t.agent_id) {
-    const { data: dealAgent, error: daErr } = await svc.from("agents").select("team_id").eq("id", t.agent_id).eq("brokerage_id", brokerageId).maybeSingle()
-    if (daErr) return { ok: false, error: `the deal agent's team could not be read: ${daErr.message}` }
-    const teamId = ((dealAgent ?? null) as { team_id?: string | null } | null)?.team_id ?? null
-    if (teamId) {
-      const { data: team, error: tErr } = await svc.from("teams").select("team_lead_id").eq("id", teamId).eq("brokerage_id", brokerageId).maybeSingle()
-      if (tErr) return { ok: false, error: `the deal agent's team could not be read: ${tErr.message}` }
-      isTeamLeadOfDealAgent = ((team ?? null) as { team_lead_id?: string | null } | null)?.team_lead_id === userId
+  if (!isOwningAgent && sides.length > 0) {
+    const { data: sideAgents, error: daErr } = await svc.from("agents").select("team_id").in("id", sides).eq("brokerage_id", brokerageId)
+    if (daErr) return { ok: false, error: `the deal agents' teams could not be read: ${daErr.message}` }
+    const teamIds = [...new Set(((sideAgents ?? []) as Array<{ team_id?: string | null }>).map((a) => a.team_id).filter((x): x is string => !!x))]
+    if (teamIds.length > 0) {
+      const { data: teams, error: tErr } = await svc.from("teams").select("team_lead_id").in("id", teamIds).eq("brokerage_id", brokerageId)
+      if (tErr) return { ok: false, error: `the deal agents' teams could not be read: ${tErr.message}` }
+      isTeamLeadOfDealAgent = ((teams ?? []) as Array<{ team_lead_id?: string | null }>).some((x) => x.team_lead_id === userId)
     }
   }
   const access = resolveDealWork({
     sameTenant: true, userType: input.userType, grantedRoles,
-    isOwningAgent: !!myAgentId && myAgentId === t.agent_id,
+    isOwningAgent,
     isAssignedTc: [...myTcIds].some((id) => assignedTcIds.has(id)),
     isTeamLeadOfDealAgent, dealStatus: t.status, dealStage: t.stage,
   })

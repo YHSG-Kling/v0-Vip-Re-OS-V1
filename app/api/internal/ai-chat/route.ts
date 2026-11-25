@@ -614,7 +614,7 @@ export async function POST(req: NextRequest) {
         contact_id: z.string().nullable().describe("UUID of related contact, or null"),
         transaction_id: z.string().nullable().describe("UUID of related transaction, or null"),
       }),
-      execute: async ({ title, description, priority, due_date, contact_id, transaction_id }) => {
+      execute: async ({ title, description, priority, due_date, contact_id, transaction_id }) => { const deal = await deskDealForTool(transaction_id, { userId: user.id, userType: profileUserType, brokerageId }); if (!deal.ok) return { success: false, error: deal.error }
         const { data, error } = await service
           .from("tasks")
           .insert({
@@ -626,7 +626,7 @@ export async function POST(req: NextRequest) {
             priority,
             due_date: due_date ?? undefined,
             contact_id: contact_id ?? undefined,
-            transaction_id: transaction_id ?? undefined,
+            transaction_id: deal.id ?? undefined,
             status: "pending",
           })
           .select("id, title, due_date, priority")
@@ -738,14 +738,14 @@ export async function POST(req: NextRequest) {
         title: z.string().describe("Brief title of the activity"),
         notes: z.string().describe("What happened — the outcome or result"),
       }),
-      execute: async ({ contact_id, transaction_id, activity_type, title, notes }) => {
+      execute: async ({ contact_id, transaction_id, activity_type, title, notes }) => { const deal = await deskDealForTool(transaction_id, { userId: user.id, userType: profileUserType, brokerageId }); if (!deal.ok) return { success: false, error: deal.error }
         const { data, error } = await service
           .from("activities")
           .insert({
             brokerage_id: brokerageId,
             agent_id: await resolveAgentId(service as any, user.id),
             contact_id: contact_id ?? undefined,
-            transaction_id: transaction_id ?? undefined,
+            transaction_id: deal.id ?? undefined,
             activity_type,
             title,
             notes,
@@ -1444,4 +1444,22 @@ export async function POST(req: NextRequest) {
     streamResponse.headers.set("x-session-id", resolvedSessionId)
   }
   return streamResponse
+}
+
+/**
+ * THE DEAL A STAFF COPILOT TOOL MAY LINK (wave 156, lane 156E). `transaction_id` in create_task / log_activity is MODEL OUTPUT —
+ * the model fills it from the conversation — and it was written as-is: a task or an activity could be filed against any deal
+ * id, another tenant's included, or a deal the speaker does not work. A named deal now passes THE DEAL DESK
+ * (lib/transactions/role-guard.ts requireDealDesk) with the SESSION's seat and tenant before the row is written, and the row
+ * carries the id the desk ADMITTED. No deal named: the tool writes as before, linked to no deal. Not exported (a route module).
+ */
+async function deskDealForTool(
+  transactionId: string | null | undefined,
+  seat: { userId: string; userType: string | null; brokerageId: string | null | undefined },
+): Promise<{ ok: true; id: string | null } | { ok: false; error: string }> {
+  if (transactionId == null || String(transactionId).trim() === "") return { ok: true, id: null }
+  const { requireDealDesk } = await import("@/lib/transactions/role-guard")
+  const desk = await requireDealDesk(transactionId, seat)
+  if (!desk.ok) return { ok: false, error: `Not linked to that deal: ${desk.error}` }
+  return { ok: true, id: desk.transactionId }
 }

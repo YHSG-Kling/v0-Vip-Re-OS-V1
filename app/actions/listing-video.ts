@@ -58,7 +58,7 @@ export async function generateListingVideo(params: {
   if (!isValidUUID(params.agentId)) {
     return { success: false, error: 'Invalid agent ID' }
   }
-
+  const desk = params.transactionId ? await (await import('@/lib/transactions/role-guard')).requireDealDesk(params.transactionId) : null; if (desk && !desk.ok) return { success: false, error: desk.error } // THE DEAL DESK (wave 156, 156E): a NAMED deal only if this seat works it
   const supabase = await createClient()
 
   try {

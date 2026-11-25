@@ -459,9 +459,9 @@ export async function aiGenerateDocument(params: {
   // lookup silently returned nothing and the document was generated with a
   // blank author and the default brand voice. Both now come from the session.
   const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
-    return { success: false, error: "Unauthorized" }
-  }
+  const desk = ctx.isAuthenticated && ctx.brokerageId && params.transactionId ? await (await import("@/lib/transactions/role-guard")).requireDealDesk(params.transactionId) : null
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
+  if (desk && !desk.ok) return { success: false, error: desk.error } // THE DEAL DESK (wave 156, 156E): a NAMED deal must be one this seat WORKS — before the model
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   return await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "document.draft.generate", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId ?? null }, subject: { type: "ai_tool_usage", ref: params.documentType }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { transaction_id: params.transactionId ?? null } }, async () => {
 
@@ -678,6 +678,11 @@ export async function aiGenerateDocumentReminders(params: {
   if (!ctx.isAuthenticated || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
+  // THE DEAL DESK (wave 156, lane 156E — lib/transactions/role-guard.ts requireDealDesk): the seat must WORK this deal. The read
+  // below runs on the caller's row-security client, whose transactions SELECT policies admit a vendor seat assigned to the deal —
+  // so "can read it" let a lender / title / inspector seat spend a model call here. Refused before the receipt and the model.
+  const desk = await (await import("@/lib/transactions/role-guard")).requireDealDesk(params.transactionId)
+  if (!desk.ok) return { success: false, error: desk.error }
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   return await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "document.reminders.generate", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId ?? null }, subject: { type: "transaction", id: params.transactionId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 

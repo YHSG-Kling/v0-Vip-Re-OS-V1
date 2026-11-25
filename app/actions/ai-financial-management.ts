@@ -233,8 +233,8 @@ export async function aiCalculateCommission(params: CommissionEntry) {
     return { success: false, error: "Invalid agent or transaction ID" }
   }
 
-  // Tenant for the AI cost ledger — SESSION, never `params.agentId` (§4).
-  const spendActor = await getAgentContext()
+  const spendActor = await getAgentContext() // Tenant for the AI cost ledger — SESSION, never `params.agentId` (§4).
+  const desk = await (await import("@/lib/transactions/role-guard")).requireDealDesk(params.transactionId); if (!desk.ok) return { success: false, error: desk.error } // THE DEAL DESK (wave 156, 156E): before the deal is read, the model is reached or a commission is recorded
   const supabase = await createClient()
 
   try {
@@ -857,6 +857,11 @@ export async function trackDeposit(params: {
   if (!isValidUUID(params.agentId) || !isValidUUID(params.transactionId)) {
     return { success: false, error: "Invalid agent or transaction ID" }
   }
+  // THE DEAL DESK (wave 156, lane 156E — lib/transactions/role-guard.ts requireDealDesk). Escrow money on ONE deal: the deal id
+  // was never checked here at all — a deposit (and its escrow-delivery obligation) could be filed in this tenant against any
+  // deal id, another tenant's included, by any seat with an agents row to name. The seat must WORK this deal.
+  const desk = await (await import("@/lib/transactions/role-guard")).requireDealDesk(params.transactionId)
+  if (!desk.ok) return { success: false, error: desk.error }
 
   const supabase = await createClient()
 

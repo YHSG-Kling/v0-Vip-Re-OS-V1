@@ -174,10 +174,10 @@ export async function analyzeDocument(documentId: string) {
 
     if (error || !document) throw error ?? new Error("Document not found")
 
-    // Cross-tenant scope check before burning AI tokens.
-    if (document.brokerage_id !== ctx.brokerageId) {
-      return { success: false, error: "Forbidden" }
-    }
+    // Cross-tenant scope check, then THE DEAL DESK for the document's deal (wave 156, 156E), before burning AI tokens.
+    if (document.brokerage_id !== ctx.brokerageId) return { success: false, error: "Forbidden" }
+    const desk = document.transaction_id ? await (await import("@/lib/transactions/role-guard")).requireDealDesk(document.transaction_id) : null
+    if (desk && !desk.ok) return { success: false, error: desk.error }
 
     // AI document analysis
     const { object: analysis } = await generateObject({
@@ -782,7 +782,7 @@ Set overallStatus to "blocking_issues" only if missing signatures would invalida
       }
     }
 
-    // Step 8: For purchase agreements — extract terms and auto-populate transaction
+    // Step 8: For purchase agreements — extract terms and PROPOSE them on the deal (a deal-desk seat accepts each; wave 156)
     if (classification.document_type === "purchase_agreement" && classification.key_fields) {
       try {
         // Find an open transaction for this contact (most recent)
@@ -805,7 +805,7 @@ Set overallStatus to "blocking_issues" only if missing signatures would invalida
             const { applyContractExtraction } = await import("./ai-contract-review")
             const k = classification.key_fields
             await applyContractExtraction({
-              transactionId: tx.id,
+              transactionId: tx.id, documentId, // wave 156 (156E): a PROPOSAL on the deal, sourced to this upload — never a write of the terms
               agentId: docRecord.brokerage_id ?? "",
               extracted: {
                 purchasePrice: typeof k.purchase_price === "number" ? k.purchase_price : null,

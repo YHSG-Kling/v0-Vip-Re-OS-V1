@@ -227,6 +227,8 @@ export function ContractReviewClient({ agentId, agentState, transactions }: Prop
       const res = await applyContractExtraction({
         transactionId: selectedTxId,
         agentId,
+        // wave 156 (156E): the pasted contract is the proposal's SOURCE; the terms are proposed on the deal, not written to it.
+        sourceText: contractText,
         extracted: {
           purchasePrice: exPurchasePrice ? Number(exPurchasePrice) : null,
           earnestMoneyAmount: exEarnestMoney ? Number(exEarnestMoney) : null,
@@ -491,12 +493,12 @@ export function ContractReviewClient({ agentId, agentState, transactions }: Prop
                 <div className="flex items-center gap-2 pt-1">
                   <Button onClick={handleSaveExtract} disabled={savingExtract} className="gap-1.5">
                     {savingExtract ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                    Save to Transaction + Create Milestones
+                    Propose to the Transaction
                   </Button>
                   <Button variant="ghost" size="sm" onClick={() => setExtractResult(null)}>Clear</Button>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Saving will update the transaction record and create milestone entries for each deadline.
+                  These terms are proposed on the transaction. Nothing on the deal changes until a person working the deal accepts each term there.
                 </p>
               </div>
             )}

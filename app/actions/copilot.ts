@@ -372,7 +372,7 @@ export async function createTransactionMilestone(params: {
     }
   }
 
-  // Create milestone
+  const desk = await (await import("@/lib/transactions/role-guard")).requireDealDesk(tx.id); if (!desk.ok) return { success: false as const, error: desk.error } // THE DEAL DESK (wave 156, 156E): a milestone only on a deal this seat WORKS
   const { data, error } = await supabase
     .from("transaction_milestones")
     .insert({
