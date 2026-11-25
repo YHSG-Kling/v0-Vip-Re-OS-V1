@@ -581,6 +581,13 @@ export async function auditOfferDocuments(
     offerId:       string
     brokerageId:   string
     contactId?:    string | null
+    /**
+     * WAVE 156 (156B round 2): the deal's OTHER anchors. A seller-side deal's own paperwork (the executed listing agreement) is
+     * filed on the LISTING and the SELLER contact, not on the offer or the buyer — without these the seller-side checklist could
+     * never find it, and a seller-side deal could only be refused. Absent → the offer and `contactId` alone, exactly as before.
+     */
+    listingId?:    string | null
+    contactIds?:   Array<string | null | undefined>
     agentUserId?:  string | null
     teamId?:       string | null
     dealType:      "buyer" | "seller" | "dual"
@@ -633,7 +640,8 @@ export async function auditOfferDocuments(
   const file = await loadDealFileDocuments(supabase, {
     brokerageId: params.brokerageId,
     offerId:     params.offerId,
-    contactIds:  [params.contactId],
+    listingId:   params.listingId ?? null,
+    contactIds:  [params.contactId, ...(params.contactIds ?? [])],
   })
   if (!file.ok) return unavailableAudit(file.error)
 

@@ -174,10 +174,17 @@ const checklist = (over: Row = {}) => ([{
 }])
 
 /** A signed contract in the deal file with a given execution blob. */
+// WAVE 156 (156B round 2) — RESTATED, NOT WEAKENED: the gate now also COMPARES the executed contract's terms to the offer record
+// (obligation "terms_reviewed", lib/kernel/compliance/representation-gate.ts), so an executed contract reaches it legitimately only
+// once it has been READ — a completed scan, high confidence, its terms extracted. The fixture gains the scan the gate now reads,
+// exactly as it gained the execution columns in 2026-09; every refusal below is unchanged, and the new obligation is proved RED
+// and GREEN in scripts/wave156-b-representation-gate-guard.ts §H.
 const contractDoc = (signature_completeness: any) => ({
   id: "doc-contract", brokerage_id: BROKERAGE, contact_id: CONTACT,
   listing_id: null, classification: "signed_contract", status: "signed",
   metadata: { linked_offer_id: OFFER }, signature_completeness,
+  scanned_at: "2026-07-31T00:00:00Z", scan_error: null, classification_confidence: "high",
+  extracted_fields: { property_address: "1 Fixture Lane, Austin, TX 78701" },
 })
 
 const FULLY_EXECUTED = {

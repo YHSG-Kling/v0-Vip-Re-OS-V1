@@ -6,6 +6,7 @@ import Link from "next/link"
 import type { ReactNode } from "react"
 import { AlertCircle, CheckCircle2, Clock, DollarSign, Flag, ShieldCheck } from "lucide-react"
 import { FlagRowActions } from "./flag-row-actions"
+import { RepresentationReviewQueue } from "./representation-review-queue"
 
 export const dynamic = "force-dynamic"
 
@@ -90,6 +91,12 @@ export default async function ComplianceQueuePage() {
           <CardContent className="text-3xl font-semibold text-emerald-700">{data.totals.cleared_recent}</CardContent>
         </Card>
       </div>
+
+      {/* wave 156 (156B): executed listing agreements and offers — compared to their record, accepted or held by a reviewer here. */}
+      <Card>
+        <CardHeader><CardTitle>Executed packets to review</CardTitle></CardHeader>
+        <CardContent><RepresentationReviewQueue /></CardContent>
+      </Card>
 
       <Card>
         <CardHeader><CardTitle>Active items</CardTitle></CardHeader>

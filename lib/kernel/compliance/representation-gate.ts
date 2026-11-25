@@ -81,8 +81,47 @@ export type ReasonCode =
   | "unsigned_addendum"
   | "unverified_by_machine"
   | "awaiting_reviewer"
+  | "form_license"
+
+/**
+ * EVERY HOLD HAS A REPAIR THAT TERMINATES (wave 156 round 2). Typed as a total Record, so a new reason code that forgets its repair
+ * does not compile. Each path ends in a re-run of the SAME decision: an upload / re-scan re-enters the loop (scanUploadedDocument),
+ * a reviewer's attestation or approval re-runs it from app/actions/compliance/representation-review.ts, a record correction is
+ * re-read on the next run. `refuse` reasons end by construction (the request was wrong; nothing is waiting on them).
+ */
+export const REPAIR_PATHS: Readonly<Record<ReasonCode, { path: string; terminatesWhen: string }>> = Object.freeze({
+  tenant_mismatch:           { path: "none — the request names another account's record", terminatesWhen: "immediately (refused)" },
+  already_transaction:       { path: "none — open the existing transaction", terminatesWhen: "immediately (refused; one contract, one deal)" },
+  gate_refused:              { path: "upload the missing document / obtain the missing signature or initial; the upload re-enters review", terminatesWhen: "the presence/signature gate passes on re-run" },
+  no_executed_document:      { path: "upload the fully executed document; the upload re-enters review", terminatesWhen: "an executed document is on the file" },
+  superseded_version:        { path: "upload the current executed version", terminatesWhen: "a non-superseded executed document is on the file" },
+  extraction_failed:         { path: "re-scan / re-upload the document, OR a reviewer attests the terms read from the executed paper", terminatesWhen: "a readable scan or a reviewer attestation exists for the document" },
+  extraction_empty:          { path: "re-scan / re-upload the document, OR a reviewer attests the terms read from the executed paper", terminatesWhen: "a readable scan or a reviewer attestation exists for the document" },
+  extraction_low_confidence: { path: "re-scan / re-upload the document, OR a reviewer attests the terms read from the executed paper", terminatesWhen: "a high-confidence scan or a reviewer attestation exists for the document" },
+  ambiguous_signature:       { path: "a reviewer confirms the signers in an attestation, or a re-signed document is uploaded", terminatesWhen: "the signers are confirmed or every signature maps to a party" },
+  signer_identity_mismatch:  { path: "correct the seller on the CRM record, or obtain the owner-of-record's signature", terminatesWhen: "the signers match the seller on file" },
+  initials_missing:          { path: "obtain the missing initials and upload the initialed document", terminatesWhen: "every party's initials are present" },
+  field_mismatch:            { path: "correct the record to the executed term, or obtain a corrected re-signed document (the original is kept)", terminatesWhen: "document and record agree" },
+  contradictory_terms:       { path: "mark the wrong paper superseded through the document-version door, or upload the governing executed instrument", terminatesWhen: "one current executed instrument states the term" },
+  state_mismatch:            { path: "execute the agreement on the listing state's form and upload it", terminatesWhen: "the executed form's state matches the property" },
+  unsigned_addendum:         { path: "have the addendum signed and initialed, or mark it superseded/withdrawn through the document-version door", terminatesWhen: "the addendum is executed or out of the file" },
+  unverified_by_machine:     { path: "the reviewer reads it on the executed document and approves (or attests it)", terminatesWhen: "a reviewer approves this evidence" },
+  awaiting_reviewer:         { path: "a reviewer with closingApproval authority approves the evidence hash", terminatesWhen: "an approval bound to the current evidence hash exists" },
+  form_license:              { path: "replace the form with a licensed current version (lane 156C's licensed-forms registry)", terminatesWhen: "the registry accepts the form version" },
+})
+
+/** The terms a reviewer may attest per record — exactly the keys the comparator reads (no free-form fields). */
+export const ATTESTABLE_TERMS: Readonly<Record<"listing_agreement" | "purchase_offer", readonly string[]>> = Object.freeze({
+  listing_agreement: ["property_address", "zip_code", "state", "list_price", "list_date", "expiration_date", "commission_rate", "seller_name", "legal_description"],
+  purchase_offer: ["price", "counter_price", "earnest_money_amount", "closing_date", "property_address"],
+})
+
+/** A reviewer's field-by-field reading of one executed document (human, never a model). */
+export interface TermAttestation { documentId: string; userId: string; at: string; terms: Record<string, unknown>; signersConfirmed: boolean }
 
 export interface BlockingReason {
+  /** wave 156 round 2: how this reason ends — never a dead end. Filled from REPAIR_PATHS. */
+  repair?: string
   code: ReasonCode
   severity: ReasonSeverity
   /** Plain words a TC or agent acts on: which form, which term, what it says vs what the record says. */
@@ -115,6 +154,8 @@ export interface ComparedFact {
   documentSays: unknown
   recordSays: unknown
   agrees: boolean | null
+  /** Where the document value came from: the scan, or a named reviewer's attestation. */
+  source?: "scan" | "attested"
 }
 
 export interface RepresentationDecision {
@@ -125,7 +166,11 @@ export interface RepresentationDecision {
   verdict: RepresentationVerdict
   blockingReasons: BlockingReason[]
   evidenceHash: string
-  evidence: { documentIds: string[]; compared: ComparedFact[]; gate: string }
+  evidence: {
+    documentIds: string[]; compared: ComparedFact[]; gate: string
+    /** Each document the decision read: the reference the open door resolves, the form id, and who attested it (if anyone). */
+    documents?: Array<{ id: string; classification: string | null; storageUrl: string | null; stateFormId: string | null; attestedBy: string | null }>
+  }
   reviewerAuthority: ReviewerAuthority
   /** Who approved this exact evidence, when they did. */
   approval: { userId: string; at: string } | null
@@ -190,7 +235,36 @@ export interface EvidenceDocument {
   state_code?: string | null
   state_form_id?: string | null
   created_at?: string | null
+  /** documents.storage_url — the reference the open door resolves (lib/storage/signed-doc-url.ts documentOpenHref). */
+  storage_url?: string | null
+  /** Set by applyAttestations: the reviewer's reading replaced the scan for this document. */
+  attested?: { userId: string; at: string; signersConfirmed: boolean } | null
 }
+
+/**
+ * PURE. A reviewer's attestation REPLACES the scan for that document: the comparison runs on the terms the person read, the
+ * readability holds (failed / empty / low-confidence scan) no longer apply, and — only when the reviewer confirmed the signers —
+ * neither does the ambiguous-signature hold. Everything else (a contradiction with the record, missing initials, an unsigned
+ * addendum) is still decided on the attested terms. The scan blob itself is never rewritten.
+ */
+export function applyAttestations(docs: EvidenceDocument[], attestations: Record<string, TermAttestation> | undefined): EvidenceDocument[] {
+  if (!attestations) return docs
+  return docs.map((d) => {
+    const a = attestations[d.id]
+    return a ? { ...d, extracted_fields: { ...a.terms }, attested: { userId: a.userId, at: a.at, signersConfirmed: a.signersConfirmed } } : d
+  })
+}
+
+/**
+ * THE FORM-LICENSE SEAM (wave 156 round 2) — the ONE function lane 156C's licensed-forms registry plugs into. Given an executed
+ * document (its state_form_id / state_code), it returns a HOLD reason when the form is unlicensed or superseded, or null when it
+ * has no finding. Until the integrator connects the registry it has no opinion (null) — the form id is recorded as evidence, and
+ * the guard asserts every decision passes every executed document through this seam.
+ */
+export type FormLicenseCheck = (doc: EvidenceDocument) => BlockingReason | null
+let formLicenseCheck: FormLicenseCheck = () => null
+export function setFormLicenseCheck(check: FormLicenseCheck): void { formLicenseCheck = check }
+export function formLicenseFinding(doc: EvidenceDocument): BlockingReason | null { return formLicenseCheck(doc) }
 
 export interface ListingRepresentationInput {
   brokerageId: string
@@ -211,6 +285,8 @@ export interface ListingRepresentationInput {
   /** The activation gate's verdict for the same listing (presence, signatures, initials, state checklist). */
   gate: { allowed: boolean; refusals: GateRefusal[] }
   approval: { userId: string; at: string; evidenceHash: string; decision: string } | null
+  /** Reviewer attestations by document id (the newest per document). */
+  attestations?: Record<string, TermAttestation>
   checkedAt?: string
 }
 
@@ -229,6 +305,7 @@ export interface OfferRepresentationInput {
   /** The creation-side checks already made on this offer (presence / signatures / initials). */
   gate: { allowed: boolean; refusals: GateRefusal[] }
   approval: { userId: string; at: string; evidenceHash: string; decision: string } | null
+  attestations?: Record<string, TermAttestation>
   checkedAt?: string
 }
 
@@ -240,6 +317,14 @@ const objectOf = (v: unknown): Record<string, unknown> =>
 /** PURE. The machine-readability of one executed document: any failure is a HOLD that names the document. */
 function readabilityReasons(doc: EvidenceDocument, label: string): BlockingReason[] {
   const out: BlockingReason[] = []
+  const license = formLicenseFinding(doc)
+  if (license) out.push(license)
+  if (doc.attested) {
+    // The reviewer read it. An attestation with no terms at all is still an empty reading.
+    if (Object.values(objectOf(doc.extracted_fields)).filter(present).length === 0) out.push({ code: "extraction_empty", severity: "hold", documentId: doc.id, field: null,
+      message: `${label}: the attestation recorded no terms. Record the terms you read on the executed document.` })
+    return out
+  }
   if (doc.scan_error || !doc.scanned_at) {
     out.push({ code: "extraction_failed", severity: "hold", documentId: doc.id, field: null,
       message: `${label}: the document scan ${doc.scan_error ? `failed (${doc.scan_error})` : "never ran"}, so nothing on it has been read. Re-run the scan or have compliance read it.` })
@@ -259,6 +344,7 @@ function readabilityReasons(doc: EvidenceDocument, label: string): BlockingReaso
 
 /** PURE. Signatures whose signer could not be placed in a role are ambiguous — a HOLD, never a pass. */
 function ambiguousSignatures(doc: EvidenceDocument, label: string, parties: readonly string[]): BlockingReason[] {
+  if (doc.attested?.signersConfirmed) return []
   const sigs = Array.isArray(objectOf(doc.signature_completeness).signatures) ? (objectOf(doc.signature_completeness).signatures as Array<Record<string, unknown>>) : []
   const odd = sigs.filter((s) => s?.signed === true && !parties.includes(String(s?.signer_role ?? "").toLowerCase()) && String(s?.signer_role ?? "").toLowerCase() !== "broker")
   return odd.length
@@ -305,7 +391,12 @@ function finish(
   record: RepresentationRecord, brokerageId: string, subjectId: string, version: string, reasons: BlockingReason[],
   compared: ComparedFact[], documentIds: string[], gateSummary: string,
   approval: { userId: string; at: string; evidenceHash: string; decision: string } | null, checkedAt: string,
+  docs: EvidenceDocument[] = [],
 ): RepresentationDecision {
+  // Where each compared value came from (scan vs a named reviewer's attestation) is part of the evidence an approval binds to.
+  const attestedIds = new Set(docs.filter((d) => d.attested).map((d) => d.id))
+  for (const c of compared) c.source = attestedIds.has(c.documentId) ? "attested" : "scan"
+  for (const r of reasons) r.repair = REPAIR_PATHS[r.code].path
   // The hash is computed over the facts — never over the approval or the time — so a person approves THESE facts.
   const evidenceHash = evidenceHashOf({ record, subjectId, version, gate: gateSummary, compared, reasons: reasons.map((r) => [r.code, r.documentId, r.field]) })
   const approvalMatches = !!approval && approval.decision === "approve" && approval.evidenceHash === evidenceHash
@@ -314,11 +405,16 @@ function finish(
     all.push({ code: "awaiting_reviewer", severity: "review", documentId: documentIds[0] ?? null, field: null,
       message: approval && approval.decision === "approve"
         ? "The packet changed after it was approved, so the earlier approval no longer covers it. A compliance reviewer must approve the current packet."
-        : "Every compared term agrees. A compliance reviewer (or a tenant admin) must accept the packet before it continues — the system does not accept a packet on its own." })
+        : "Every compared term agrees. A compliance reviewer (or a tenant admin) must accept the packet before it continues — the system does not accept a packet on its own.",
+      repair: REPAIR_PATHS.awaiting_reviewer.path })
   }
   return {
     record, subjectId, version, verdict: verdictOf(all, approvalMatches), blockingReasons: all, evidenceHash,
-    evidence: { documentIds, compared, gate: gateSummary }, reviewerAuthority: REPRESENTATION_REVIEWER_AUTHORITY,
+    evidence: {
+      documentIds, compared, gate: gateSummary,
+      documents: docs.map((d) => ({ id: d.id, classification: d.classification, storageUrl: d.storage_url ?? null, stateFormId: d.state_form_id ?? null, attestedBy: d.attested?.userId ?? null })),
+    },
+    reviewerAuthority: REPRESENTATION_REVIEWER_AUTHORITY,
     approval: approvalMatches && approval ? { userId: approval.userId, at: approval.at } : null,
     idempotencyKey: `${brokerageId}:${record}:${version}`, checkedAt,
   }
@@ -344,7 +440,8 @@ export function decideListingRepresentation(input: ListingRepresentationInput): 
   }
   reasons.push(...gateReasons(input.gate))
 
-  const current = input.agreementDocuments.filter((d) => !isSupersededDocument(d.metadata))
+  const current = applyAttestations(input.agreementDocuments.filter((d) => !isSupersededDocument(d.metadata)), input.attestations)
+  const listingAddenda = applyAttestations(input.addenda, input.attestations)
   if (current.length === 0) {
     reasons.push(input.agreementDocuments.length > 0
       ? { code: "superseded_version", severity: "hold", documentId: input.agreementDocuments[0].id, field: null,
@@ -401,15 +498,15 @@ export function decideListingRepresentation(input: ListingRepresentationInput): 
   }
 
   // ADDENDA: an addendum that is not executed is a HOLD — and it never changes the agreement's terms.
-  for (const ad of input.addenda.filter((d) => !isSupersededDocument(d.metadata))) {
+  for (const ad of listingAddenda.filter((d) => !isSupersededDocument(d.metadata))) {
     const ex = evaluateExecution(ad.signature_completeness, LISTING_AGREEMENT_PARTIES)
     if (!ex.executed) reasons.push({ code: "unsigned_addendum", severity: "hold", documentId: ad.id, field: "addendum",
       message: `An addendum to the listing agreement is not fully executed (missing ${ex.missing.join(", ")}). It does not change the signed terms; have it signed and initialed or withdraw it.` })
   }
 
   const gateSummary = input.gate.allowed ? "passed" : input.gate.refusals.map((r) => r.requirement).sort().join("+")
-  const docIds = [...current.map((d) => d.id), ...input.addenda.map((d) => d.id)]
-  return finish("listing_agreement", input.brokerageId, L.id, version, reasons, compared, docIds, gateSummary, input.approval, checkedAt)
+  const docIds = [...current.map((d) => d.id), ...listingAddenda.map((d) => d.id)]
+  return finish("listing_agreement", input.brokerageId, L.id, version, reasons, compared, docIds, gateSummary, input.approval, checkedAt, [...current, ...listingAddenda])
 }
 
 // ─── THE OFFER DECISION ─────────────────────────────────────────────────────
@@ -444,7 +541,8 @@ export function decideOfferRepresentation(input: OfferRepresentationInput): Repr
   }
   reasons.push(...gateReasons(input.gate))
 
-  const current = input.contractDocuments.filter((d) => !isSupersededDocument(d.metadata))
+  const current = applyAttestations(input.contractDocuments.filter((d) => !isSupersededDocument(d.metadata)), input.attestations)
+  const offerAddenda = applyAttestations(input.addenda, input.attestations)
   if (current.length === 0) {
     reasons.push({ code: input.contractDocuments.length ? "superseded_version" : "no_executed_document", severity: "hold", documentId: input.contractDocuments[0]?.id ?? null, field: null,
       message: input.contractDocuments.length
@@ -452,8 +550,8 @@ export function decideOfferRepresentation(input: OfferRepresentationInput): Repr
         : "No executed contract document is filed on this offer, so its terms cannot be compared. Upload the fully signed contract (and the accepted counter, if any)." })
   }
   const head = current[0]
-  const executedAddenda = input.addenda.filter((d) => input.packet.addendumDocumentIds.includes(d.id) && !isSupersededDocument(d.metadata))
-  const unsignedAddenda = input.addenda.filter((d) => !input.packet.addendumDocumentIds.includes(d.id) && !isSupersededDocument(d.metadata))
+  const executedAddenda = offerAddenda.filter((d) => input.packet.addendumDocumentIds.includes(d.id) && !isSupersededDocument(d.metadata))
+  const unsignedAddenda = offerAddenda.filter((d) => !input.packet.addendumDocumentIds.includes(d.id) && !isSupersededDocument(d.metadata))
 
   if (head) {
     const label = input.packet.sequence.length > 1 ? "The accepted counter-offer" : "The executed purchase contract"
@@ -489,8 +587,8 @@ export function decideOfferRepresentation(input: OfferRepresentationInput): Repr
   }
 
   const gateSummary = input.gate.allowed ? "passed" : input.gate.refusals.map((r) => r.requirement).sort().join("+")
-  const docIds = [...current.map((d) => d.id), ...input.addenda.map((d) => d.id)]
-  return finish("purchase_offer", input.brokerageId, O.id, version, reasons, compared, docIds, gateSummary, input.approval, checkedAt)
+  const docIds = [...current.map((d) => d.id), ...offerAddenda.map((d) => d.id)]
+  return finish("purchase_offer", input.brokerageId, O.id, version, reasons, compared, docIds, gateSummary, input.approval, checkedAt, [...current, ...offerAddenda])
 }
 
 // ─── Authority ──────────────────────────────────────────────────────────────
@@ -500,28 +598,99 @@ export function decideOfferRepresentation(input: OfferRepresentationInput): Repr
  * deal desk gives for "decide the compliance approval". The owning agent alone may not approve their own packet; a solo tenant's
  * owner holds the admin seat and so may. A vendor / lender / title agent / Contact holds nothing.
  */
-export function mayReviewRepresentation(input: { sameTenant: boolean; userType: string | null; grantedRoles: readonly string[]; isOwningAgent: boolean }): { ok: boolean; roles: string[] } {
-  const access = resolveDealWork({ sameTenant: input.sameTenant, userType: input.userType, grantedRoles: input.grantedRoles, isOwningAgent: input.isOwningAgent, isAssignedTc: false, isTeamLeadOfDealAgent: false, dealStatus: null, dealStage: null })
+export function mayReviewRepresentation(input: { sameTenant: boolean; userType: string | null; grantedRoles: readonly string[]; isOwningAgent: boolean; isTenantPrincipal?: boolean }): { ok: boolean; roles: string[] } {
+  // THE SOLO TENANT (round 2): a tenant principal (users.is_tenant_principal — the account's owner) holds the account's admin seat
+  // whatever user_type it was typed with, so a solo agent who is their own reviewer can finish their own listing. Read through the
+  // same deal-work rule as an owner seat — never a new role.
+  const granted = input.isTenantPrincipal ? [...input.grantedRoles, "broker_owner"] : input.grantedRoles
+  const access = resolveDealWork({ sameTenant: input.sameTenant, userType: input.userType, grantedRoles: granted, isOwningAgent: input.isOwningAgent, isAssignedTc: false, isTeamLeadOfDealAgent: false, dealStatus: null, dealStage: null })
   return { ok: access.capabilities.closingApproval === true, roles: access.roles }
 }
 
 // ─── Loaders (fail closed) ──────────────────────────────────────────────────
 
 type Db = SupabaseClient<any, any, any>
-const DOC_COLUMNS = "id, classification, extracted_fields, classification_confidence, signature_completeness, scanned_at, scan_error, metadata, state_code, state_form_id, created_at"
+const DOC_COLUMNS = "id, classification, extracted_fields, classification_confidence, signature_completeness, scanned_at, scan_error, metadata, state_code, state_form_id, created_at, storage_url"
 const LISTING_AGREEMENT_CLASSES = ["listing_agreement", "seller_broker_agreement"]
 
-/** The newest human review of this record (compliance_events), or null. A refused read is ok:false. */
+/**
+ * The newest human review of this record AND the newest reviewer attestation per document (compliance_events). A refused read is
+ * ok:false. Attestations are recorded only by app/actions/compliance/representation-review.ts attestRepresentationTerms — a person
+ * under their own identity and review authority; no model path writes `kind: "attestation"`.
+ */
 export async function readRepresentationApproval(db: Db, p: { brokerageId: string; record: RepresentationRecord; subjectId: string }):
-  Promise<{ ok: true; approval: ListingRepresentationInput["approval"] } | { ok: false; error: string }> {
+  Promise<{ ok: true; approval: ListingRepresentationInput["approval"]; attestations: Record<string, TermAttestation> } | { ok: false; error: string }> {
   const { data, error } = await db.from("compliance_events")
     .select("actor_user_id, created_at, details, allowed")
     .eq("brokerage_id", p.brokerageId).eq("gate_name", REPRESENTATION_REVIEW_GATE).eq("entity_type", p.record).eq("entity_id", p.subjectId)
-    .order("created_at", { ascending: false }).limit(20)
+    .order("created_at", { ascending: false }).limit(200)
   if (error) return { ok: false, error: `the review ledger could not be read: ${error.message}` }
-  const human = ((data ?? []) as Array<Record<string, any>>).find((r) => r.details?.kind === "human_review")
-  if (!human) return { ok: true, approval: null }
-  return { ok: true, approval: { userId: String(human.actor_user_id ?? ""), at: String(human.created_at ?? ""), evidenceHash: String(human.details?.evidence_hash ?? ""), decision: String(human.details?.decision ?? "") } }
+  // AUTHORITY IS RE-CHECKED AT READ TIME (round 2): a row counts only when its actor holds review authority in THIS tenant now.
+  // The ledger's session INSERT policy admits any tenant staff seat (OWNER SQL in the 156B report closes it at the database);
+  // until then a row an agent forged through their own session is simply not an approval.
+  const all = (data ?? []) as Array<Record<string, any>>
+  const actorIds = [...new Set(all.filter((r) => r.details?.kind === "attestation" || r.details?.kind === "human_review").map((r) => String(r.actor_user_id ?? "")).filter(Boolean))]
+  const authorized = new Set<string>()
+  for (const id of actorIds) {
+    const v = await reviewerHoldsAuthority(db, p.brokerageId, id)
+    if (!v.ok) return { ok: false, error: v.error }
+    if (v.holds) authorized.add(id)
+  }
+  const rows = all.filter((r) => authorized.has(String(r.actor_user_id ?? "")))
+  const attestations: Record<string, TermAttestation> = {}
+  for (const r of rows) {
+    const docId = r.details?.document_id
+    if (r.details?.kind !== "attestation" || typeof docId !== "string" || attestations[docId] || !r.actor_user_id) continue
+    attestations[docId] = { documentId: docId, userId: String(r.actor_user_id), at: String(r.created_at ?? ""), terms: objectOf(r.details?.terms), signersConfirmed: r.details?.signers_confirmed === true }
+  }
+  const human = rows.find((r) => r.details?.kind === "human_review")
+  if (!human) return { ok: true, approval: null, attestations }
+  return { ok: true, attestations, approval: { userId: String(human.actor_user_id ?? ""), at: String(human.created_at ?? ""), evidenceHash: String(human.details?.evidence_hash ?? ""), decision: String(human.details?.decision ?? "") } }
+}
+
+/** Does this user hold review authority in this tenant NOW? Same rule as the door (mayReviewRepresentation); fail closed. */
+export async function reviewerHoldsAuthority(db: Db, brokerageId: string, userId: string): Promise<{ ok: true; holds: boolean } | { ok: false; error: string }> {
+  const [u, g] = await Promise.all([
+    db.from("users").select("id, brokerage_id, user_type").eq("id", userId).eq("brokerage_id", brokerageId).maybeSingle(),
+    db.from("user_role_assignments").select("role, brokerage_id").eq("user_id", userId),
+  ])
+  if (u.error || g.error) return { ok: false, error: `the reviewer's authority could not be read: ${(u.error ?? g.error)!.message}` }
+  if (!u.data) return { ok: true, holds: false }
+  const grantedRoles = ((g.data ?? []) as Array<{ role: string | null; brokerage_id: string | null }>).filter((x) => x.brokerage_id === brokerageId && x.role).map((x) => String(x.role))
+  const { resolveTenantPrincipalTeamLead } = await import("@/lib/auth/resolve-user-role")
+  const principal = await resolveTenantPrincipalTeamLead(db as never, userId, brokerageId)
+  if (!principal.ok) return { ok: false, error: `the reviewer's authority could not be read: ${principal.reason}` }
+  const userType = (u.data as { user_type?: string | null }).user_type ?? null
+  return { ok: true, holds: mayReviewRepresentation({ sameTenant: true, userType, grantedRoles, isOwningAgent: false, isTenantPrincipal: principal.isPrincipal }).ok }
+}
+
+/**
+ * The ASSIGNED coordinator(s) of a listing / offer (round 2): `contacts.tc_user_id` of the artifact's contact — the same assignment
+ * lib/kernel/approval-authority.ts reads ("assigned TC: contacts.tc_user_id of the artifact's contact") — plus the coordinator of a
+ * transaction already on the record. Empty when none is assigned; the caller then falls back to the TC roster. Fail-soft: a refused
+ * read returns the error so the caller logs it and uses the roster.
+ */
+export async function resolveAssignedCoordinators(db: Db, p: { brokerageId: string; contactIds: Array<string | null | undefined>; transactionId?: string | null }):
+  Promise<{ userIds: string[]; error: string | null }> {
+  const ids = [...new Set(p.contactIds.filter((x): x is string => !!x))]
+  const out = new Set<string>()
+  if (ids.length) {
+    const { data, error } = await db.from("contacts").select("id, tc_user_id").eq("brokerage_id", p.brokerageId).in("id", ids)
+    if (error) return { userIds: [], error: `the assigned coordinator could not be read: ${error.message}` }
+    for (const c of (data ?? []) as Array<{ tc_user_id?: string | null }>) if (c.tc_user_id) out.add(c.tc_user_id)
+  }
+  if (p.transactionId) {
+    const { data: tx, error } = await db.from("transactions").select("coordinator_id").eq("id", p.transactionId).eq("brokerage_id", p.brokerageId).maybeSingle()
+    if (error) return { userIds: [...out], error: `the deal's coordinator could not be read: ${error.message}` }
+    const cid = (tx as { coordinator_id?: string | null } | null)?.coordinator_id
+    if (cid) {
+      const { data: tc, error: tcErr } = await db.from("transaction_coordinators").select("user_id").eq("id", cid).eq("brokerage_id", p.brokerageId).maybeSingle()
+      if (tcErr) return { userIds: [...out], error: `the deal's coordinator could not be read: ${tcErr.message}` }
+      const uid = (tc as { user_id?: string | null } | null)?.user_id
+      if (uid) out.add(uid)
+    }
+  }
+  return { userIds: [...out], error: null }
 }
 
 /**
@@ -557,7 +726,7 @@ export async function loadAndDecideListingRepresentation(db: Db, p: { brokerageI
   return { ok: true, decision: decideListingRepresentation({
     brokerageId: p.brokerageId, listing: listing as any, agreement: ((agreements ?? [])[0] as any) ?? null,
     agreementDocuments: rows.filter((d) => LISTING_AGREEMENT_CLASSES.includes(String(d.classification))),
-    addenda: rows.filter((d) => d.classification === "addendum"), sellerNames, gate: p.gate, approval: ap.approval,
+    addenda: rows.filter((d) => d.classification === "addendum"), sellerNames, gate: p.gate, approval: ap.approval, attestations: ap.attestations,
   }) }
 }
 
@@ -590,7 +759,7 @@ export async function loadAndDecideOfferRepresentation(db: Db, p: {
     brokerageId: p.brokerageId, offer: offer as any, packet: p.packet,
     contractDocuments: rows.filter((d) => d.classification === "signed_contract" || d.classification === "counter_offer"),
     addenda: rows.filter((d) => d.classification === "addendum" || p.packet.addendumDocumentIds.includes(d.id)),
-    gate: p.gate, approval: ap.approval,
+    gate: p.gate, approval: ap.approval, attestations: ap.attestations,
   }) }
 }
 
@@ -615,5 +784,5 @@ export async function recordRepresentationDecision(db: Db, d: RepresentationDeci
 
 /** PURE. The blocker lines a loop writes back and notifies — every one names its document when there is one. */
 export function decisionBlockerLines(d: RepresentationDecision): string[] {
-  return d.blockingReasons.map((r) => `${r.severity === "review" ? "review" : "hold"}: ${r.message}${r.documentId ? ` [document ${r.documentId}]` : ""}`)
+  return d.blockingReasons.map((r) => `${r.severity === "review" ? "review" : "hold"}: ${r.message}${r.documentId ? ` [document ${r.documentId}]` : ""}${r.repair ? ` — how it ends: ${r.repair}` : ""}`)
 }

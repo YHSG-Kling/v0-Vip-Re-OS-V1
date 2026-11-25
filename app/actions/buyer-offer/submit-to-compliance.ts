@@ -684,7 +684,7 @@ export async function submitOfferToCompliance(
   // Compliance's queue. Nothing is stamped and no transaction exists until the decision is `allow` — the same decision every
   // door uses (lib/kernel/compliance/representation-gate.ts), so the webhook, the agent's click and a reviewer's approval agree.
   {
-    const { loadAndDecideOfferRepresentation, decisionBlockerLines, recordRepresentationDecision } = await import("@/lib/kernel/compliance/representation-gate")
+    const { loadAndDecideOfferRepresentation, decisionBlockerLines, recordRepresentationDecision, resolveAssignedCoordinators } = await import("@/lib/kernel/compliance/representation-gate")
     const review = await loadAndDecideOfferRepresentation(supabase as any, {
       brokerageId: offer.brokerage_id as string, offerId, packet: governingPacket, gate: { allowed: true, refusals: [] },
     })
@@ -700,10 +700,13 @@ export async function submitOfferToCompliance(
       const priorGate = (priorMeta.compliance_gate ?? {}) as { blockers_hash?: string }
       const changed = priorGate.blockers_hash !== reviewHash
       if (changed) {
+        const assigned = await resolveAssignedCoordinators(supabase as any, { brokerageId: offer.brokerage_id as string, contactIds: [offer.contact_id as string | null] })
+        if (assigned.error) console.error(`[submit-to-compliance] offer ${offerId}: ${assigned.error}; the TC roster is told instead`)
         await notifyComplianceFlag(supabase as any, {
           brokerageId: offer.brokerage_id as string,
           agentUserId: userId,
           alsoNotifyUserIds: dealRecipients,
+          assignedCoordinatorUserIds: assigned.userIds,
           flag: {
             type:       awaiting ? "compliance.offer_review_ready" : "compliance.offer_terms_hold",
             severity:   awaiting ? "medium" : "high",

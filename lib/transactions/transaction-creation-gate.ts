@@ -89,7 +89,7 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js"
-import { evaluateExecution } from "@/lib/compliance/signature-completeness"
+import { evaluateExecution, LISTING_AGREEMENT_PARTIES } from "@/lib/compliance/signature-completeness"
 import { asContractSubtype, asRepresentation, type ContractSubtype, type Representation } from "@/lib/compliance/checklist-dimensions"
 import {
   auditOfferDocuments,
@@ -145,7 +145,7 @@ export type GateRequirement =
    * not superseded by a later executed counter, not one of two executed branches — and the contract must not already have become a
    * transaction from another row of its chain (one executed contract → ONE transaction).
    */
-  | "governing_packet"
+  | "governing_packet" | /** wave 156 (156B): the executed terms were COMPARED to the offer record and nothing holds. */ "terms_reviewed"
   /** The gate itself could not run — refuse, never pass. */
   | "gate_could_not_run"
 
@@ -281,7 +281,7 @@ export function findUnexecutedDocuments(
     if (!requiredSet.has(doc.classification)) continue
     if (!classificationCarriesSignatures(doc.classification)) continue
 
-    const verdict = evaluateExecution(doc.signature_completeness, parties)
+    const verdict = evaluateExecution(doc.signature_completeness, parties === TRANSACTION_CONTRACT_PARTIES && (doc.classification === "listing_agreement" || doc.classification === "seller_broker_agreement") ? LISTING_AGREEMENT_PARTIES : parties) // wave 156 (156B): a listing agreement is the seller's and the brokerage's — no buyer ever signs it
     if (verdict.executed) continue
 
     // `missing` reads like ["buyer signature", "seller initials"] — split it so
@@ -658,7 +658,7 @@ export async function assertTransactionCreationAllowed(
       offerId:     params.offerId,
       stage:       "contract", // wave 143 (lane 143B): the executed-contract checklist, not the offer-stage one
       brokerageId: params.brokerageId,
-      contactId:   (params.contactIds ?? []).find(Boolean) ?? null,
+      contactId:   (params.contactIds ?? []).find(Boolean) ?? null, ...(params.dealType !== "buyer" ? { listingId: params.listingId ?? null, contactIds: params.contactIds ?? [] } : {}), // wave 156 (156B): a seller side's own paperwork lives on the listing + seller
       agentUserId: params.agentUserId ?? null,
       teamId:      params.teamId ?? null,
       dealType:    params.dealType,
@@ -772,6 +772,23 @@ export async function assertTransactionCreationAllowed(
     complianceEvidence,
     governingPacket,
     checkedAt,
+  }
+
+  // ── 5. THE EXECUTED TERMS, COMPARED (wave 156, lane 156B — round 2: ONE decision where all five insert sites pass) ──────────
+  // Every `transactions` writer runs this gate, so the substantive review lives HERE rather than in one of them: the offer bridge,
+  // the manual sheet, the kernel's manual door, the service wrapper and listing intake all meet the same hold check. Only a HOLD or
+  // a REFUSE refuses here — acceptance (needs_review → allow) is the compliance stamp's question, asked at the stamp. Asked only
+  // once everything above passed, so a refusal above is never buried under the review's restatement of it.
+  if (refusals.length === 0 && governingPacket && params.offerId) {
+    const { loadAndDecideOfferRepresentation } = await import("@/lib/kernel/compliance/representation-gate")
+    const review = await loadAndDecideOfferRepresentation(supabase as any, { brokerageId: params.brokerageId, offerId: params.offerId, packet: governingPacket, gate: { allowed: true, refusals: [] } })
+    if (!review.ok) {
+      return refuse([{ requirement: "gate_could_not_run", message: `Transaction creation refused${door}: the executed contract's terms could not be read (${review.error}). Nothing was verified, so nothing may be created.` }], detail)
+    }
+    const holds = review.decision.blockingReasons.filter((r) => r.severity !== "review")
+    if (review.decision.verdict === "hold" || review.decision.verdict === "refuse") {
+      refusals.push({ requirement: "terms_reviewed", message: `Transaction creation refused${door}: ${holds.map((r) => r.message).join(" ")}` })
+    }
   }
 
   if (refusals.length > 0) return refuse(refusals, detail)

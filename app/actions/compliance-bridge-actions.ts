@@ -86,7 +86,26 @@ export async function emitCompliancePassedAction(params: {
   }
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   return await ledgerSessionAction({ brokerageId: caller.brokerageId, action: "offer.compliance_gate.override", actor: { type: "user", userId: caller.userId }, subject: { type: "offer", id: params.offerId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { user_type: caller.userType } }, async () => {
-
+  // WAVE 156 round 2: THE OVERRIDE GOES THROUGH THE SAME EVIDENCE-BOUND REVIEW. It may accept a packet that is waiting for a
+  // person (needs_review) — that acceptance is recorded as THIS reviewer's approval of the current evidence hash — and it is
+  // REFUSED, with the reasons, while any hold or refusal stands. It can no longer stamp past a contradiction.
+  const svc = createServiceClient()
+  const { governingOfferPacket } = await import("@/lib/offers/governing-terms")
+  const gp = await governingOfferPacket(svc as never, caller.brokerageId, params.offerId)
+  if (!gp.ok) return { success: false, error: `The executed contract could not be established, so compliance cannot be recorded: ${gp.reason}` }
+  const { loadAndDecideOfferRepresentation, REPRESENTATION_REVIEW_GATE } = await import("@/lib/kernel/compliance/representation-gate")
+  const review = await loadAndDecideOfferRepresentation(svc as never, { brokerageId: caller.brokerageId, offerId: params.offerId, packet: gp.packet, gate: { allowed: true, refusals: [] } })
+  if (!review.ok) return { success: false, error: `The executed contract's terms could not be read, so compliance cannot be recorded: ${review.error}` }
+  const holds = review.decision.blockingReasons.filter((r) => r.severity !== "review")
+  if (review.decision.verdict === "hold" || review.decision.verdict === "refuse") {
+    return { success: false, error: `Compliance cannot be recorded over an open hold: ${holds.map((r) => r.message).join(" ")}`, hold_reasons: holds.map((r) => ({ code: r.code, document_id: r.documentId, field: r.field, repair: r.repair ?? null })) }
+  }
+  const { data: approval, error: approvalErr } = await svc.from("compliance_events").insert({
+    brokerage_id: caller.brokerageId, gate_name: REPRESENTATION_REVIEW_GATE, entity_type: "purchase_offer", entity_id: params.offerId,
+    allowed: true, actor_user_id: caller.userId, actor_role: caller.userType ?? "reviewer", severity: "info", violations: [],
+    details: { kind: "human_review", decision: "approve", evidence_hash: review.decision.evidenceHash, version: review.decision.version, via: "compliance_bridge_override", reviewed_reasons: review.decision.blockingReasons.map((r) => r.code) },
+  }).select("id")
+  if (approvalErr || !approval || approval.length === 0) return { success: false, error: `The reviewer's approval could not be recorded, so compliance was not stamped${approvalErr ? `: ${approvalErr.message}` : "."}` }
   return emitCompliancePassed({ offerId: params.offerId, userId: caller.userId })
   })
 }

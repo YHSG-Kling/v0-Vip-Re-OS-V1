@@ -162,7 +162,7 @@ export async function runListingComplianceLoop(
   // ── 1 · The listing, inside the tenant. A refused read is UNKNOWN, not "no listing". ──
   const { data: row, error: rowErr } = await supabase
     .from("listings")
-    .select("id, lifecycle_stage, go_live_date, agent_id, metadata")
+    .select("id, lifecycle_stage, go_live_date, agent_id, metadata, seller_contact_id")
     .eq("id", listingId)
     .eq("brokerage_id", brokerageId)
     .maybeSingle()
@@ -262,7 +262,7 @@ export async function runListingComplianceLoop(
   // THIS evidence (lib/kernel/compliance/representation-gate.ts). Anything short of `allow` stops here: a HOLD names the form and
   // the term and links the real document; needs_review puts a short item in Compliance's queue. A reader that could not run is
   // unknown — nothing changes and nobody is paged.
-  const { loadAndDecideListingRepresentation, decisionBlockerLines, recordRepresentationDecision } = await import("@/lib/kernel/compliance/representation-gate")
+  const { loadAndDecideListingRepresentation, decisionBlockerLines, recordRepresentationDecision, resolveAssignedCoordinators } = await import("@/lib/kernel/compliance/representation-gate")
   const review = await loadAndDecideListingRepresentation(supabase, { brokerageId, listingId, gate })
   if (!review.ok) {
     console.error(`[listing-compliance-loop] listing ${listingId}: the substantive review could NOT run (${review.error}); nothing changed`)
@@ -278,10 +278,13 @@ export async function runListingComplianceLoop(
     if (reviewChanged) {
       const listingAgentUserId = await resolveListingAgentUserId(supabase, (row as { agent_id?: string | null }).agent_id ?? null)
       const { notifyComplianceFlag } = await import("@/lib/notifications/notify-helpers")
+      const assigned = await resolveAssignedCoordinators(supabase, { brokerageId, contactIds: [(row as { seller_contact_id?: string | null }).seller_contact_id ?? null] })
+      if (assigned.error) console.error(`[listing-compliance-loop] listing ${listingId}: ${assigned.error}; the TC roster is told instead`)
       const sent = await notifyComplianceFlag(supabase, {
         brokerageId,
         agentUserId: params.actorUserId ?? listingAgentUserId,
         alsoNotifyUserIds: [listingAgentUserId],
+        assignedCoordinatorUserIds: assigned.userIds,
         flag: {
           type:       awaiting ? "compliance.listing_review_ready" : "compliance.listing_terms_hold",
           severity:   awaiting ? "medium" : "high",

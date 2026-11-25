@@ -150,12 +150,12 @@ Per-classification extracted_fields shape:
   lender_letter         → { lender_name, letter_type, issued_at }
   earnest_money_receipt → { amount, depositor, escrow_holder, received_at }
   listing_agreement     → { property_address, city, state, zip_code, list_price,
-                            list_date, expiration_date, commission_rate,
+                            list_date, expiration_date, commission_rate, legal_description,
                             seller_name, listing_agent_name, brokerage_name }
                           (the SELLER-side agreement that puts the property on the
                            market. list_price is the agreed list price stated on the
                            agreement; commission_rate is the total listing-side rate
-                           as a percentage number, not a string. Use null for any
+                           as a percentage number, not a string; legal_description exactly as printed (lot/block/subdivision or metes and bounds). Use null for any
                            figure not explicitly stated — never estimate.)
   seller_broker_agreement → { seller_name, brokerage_name, commission_rate, effective_date, expires_at }
   preliminary_closing_statement → { closing_date, seller_proceeds, total_seller_costs, title_company,

@@ -79,11 +79,16 @@ const REPLACE: Record<string, string> = {
   "app/actions/buyer-offer/submit-to-compliance.ts": "export async function submitOfferToCompliance(p){ globalThis.__B.calls.submit.push(p); return { success: true, transaction_id: 'tx-from-submit' } }",
 }
 const BY_SPEC: Record<string, string> = {
+  // services/supabaseService.ts builds its own admin client — handed the in-memory one (env set below; nothing reaches a network).
+  // A proxy onto the CURRENT world: the service caches its admin client, so a fixed object would pin the first fixture.
+  "@supabase/supabase-js": "export function createClient(){ return new Proxy({}, { get: (_t, k) => globalThis.__B.mem[k] }) }",
   "server-only": "export {}",
   "next/cache": "export function revalidatePath(){}; export function revalidateTag(){}; export function unstable_noStore(){}; export function unstable_cache(f){ return f }",
   "next/headers": "export async function headers(){ return new Map() }; export async function cookies(){ return { get(){}, getAll(){ return [] }, set(){}, delete(){} } }",
 }
 const dataUrl = (c: string) => `data:text/javascript,${encodeURIComponent(c)}`
+process.env.NEXT_PUBLIC_SUPABASE_URL ||= "http://in-memory.invalid"
+process.env.SUPABASE_SERVICE_ROLE_KEY ||= "in-memory-not-a-key"
 function aliasPath(rel: string): string | null {
   for (const c of [rel, `${rel}.ts`, `${rel}.tsx`, `${rel}/index.ts`]) { const p = join(ROOT, c); if (existsSync(p) && !statSync(p).isDirectory()) return p }
   return null
@@ -94,12 +99,14 @@ registerHooks({
     const aliased = spec.startsWith("@/") ? aliasPath(spec.slice(2)) : null
     const r = aliased ? { url: pathToFileURL(aliased).href, shortCircuit: true } : next(spec, ctx)
     if (String(ctx?.parentURL ?? "").startsWith("data:")) return r
+    // `?real` loads the REAL module even when it is stubbed for everyone else (the coordinator-routing and kernel-door proofs).
+    if (String(r.url ?? "").includes("?real")) return r
     const path = String(r.url ?? "").split("?")[0]
     const rep = Object.keys(REPLACE).find((k) => path === realUrl(k))
     return rep ? { url: dataUrl(REPLACE[rep]), shortCircuit: true } : r
   },
 })
-const load = async (p: string): Promise<any> => { try { return await import(pathToFileURL(join(ROOT, p)).href) } catch (e) { return { __loadError: (e as Error)?.message?.slice(0, 200) ?? "load failed" } } }
+const load = async (p: string, real = false): Promise<any> => { try { return await import(pathToFileURL(join(ROOT, p)).href + (real ? "?real" : "")) } catch (e) { return { __loadError: (e as Error)?.message?.slice(0, 200) ?? "load failed" } } }
 const resetCalls = () => { G.__B.calls = { notify: [], packet: [], lifecycle: [], parties: 0, submit: [] } }
 
 // ═══ fixtures ════════════════════════════════════════════════════════════════════════════════════════════════════════════
@@ -165,9 +172,10 @@ function sectionA() {
   check("NO e-sign / webhook / listing-agreement / listing-lifecycle module inserts a transaction (a signature event never creates a deal)", signatureTime.length === 0, signatureTime)
   const bridge = code("lib/transactions/offer-bridge.ts")
   const create = bridge.slice(bridge.indexOf("export async function createTransactionFromOffer"))
-  const iGate = create.indexOf("assertTransactionCreationAllowed("), iReview = create.indexOf("assertExecutedTermsNotHeld("), iInsert = create.search(/from\("transactions"\)\s*\.insert\(/)
-  check("the offer bridge runs the substantive review AFTER the creation gate and BEFORE its insert", iGate > 0 && iReview > iGate && iInsert > iReview, { iGate, iReview, iInsert })
-  check("…the review asks THE decision module (no second comparator in the bridge)", /loadAndDecideOfferRepresentation\(/.test(bridge) && !/offer_price\s*!==|price_mismatch/.test(bridge))
+  const iGate = create.indexOf("assertTransactionCreationAllowed("), iInsert = create.search(/from\("transactions"\)\s*\.insert\(/)
+  const gateSrc = code("lib/transactions/transaction-creation-gate.ts")
+  check("the substantive review lives IN the creation gate every writer runs (obligation terms_reviewed), and the bridge inserts only after it", iGate > 0 && iInsert > iGate && /requirement:\s*"terms_reviewed"/.test(gateSrc) && /loadAndDecideOfferRepresentation\(/.test(gateSrc), { iGate, iInsert })
+  check("…the bridge keeps no second comparator of its own (one decision, five doors)", !/loadAndDecideOfferRepresentation\(|offer_price\s*!==|price_mismatch/.test(bridge))
   check("…and a 23505 on the insert reads the WINNER back (one executed contract → one transaction)", /code === "23505" \? await readWinningTransaction\(/.test(create))
   const submit = code("app/actions/buyer-offer/submit-to-compliance.ts")
   const iReviewS = submit.indexOf("loadAndDecideOfferRepresentation("), iStamp = submit.indexOf("compliance_passed_at:    now")
@@ -328,13 +336,15 @@ async function sectionE(rg: any) {
 }
 
 // ═══ §F OFFER → TRANSACTION (C03) ═══════════════════════════════════════════════════════════════════════════════════════
-function offerWorld(o: { offer?: Partial<Row>; docs?: Row[] } = {}): MemClient {
+function offerWorld(o: { offer?: Partial<Row>; docs?: Row[]; extra?: Record<string, Row[]>; rules?: Row[] } = {}): MemClient {
   return memSupabase({
     offers: [offerRow(o.offer)], documents: o.docs ?? [contractDoc()],
     activities: [{ id: u(600), brokerage_id: B, entity_type: "offer", entity_id: O, activity_type: "buyer.offer.compliance.passed", status: "completed", created_at: T0 }],
-    brokerage_required_documents: [{ id: u(92), brokerage_id: B, classification: "signed_contract", is_required: true, deal_type: "buyer", scope_type: "brokerage", scope_id: B, block_on_missing: true, state_code: null }],
+    brokerage_required_documents: o.rules ?? [{ id: u(92), brokerage_id: B, classification: "signed_contract", is_required: true, deal_type: "buyer", scope_type: "brokerage", scope_id: B, block_on_missing: true, state_code: null }],
     contract_term_versions: [], agents: [{ id: AG, user_id: AU, brokerage_id: B }], users: [{ id: AU, brokerage_id: B, team_id: null, user_type: "agent" }],
     transactions: [], compliance_events: [], contacts: [{ id: CB, brokerage_id: B, first_name: "Bea", last_name: "Buyer" }],
+    buyer_broker_agreements: [], listings: [],
+    ...(o.extra ?? {}),
   }, { uuidIds: true, stampCreatedAt: true, unique: { transactions: [["brokerage_id", "offer_id"]] } })
 }
 async function sectionF() {
@@ -400,12 +410,217 @@ async function sectionG(rg: any) {
   check("a STALE evidence hash is refused (the packet changed since it was opened)", !stale.success && /changed since you opened it/.test(stale.error ?? ""), stale)
   const ok = await act.recordRepresentationReview({ record: "listing_agreement", subjectId: L, decision: "approve", evidenceHash: hash })
   check("the reviewer's approval is recorded and continues ONLY the listing loop (advanced to coming-soon prep)", ok.success && ok.continued?.listing === "advanced" && G.__B.mem.tables.compliance_events.some((e: Row) => e.details?.kind === "human_review" && e.actor_user_id === CO), ok)
+  {
+    // A FORGED approval: an agent writes a human_review row for their own packet straight into the ledger (the session INSERT
+    // policy admits a staff seat). Authority is re-checked at READ time, so it is not an approval.
+    const m = world(); const rgm = await load("lib/kernel/compliance/representation-gate.ts")
+    const gate = await gateMod.assertListingActivationAllowed(m, { brokerageId: B, listingId: L, complianceReview: true })
+    const cur = await rgm.loadAndDecideListingRepresentation(m, { brokerageId: B, listingId: L, gate })
+    m.tables.compliance_events.push({ id: u(501), brokerage_id: B, gate_name: "representation_review", entity_type: "listing_agreement", entity_id: L, allowed: true, actor_user_id: AU, created_at: "2026-11-21T00:00:00.000Z", details: { kind: "human_review", decision: "approve", evidence_hash: cur.ok ? cur.decision.evidenceHash : "" } })
+    const after = await rgm.loadAndDecideListingRepresentation(m, { brokerageId: B, listingId: L, gate })
+    check("a FORGED approval written by the listing's own agent is not an approval (authority re-checked at read time)", after.ok && after.decision.verdict === "needs_review", after.ok ? after.decision.verdict : after)
+    m.tables.compliance_events[m.tables.compliance_events.length - 1].actor_user_id = CO
+    const real = await rgm.loadAndDecideListingRepresentation(m, { brokerageId: B, listingId: L, gate })
+    check("POSITIVE CONTROL: the identical row by the compliance officer IS an approval", real.ok && real.decision.verdict === "allow")
+  }
   G.__B.mem = world(); G.__B.mem.tables.listings[0].list_price = 525000
   const hv = await act.getRepresentationReviewAction({ record: "listing_agreement", subjectId: L })
   const holdTry = await act.recordRepresentationReview({ record: "listing_agreement", subjectId: L, decision: "approve", evidenceHash: hv.success ? hv.decision.evidenceHash : "" })
   check("a HOLD cannot be approved away — a contradiction is repaired, not accepted", !holdTry.success && /items to fix first/.test(holdTry.error ?? ""), holdTry)
   G.__B.seat = null
 }
+
+// ═══ ROUND 2 ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+const quietly = async <T>(f: () => Promise<T>): Promise<T> => { const l = console.log, w = console.warn, er = console.error; console.log = console.warn = console.error = () => {}; try { return await f() } finally { console.log = l; console.warn = w; console.error = er } }
+
+/** §H ONE DECISION AT EVERY DOOR — the hold check lives in the creation gate all five insert sites run; driven per path. */
+async function sectionH() {
+  section("§H one decision at every door — the creation gate holds a contradicted contract, driven per path")
+  const gateMod = await load("lib/transactions/transaction-creation-gate.ts")
+  if (gateMod.__loadError) { check("the creation gate loads", false, gateMod.__loadError); return }
+  const P = { brokerageId: B, offerId: O, listingId: null, contactIds: [CB], agentUserId: AU, teamId: null, dealType: "buyer" as const, stateCode: null, door: "guard" }
+  const held = await gateMod.assertTransactionCreationAllowed(offerWorld({ offer: { offer_price: 525000 } }), P)
+  check("the creation gate itself refuses a contract the document contradicts (obligation terms_reviewed)", !held.allowed && held.refusals.some((r: any) => r.requirement === "terms_reviewed" && /purchase price/.test(r.message)), held.refusals)
+  const clean = await gateMod.assertTransactionCreationAllowed(offerWorld(), P)
+  check("POSITIVE CONTROL: the same gate allows the consistent executed contract", clean.allowed, clean.refusals)
+  const ocr = await gateMod.assertTransactionCreationAllowed(offerWorld({ docs: [contractDoc({ scanned_at: null })] }), P)
+  check("…and refuses an executed contract nobody could read (the scan never ran)", !ocr.allowed && ocr.refusals.some((r: any) => r.requirement === "terms_reviewed"))
+
+  // services/supabaseService.ts createTransaction — the one non-bridge door that can carry an offer id.
+  const svcMod = await load("services/supabaseService.ts")
+  if (svcMod.__loadError) { check("services/supabaseService.ts loads", false, svcMod.__loadError) } else {
+    const payload = { brokerage_id: B, offer_id: O, contact_id: CB, deal_type: "buyer", deal_name: "40 Elm Street", property_address: "40 Elm Street" }
+    G.__B.mem = offerWorld({ offer: { offer_price: 525000 } })
+    const r1 = await quietly<any>(() => svcMod.supabaseService.createTransaction(payload))
+    check("supabaseService.createTransaction with a HELD contract's offer id creates nothing", r1 === null && G.__B.mem.tables.transactions.length === 0, { r1, rows: G.__B.mem.tables.transactions.length })
+    G.__B.mem = offerWorld()
+    const r2 = await quietly<any>(() => svcMod.supabaseService.createTransaction(payload))
+    check("POSITIVE CONTROL: …and with a consistent contract it creates exactly one row", !!r2 && G.__B.mem.tables.transactions.length === 1, { r2 })
+  }
+  // The two manual doors carry NO offer id: they refuse by construction, even beside a compliant executed contract.
+  const kernelMod = await load("lib/kernel/transactions.ts", true)
+  if (kernelMod.__loadError) { check("lib/kernel/transactions.ts loads", false, kernelMod.__loadError) } else {
+    G.__B.mem = offerWorld()
+    const k = await quietly<any>(() => kernelMod.createManualTransaction({ brokerageId: B, agentId: AG, propertyAddress: "40 Elm Street", dealType: "purchase", contactId: CB }))
+    check("kernel createManualTransaction refuses (no offer → no reviewed contract), 0 rows", !k.success && G.__B.mem.tables.transactions.length === 0, k)
+  }
+  const gateSrc = code("lib/transactions/transaction-creation-gate.ts")
+  check("the gate asks THE decision module once its other obligations pass (no second comparator)", /loadAndDecideOfferRepresentation\(/.test(gateSrc) && /requirement:\s*"terms_reviewed"/.test(gateSrc))
+  const appSrc = code("lib/application/transactions.ts")
+  check("lib/application createTransaction passes no offer id to the gate (refuses by construction — proved by the gate's no-offer refusal)", /door:\s*"manual transaction sheet"/.test(appSrc) && /assertTransactionCreationAllowed\([\s\S]{0,300}offerId:\s*null/.test(appSrc))
+  const noOffer = await gateMod.assertTransactionCreationAllowed(offerWorld(), { ...P, offerId: null })
+  check("…and the gate refuses ANY door that brings no offer (compliance_good)", !noOffer.allowed && noOffer.refusals.some((r: any) => r.requirement === "compliance_good"))
+
+  // THE STAFF OVERRIDE cannot stamp past an open hold.
+  const bridgeAct = await load("app/actions/compliance-bridge-actions.ts")
+  const overrideSrc = code("app/actions/compliance-bridge-actions.ts")
+  check("the staff override runs the evidence-bound review and refuses an open hold with the reasons", /loadAndDecideOfferRepresentation\(/.test(overrideSrc) && /Compliance cannot be recorded over an open hold/.test(overrideSrc) && /kind:\s*"human_review"/.test(overrideSrc))
+  void bridgeAct
+}
+
+/** §I NO HOLD IS A DEAD END — every reason has a repair; unreadable extraction repaired by re-scan OR reviewer attestation. */
+async function sectionI(rg: any) {
+  section("§I no hold is a dead end — re-scan or the reviewer's field-by-field attestation; a contradiction still holds")
+  if (rg.__loadError) { check("the decision module loads", false, rg.__loadError); return }
+  const codes = ["tenant_mismatch", "already_transaction", "gate_refused", "no_executed_document", "superseded_version", "extraction_failed", "extraction_empty", "extraction_low_confidence", "ambiguous_signature", "signer_identity_mismatch", "initials_missing", "field_mismatch", "contradictory_terms", "state_mismatch", "unsigned_addendum", "unverified_by_machine", "awaiting_reviewer", "form_license"]
+  const srcCodes = [...code("lib/kernel/compliance/representation-gate.ts").matchAll(/code:\s*"([a-z_]+)"/g)].map((m) => m[1])
+  const missingRepair = [...new Set(srcCodes)].filter((c) => !rg.REPAIR_PATHS?.[c]?.path || !rg.REPAIR_PATHS?.[c]?.terminatesWhen)
+  check("EVERY reason code the module emits (derived from stripped source) has a repair path and a terminating condition", srcCodes.length >= 15 && missingRepair.length === 0, { found: srcCodes.length, missingRepair })
+  check("POSITIVE CONTROL: the derivation finds the codes it must (all of the declared vocabulary is emitted)", codes.every((c) => srcCodes.includes(c) || c === "form_license"))
+
+  const loopMod = await load("lib/listings/listing-compliance-loop.ts")
+  const act = await load("app/actions/compliance/representation-review.ts")
+  if (loopMod.__loadError || act.__loadError) { check("the loop and the reviewer door load", false, loopMod.__loadError ?? act.__loadError); return }
+  const run = (trigger = "agreement_executed") => loopMod.runListingComplianceLoop(G.__B.mem, { brokerageId: B, listingId: L, trigger, actorUserId: AU })
+  // (a) RE-SCAN
+  resetCalls(); G.__B.mem = listingWorld({ doc: agreementDoc({ scan_error: "OCR timeout", scanned_at: null }) })
+  const h = await run()
+  check("an unreadable agreement HOLDS (extraction_failed) with its repair named", h.outcome === "blocked" && /re-scan|attests/i.test(h.blockers.join(" ")), h.blockers)
+  Object.assign(G.__B.mem.tables.documents[0], { scan_error: null, scanned_at: "2026-11-21T00:00:00.000Z" })
+  const h2 = await run("document_uploaded")
+  check("(a) a successful RE-SCAN ends the hold: the packet goes to review", h2.outcome === "awaiting_review", h2)
+  // (b) ATTESTATION
+  resetCalls(); G.__B.mem = listingWorld({ doc: agreementDoc({ classification_confidence: "low" }) }); G.__B.seat = { userId: CO, agentId: null, brokerageId: B, userType: "compliance_officer" }
+  const attest = (terms: Record<string, unknown>) => act.attestRepresentationTerms({ record: "listing_agreement", subjectId: L, documentId: DOC, terms })
+  const good = await attest({ property_address: "12 Oak St, Austin, TX 78701", zip_code: "78701", state: "TX", list_price: "500000", list_date: "2026-11-20", expiration_date: "2027-06-30", commission_rate: 6, seller_name: "Sam Seller", legal_description: "Lot 4, Block 2, Oak Hills" })
+  check("(b) the reviewer's attestation of a low-confidence document ends the extraction hold → needs_review", good.success && good.decision?.verdict === "needs_review" && good.decision.evidence.compared.every((c: any) => c.source === "attested"), good)
+  check("…recorded under the reviewer's own identity (compliance_events kind attestation, actor = reviewer)", G.__B.mem.tables.compliance_events.some((e: Row) => e.details?.kind === "attestation" && e.actor_user_id === CO && e.details?.document_id === DOC))
+  const approve = await act.recordRepresentationReview({ record: "listing_agreement", subjectId: L, decision: "approve", evidenceHash: good.decision.evidenceHash })
+  check("…and the approval binds to the ATTESTED evidence hash and continues the listing", approve.success && approve.continued?.listing === "advanced", approve)
+  resetCalls(); G.__B.mem = listingWorld({ doc: agreementDoc({ classification_confidence: "low" }) })
+  const bad = await attest({ list_price: "480000" })
+  check("a CONTRADICTION still holds after attestation (attested 480000 vs listing 500000)", bad.success && bad.decision?.verdict === "hold" && bad.decision.blockingReasons.some((r: any) => r.code === "field_mismatch" && r.field === "list_price"), bad.decision?.blockingReasons)
+  G.__B.seat = { userId: AU, agentId: AG, brokerageId: B, userType: "agent" }
+  const agentAttest = await attest({ list_price: "500000" })
+  check("the listing agent cannot attest (a reviewer's reading only)", !agentAttest.success, agentAttest)
+  G.__B.seat = { userId: CO, agentId: null, brokerageId: B, userType: "compliance_officer" }
+  const freeForm = await attest({ favorite_color: "blue" } as any)
+  check("an attestation accepts only the comparator's own terms (no free-form fields)", !freeForm.success)
+  const srcAct = code("app/actions/compliance/representation-review.ts")
+  check("no model is reached on the attestation path (the door imports no AI module)", !/@\/lib\/ai\b|generateText|generateObject/.test(srcAct))
+  G.__B.seat = null
+}
+
+/** §J REPRESENTATION SIDE — buyer-only on an outside listing; our listing with an outside buyer's agent. */
+async function sectionJ() {
+  section("§J representation is never assumed — buyer-only and seller-only deals, driven through the bridge")
+  const bridge = await load("lib/transactions/offer-bridge.ts")
+  if (bridge.__loadError) { check("the offer bridge loads", false, bridge.__loadError); return }
+  const call = () => bridge.createTransactionFromOffer({ offerId: O, brokerageId: B, contractDate: "2026-11-20", compliancePassedAt: T0, contractTerms: {} }).then((r: any) => ({ ok: true, r }), (e: any) => ({ ok: false, e: String(e?.message ?? e) }))
+  const sellerRules = [{ id: u(93), brokerage_id: B, classification: "listing_agreement", is_required: true, deal_type: "seller", scope_type: "brokerage", scope_id: B, block_on_missing: true, state_code: null },
+    { id: u(94), brokerage_id: B, classification: "signed_contract", is_required: true, deal_type: "dual", scope_type: "brokerage", scope_id: B, block_on_missing: true, state_code: null }]
+  // (a) OUTSIDE listing, we represent ONLY the buyer: no listing row, no listing agreement anywhere.
+  resetCalls(); G.__B.mem = offerWorld({ rules: sellerRules })
+  const a = await quietly(call)
+  const ta = G.__B.mem.tables.transactions[0]
+  check("(a) an executed offer on an OUTSIDE listing creates ONE buyer-side transaction without demanding a listing agreement", (a as any).ok && G.__B.mem.tables.transactions.length === 1 && ta?.deal_type === "buyer" && ta?.buyer_contact_id === CB && !ta?.seller_contact_id, { a, ta })
+  // (b) OUR listing, the buyer has an OUTSIDE agent (no active buyer-broker agreement, the ladder still at its default).
+  const OB = u(46)
+  resetCalls(); G.__B.mem = offerWorld({ rules: sellerRules, offer: { listing_id: L, contact_id: OB }, docs: [contractDoc({ contact_id: OB })], extra: {
+    listings: [listingRow()], contacts: [{ id: OB, brokerage_id: B, first_name: "Oscar", last_name: "Outside", buyer_stage: "BUYER_CONTACT_CREATED" }, { id: S, brokerage_id: B, first_name: "Sam", last_name: "Seller" }],
+  } })
+  G.__B.mem.tables.documents.push({ ...agreementDoc(), contact_id: S })
+  const b = await quietly(call)
+  const tb = G.__B.mem.tables.transactions[0]
+  check("(b) our listing + an outside buyer's agent creates a SELLER-side transaction (never dual)", (b as any).ok && tb?.deal_type === "seller", { b, tb })
+  check("(b) …the client is the seller, and the outside buyer is NOT recorded as our represented buyer", tb?.contact_id === S && tb?.seller_contact_id === S && !tb?.buyer_contact_id)
+}
+
+/** §K THE ASSIGNED COORDINATOR is told; the roster is the fallback. */
+async function sectionK() {
+  section("§K the assigned coordinator is notified specifically; the TC roster only when none is assigned")
+  const loopMod = await load("lib/listings/listing-compliance-loop.ts")
+  if (loopMod.__loadError) { check("the loop loads", false, loopMod.__loadError); return }
+  const TC1 = u(35)
+  resetCalls(); G.__B.mem = listingWorld(); G.__B.mem.tables.contacts[0].tc_user_id = TC1
+  await loopMod.runListingComplianceLoop(G.__B.mem, { brokerageId: B, listingId: L, trigger: "agreement_executed", actorUserId: AU })
+  const n = G.__B.calls.notify[0]
+  check("the listing's assigned coordinator (the seller contact's tc_user_id) is named on the review item", Array.isArray(n?.assignedCoordinatorUserIds) && n.assignedCoordinatorUserIds.includes(TC1), n?.assignedCoordinatorUserIds)
+  const helpers = await load("lib/notifications/notify-helpers.ts", true)
+  if (helpers.__loadError) { check("the real notify-helpers loads (?real)", false, helpers.__loadError); return }
+  const TC2 = u(36)
+  const world = () => memSupabase({ users: [{ id: TC2, brokerage_id: B, user_type: "tc" }, { id: CO, brokerage_id: B, user_type: "compliance_officer" }], notifications: [] })
+  const flag = { type: "compliance.listing_review_ready", severity: "medium" as const, title: "t", entityType: "listing" as const, entityId: L }
+  const m1 = world(); const r1 = await quietly<any>(() => helpers.notifyComplianceFlag(m1, { brokerageId: B, agentUserId: AU, assignedCoordinatorUserIds: [TC1], flag }))
+  check("with an assigned coordinator: THEY and compliance are told, the roster TC is not", r1.recipient_user_ids.includes(TC1) && r1.recipient_user_ids.includes(CO) && !r1.recipient_user_ids.includes(TC2), r1.recipient_user_ids)
+  const m2 = world(); const r2 = await quietly<any>(() => helpers.notifyComplianceFlag(m2, { brokerageId: B, agentUserId: AU, flag }))
+  check("with none assigned: the TC roster is the fallback", r2.recipient_user_ids.includes(TC2), r2.recipient_user_ids)
+}
+
+/** §L THE FORM-LICENSE SEAM and the LEGAL DESCRIPTION extraction. */
+async function sectionL(rg: any) {
+  section("§L the form-license seam (156C plugs in here) and the legal description is extracted")
+  if (rg.__loadError) { check("the decision module loads", false, rg.__loadError); return }
+  const seen: string[] = []
+  rg.setFormLicenseCheck((doc: any) => { seen.push(doc.id); return doc.state_form_id === "TXR 1101-OLD" ? { code: "form_license", severity: "hold", documentId: doc.id, field: "state_form_id", message: "form version superseded" } : null })
+  const input = { brokerageId: B, listing: listingRow(), sellerNames: ["Sam Seller"], gate: PASS_GATE, approval: null, checkedAt: T0, agreement: { id: LA, effective_date: "2026-11-20", expiration_date: "2027-06-30", listing_commission_rate: 3, total_commission_rate: 6, agent_signed_at: T0, seller_signed_at: T0 }, agreementDocuments: [agreementDoc({ state_form_id: "TXR 1101-OLD" })], addenda: [] }
+  const d = rg.decideListingRepresentation(input)
+  check("every executed document passes through the ONE seam (formLicenseFinding), and its finding is a named HOLD", seen.includes(DOC) && d.verdict === "hold" && d.blockingReasons.some((r: any) => r.code === "form_license"))
+  rg.setFormLicenseCheck(() => null)
+  check("NEGATIVE CONTROL: with the seam's default (no registry connected) the same packet does not hold on the form", rg.decideListingRepresentation(input).verdict === "needs_review")
+  const scan = raw("lib/documents/scan-uploaded-document.ts")
+  check("the scanner's listing_agreement extraction schema asks for legal_description", /listing_agreement\s+→\s*\{[^}]*legal_description/.test(scan))
+  const noLegal = rg.decideListingRepresentation({ ...input, agreementDocuments: [agreementDoc({}, { legal_description: null })] })
+  check("absent from the extraction, the legal description stays 'unverified by machine' for the reviewer", noLegal.blockingReasons.some((r: any) => r.code === "unverified_by_machine" && r.field === "legal_description"))
+}
+
+/** §M THE REVIEWER'S SCREEN — on the existing compliance queue and on the listing; solo principal can decide. */
+async function sectionM() {
+  section("§M the reviewer's screen — the compliance queue and the listing page; agents read, reviewers decide")
+  const queue = code("app/dashboard/compliance/queue/page.tsx")
+  check("the EXISTING compliance queue renders the executed-packet review queue", /<RepresentationReviewQueue\s*\/>/.test(queue))
+  const panel = code("app/dashboard/compliance/queue/representation-review-panel.tsx")
+  check("the panel shows document-says / record-says side by side, each reason's form, field and repair, and the document link", /Document says/.test(panel) && /Record says/.test(panel) && /Form:/.test(panel) && /Field:/.test(panel) && /How this ends/.test(panel) && /openHref/.test(panel))
+  check("…Approve / Hold call the representation-review doors, bound to the evidence hash on screen", /recordRepresentationReview\(\{[^}]*evidenceHash: d\.evidenceHash/.test(panel))
+  check("…decision and attestation controls render only for a reviewer (data.mayDecide); others see status", /data\.mayDecide \? \(/.test(panel) && /Compliance decides this packet/.test(panel))
+  const qc = code("app/dashboard/compliance/queue/representation-review-queue.tsx")
+  check("an empty queue and a failed load read differently", /No executed listing agreements or offers are waiting/.test(qc) && /not an empty queue/.test(code("app/actions/compliance/representation-review.ts")))
+  const lp = code("app/dashboard/listings/[id]/compliance-review/page.tsx")
+  check("the listing page carries the review (the listing-side affordance), linked from the lifecycle page", /<RepresentationReviewPanel record="listing_agreement"/.test(lp) && /compliance-review/.test(code("app/dashboard/listings/[id]/lifecycle/page.tsx")))
+  const act = await load("app/actions/compliance/representation-review.ts")
+  if (act.__loadError) { check("the reviewer door loads", false, act.__loadError); return }
+  // A SOLO agent: user_type 'agent', the account's principal, owning agent of their own listing.
+  resetCalls(); G.__B.mem = listingWorld(); G.__B.mem.tables.user_role_assignments = []
+  // the solo tenant: the agent leads the account's only team (the principal rule lib/auth/resolve-user-role.ts reads)
+  G.__B.mem.tables.teams = [{ id: u(700), brokerage_id: B, team_lead_id: AU, deleted_at: null }]
+  G.__B.mem.tables.brokerages = [{ id: B, plan_tier: "solo_agent" }]
+  G.__B.seat = { userId: AU, agentId: AG, brokerageId: B, userType: "agent", isTenantPrincipal: true }
+  const v = await act.getRepresentationReviewAction({ record: "listing_agreement", subjectId: L })
+  check("a SOLO agent who is the account principal may decide their own listing's review", v.success && v.mayDecide === true, v)
+  const ok = await act.recordRepresentationReview({ record: "listing_agreement", subjectId: L, decision: "approve", evidenceHash: v.success ? v.decision.evidenceHash : "" })
+  check("…and finishes it: the listing advances", ok.success && ok.continued?.listing === "advanced", ok)
+  G.__B.mem = listingWorld(); G.__B.mem.tables.user_role_assignments = []
+  G.__B.seat = { userId: AU, agentId: AG, brokerageId: B, userType: "agent", isTenantPrincipal: false }
+  const v2 = await act.getRepresentationReviewAction({ record: "listing_agreement", subjectId: L })
+  check("NEGATIVE CONTROL: the same agent in a brokerage (not principal) sees status and reasons but may NOT decide", v2.success && v2.mayDecide === false)
+  const q = await act.listRepresentationReviewQueueAction()
+  check("the agent's queue is their own packets only (empty before the loop raised one)", q.success && q.items.length === 0, q)
+  await loopModRun()
+  const q2 = await act.listRepresentationReviewQueueAction()
+  check("…and lists the packet once the loop put it in review, with its state", q2.success && q2.items.length === 1 && q2.items[0].state === "awaiting_review", q2)
+  G.__B.seat = null
+}
+async function loopModRun() { const m = await load("lib/listings/listing-compliance-loop.ts"); if (!m.__loadError) await m.runListingComplianceLoop(G.__B.mem, { brokerageId: B, listingId: L, trigger: "agreement_executed", actorUserId: AU }) }
 
 // ═══ run ════════════════════════════════════════════════════════════════════════════════════════════════════════════════
 async function main() {
@@ -419,6 +634,12 @@ async function main() {
   await sectionE(rg)
   await sectionF()
   await sectionG(rg)
+  await sectionH()
+  await sectionI(rg)
+  await sectionJ()
+  await sectionK()
+  await sectionL(rg)
+  await sectionM()
   console.log("\nBLIND SPOTS: DB triggers / RPCs inserting transactions are not visible to a source scan (checked live once: none); m1001 is")
   console.log("modeled in memory until applied; legal description is compared only when the scan extracts it (else reviewer-confirmed);")
   console.log("form license/version is recorded, not compared to a licensed-forms registry; seats are proved through the rule and the door, not live RLS.")
