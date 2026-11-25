@@ -30,7 +30,29 @@ import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { checkPublicRateLimit } from "@/lib/security/public-rate-limit"
 import { resolveWidgetTenant, widgetCallOriginAllowed } from "@/lib/widget/resolve-widget-tenant"
-import { trackBehavior } from "@/app/actions/lead-intelligence"
+import { trackBehavior } from "@/lib/lead-intelligence/track-behavior"
+
+/**
+ * WAVE 156 (lane 156F) — THE HIT IS BOUND TO THE TENANT'S OWN WIDGET PAGE. The slug is a PUBLIC handle, and
+ * widgetCallOriginAllowed lets a call with NO Origin through (curl) — so anyone could name any widget-enabled tenant's
+ * slug and post a visit (IP, pages, an email) into it. The one real caller is the widget page this app serves for that
+ * tenant, app/widget/[brokerageSlug]/widget-chat-client.tsx, which posts same-origin from `/widget/<slug>`. So a hit is
+ * accepted only when a browser stamped an Origin (it must be this app — checked by widgetCallOriginAllowed) AND the
+ * Referer is that tenant's own widget page, `/widget/<the same slug>`. Anything else is refused before any write.
+ * PURE — the proof (scripts/wave156-f-visitor-truth-guard.ts) drives the route.
+ */
+function hitIsFromTenantWidget(req: NextRequest, slug: unknown): boolean {
+  if (typeof slug !== "string" || !slug.trim()) return false
+  if (!req.headers.get("origin")) return false
+  const referer = req.headers.get("referer")
+  if (!referer) return false
+  try {
+    const path = new URL(referer).pathname.replace(/\/+$/, "")
+    return path === `/widget/${encodeURIComponent(slug.trim())}` || path === `/widget/${slug.trim()}`
+  } catch {
+    return false
+  }
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -75,6 +97,10 @@ export async function POST(req: NextRequest) {
       tcpa_consent?: boolean
       tcpa_consent_text?: string | null
     } = body
+
+    if (!hitIsFromTenantWidget(req, brokerage_slug)) {
+      return NextResponse.json({ error: "This event cannot be recorded from here." }, { status: 403 })
+    }
 
     if (!visitor_id || !page_visited) {
       return NextResponse.json({ error: "visitor_id and page_visited are required" }, { status: 400 })

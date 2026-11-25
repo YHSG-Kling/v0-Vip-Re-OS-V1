@@ -304,8 +304,8 @@ export async function runTerritoryIntelligencePhase(
       // only link was a shared city, and the visitor's city is not even known (trackBehavior writes "Unknown" because
       // no IP-geolocation exists). A fabricated behavior attributed to a visitor is a fictional person-level fact.
       // No survivor by design — the discovered address still feeds the property enrichment above and the raw ingest
-      // in scrapeExternalBehavior; trackExternalActivity stays exported for a caller that actually OBSERVED an
-      // off-site activity for a known visitor (app/actions/lead-intelligence.ts).
+      // in scrapeExternalBehavior; trackExternalActivity itself was retired in round 2 (its tombstone is at
+      // app/actions/lead-intelligence.ts:2784 — a person's off-site activity is not observable without identification).
     }
 
     try {

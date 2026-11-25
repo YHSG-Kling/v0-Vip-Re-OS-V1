@@ -167,7 +167,7 @@ export async function POST(req: NextRequest) {
     // stored; the capture itself is already done and is never gated on this.
     if (emailConsentEventId && email && typeof visitor_id === 'string' && visitor_id.trim()) {
       try {
-        const { trackBehavior } = await import('@/app/actions/lead-intelligence')
+        const { trackBehavior } = await import('@/lib/lead-intelligence/track-behavior')
         const tracked = await trackBehavior({
           visitor_id: visitor_id.trim(),
           page_visited: '/api/widget/capture-lead',

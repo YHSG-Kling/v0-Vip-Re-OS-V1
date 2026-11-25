@@ -312,6 +312,10 @@ export default function VisitorTrackingPage() {
               <li>Come back here and press Refresh — a new session should appear within a few seconds.</li>
             </ol>
             <p>
+              Visits are recorded only from your own website: the address saved as your website in brand settings,
+              or a custom domain you connected and verified. A page on any other site records nothing.
+            </p>
+            <p>
               Nothing appearing? The three usual causes are the snippet landing in the body
               instead of the {'<head>'}, the page being cached and serving the old markup, or an
               ad-blocker on the browser you tested with.

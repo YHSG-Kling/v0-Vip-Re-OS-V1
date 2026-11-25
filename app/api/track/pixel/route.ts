@@ -38,6 +38,18 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const supabase = createServiceClient()
     const now = new Date().toISOString()
 
+    // WAVE 156 (lane 156F) — THE HIT IS BOUND TO THE TENANT'S OWN REGISTERED SITE. `b` is a raw brokerage id from the
+    // query string; nothing tied it to that tenant's website, so any page (or any script) could write sessions into ANY
+    // tenant by naming its id. A hit is now accepted only when the page it fired from — the Referer the browser stamps on
+    // the <img> request (Referrer-Policy strict-origin-when-cross-origin sends at least the origin) — is a host the
+    // tenant REGISTERED: an ACTIVE verified custom domain or the website it declared (brand settings / brokerage row).
+    // The host list is THE one tenant-host reader, lib/marketing/qr-governance.ts loadQrTenantHosts (a refused read
+    // yields fewer hosts, i.e. more refusals). No Referer, an unparseable one, or an unregistered host → nothing written.
+    const { pageHostRegisteredForTenant } = await import('@/lib/lead-intelligence/visitor-site-binding')
+    if (!(await pageHostRegisteredForTenant(supabase, brokerageId, referrer))) {
+      return new NextResponse(TRANSPARENT_GIF, { status: 200, headers: { 'Content-Type': 'image/gif', 'Cache-Control': 'no-store' } })
+    }
+
     // WAVE 156 (lane 156F) — A SESSION NEVER CHANGES TENANT. This was an `.upsert(…, { onConflict: 'session_id' })`
     // that wrote `brokerage_id: b` on EVERY hit. `session_id` is UNIQUE across the whole table, so a second pixel fire
     // carrying the same session id under ANOTHER brokerage's `b` (any page can fire it — `b` and `s` are query params)
