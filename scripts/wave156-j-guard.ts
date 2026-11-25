@@ -169,7 +169,7 @@ async function main() {
     const m = new RegExp(`${col}\\s+text[^\\n]*?check\\s*\\(\\s*${col}\\s+in\\s*\\(([\\s\\S]*?)\\)\\s*\\)`, "i").exec(src)
     return m ? [...m[1].matchAll(/'([a-z_]+)'/g)].map((x) => x[1]).sort() : []
   }
-  const kinds: string[] = net ? [...net.FRAUD_TYPOLOGY_KINDS].sort() : []
+  const kinds: string[] = net ? net.FRAUD_TYPOLOGY.map((t: any) => t.kind).sort() : []
   check("14 typologies, each with an evidence checklist, a protective action and an education topic", !!net && net.FRAUD_TYPOLOGY.length === 14 && net.FRAUD_TYPOLOGY.every((t: any) => t.evidenceChecklist.length > 0 && t.protectiveAction.length > 20 && /\?$/.test(t.educationalTopic)))
   check("m1035 incident_kind CHECK == the code typology (one vocabulary)", kinds.length === 14 && JSON.stringify(checkList("incident_kind", sql)) === JSON.stringify(kinds), checkList("incident_kind", sql))
   check("m1035 bulletin typology CHECK == the code typology", kinds.length === 14 && JSON.stringify(checkList("typology", sql)) === JSON.stringify(kinds))
@@ -525,6 +525,46 @@ async function roundTwo(net: any, A: any) {
   const ob = A ? await as(U_XAGENT, () => A.openFraudBulletin(pb?.bulletinId)) : null
   check("a refused READ record is a reported degradation: the warning is still shown, readRecorded=false", ob?.ok === true && ob.readRecorded === false)
   G.__J.fault = null
+
+  section("§N the audit trail is READ back: staff history; a seat's own read state (round 4)")
+  G.__J.mem = world(); G.__J.fault = null
+  const hc = A ? await as(U_AGENT, () => A.submitFraudIncident({ ...inc, evidence: [{ kind: "screenshot", fingerprint: FP(70) }] })) : null
+  const hb = A ? await as(U_STAFF, () => A.draftFraudBulletinFromCase(hc?.caseId)) : null
+  await as(U_STAFF, () => A.updateFraudBulletinDraft(hb?.bulletinId, { title: "Fake e-sign request phishing", tactic_summary: "A fake e-sign link asks for the MLS password.", claim_class: "verified_operational_pattern", confidence: "medium" }))
+  await as(U_STAFF, () => A.publishFraudBulletin(hb?.bulletinId, ctx))
+  const req = A ? await as(U_XAGENT, () => A.requestFraudBulletinCorrection(hb?.bulletinId, "The link now arrives by text message too.")) : null
+  await as(U_STAFF2, () => A.resolveFraudCorrectionRequest({ requestId: req?.requestId, outcome: "corrected", resolution: "Added the text-message channel.", changes: { tactic_summary: "A fake e-sign link, by email or text message, asks for the MLS password." } }))
+  const hist = A ? await as(U_STAFF, () => A.getFraudBulletinHistory(hb?.bulletinId)) : null
+  const H = hist?.history
+  check("staff read the history: v1 publication (who, why) and the v1→v2 correction (who, the request it answered, the kept snapshot)", hist?.ok === true && H.bulletin.version === 2 && H.revisions.some((r: any) => r.changeKind === "published" && r.version === 1 && r.actorUserId === U_STAFF && /MLS help desk/.test(r.reason)) && H.revisions.some((r: any) => r.changeKind === "corrected" && r.version === 1 && r.actorUserId === U_STAFF2 && r.correctionRequestId === req?.requestId && /asks for the MLS password/.test(JSON.stringify(r.snapshot))), hist)
+  check("…the correction request: tenant requester, resolver, when, and the resolution text", H?.corrections?.some((c: any) => c.id === req?.requestId && c.requesterUserId === U_XAGENT && c.resolvedBy === U_STAFF2 && !!c.resolvedAt && c.resolution === "Added the text-message channel." && c.supportTicketId === null))
+  check("…who published it and who linked each source case", H?.bulletin?.publishedBy === U_STAFF && H?.sources?.length === 1 && H.sources[0].linkedBy === U_STAFF && typeof H.people[U_STAFF] === "string")
+  const subj = A ? await as(U_STAFF, () => A.recordFraudSubjectCorrection({ bulletinId: hb?.bulletinId, channel: "email", statement: "Please review.", supportTicketId: u("f", 9) })) : null
+  const H2 = (await as(U_STAFF, () => A.getFraudBulletinHistory(hb?.bulletinId)))?.history
+  check("…a named subject's request shows who recorded it and its support ticket, and never a requester user", H2?.corrections?.some((c: any) => c.id === subj?.requestId && c.recordedBy === U_STAFF && c.supportTicketId === u("f", 9) && c.requesterUserId === null))
+  for (const [who, seat] of [["the reporting tenant's compliance officer", U_CO], ["the reporter", U_AGENT], ["another tenant's broker", U_X], ["marketing staff", U_MKT]] as const) {
+    const r = A ? await as(seat, () => A.getFraudBulletinHistory(hb?.bulletinId)) : null
+    check(`${who} is refused the staff history`, !!A && r?.ok === false && !JSON.stringify(r).includes(U_STAFF))
+  }
+  const op = A ? await as(U_XAGENT, () => A.openFraudBulletin(hb?.bulletinId)) : null
+  const lst = A ? await as(U_XAGENT, () => A.listFraudBulletins({})) : null
+  const tenantPayload = JSON.stringify([op, lst])
+  check("the tenant projection carries no published_by, linked_by, staff id or reporter", !!op?.ok && !!lst?.ok && !/published_by|linked_by|actor_user_id/.test(tenantPayload) && ![U_STAFF, U_STAFF2, U_AGENT, hc?.caseId].some((x) => tenantPayload.includes(String(x))))
+  const mine = A ? await as(U_XAGENT, () => A.listMyFraudBulletinReads()) : null
+  check("a seat's read state marks the bulletin IT opened, with when", mine?.ok === true && mine.reads.length === 1 && mine.reads[0].bulletinId === hb?.bulletinId && !!mine.reads[0].firstReadAt)
+  const coSeat = A ? await as(U_X, () => A.listMyFraudBulletinReads()) : null
+  const otherT = A ? await as(U_AGENT, () => A.listMyFraudBulletinReads()) : null
+  check("a co-worker of the same tenant sees none of that seat's reads; another tenant's seat reads nothing", coSeat?.ok === true && coSeat.reads.length === 0 && otherT?.ok === true && otherT.reads.length === 0)
+  check("a client or vendor seat is refused the read state", !!A && (await as(U_CONTACT, () => A.listMyFraudBulletinReads()))?.ok === false && (await as(U_VENDOR, () => A.listMyFraudBulletinReads()))?.ok === false)
+  G.__J.fault = { table: "fraud_bulletin_revisions", op: "select" }
+  const hRef = A ? await as(U_STAFF, () => A.getFraudBulletinHistory(hb?.bulletinId)) : null
+  check("a REFUSED history read is reported as a refusal, never shown as 'no history'", hRef?.ok === false && /not an empty history/.test(String(hRef.error)) && !hRef.history)
+  G.__J.fault = { table: "fraud_bulletin_reads", op: "select" }
+  const rRef = A ? await as(U_XAGENT, () => A.listMyFraudBulletinReads()) : null
+  check("a REFUSED read-state read is reported, never shown as 'nothing read'", rRef?.ok === false && !rRef.reads)
+  G.__J.fault = null
+  const nsrc = stripComments(raw(NET))
+  check("the four round-4 module vocabularies are not exported (no outside importer) and are still used inside the module", ["FRAUD_TYPOLOGY_KINDS", "FRAUD_CASE_STATUSES", "FRAUD_BULLETIN_STATUSES"].every((n) => !new RegExp(`export\\s+const\\s+${n}\\b`).test(nsrc) && (nsrc.match(new RegExp(`\\b${n}\\b`, "g")) ?? []).length >= 2) && !/export\s+type\s+FraudClaimClass\b/.test(nsrc) && (nsrc.match(/\bFraudClaimClass\b/g) ?? []).length >= 2)
 }
 
 // A crash is a failure WITH its count (a base run must still say how many checks were red before it stopped).

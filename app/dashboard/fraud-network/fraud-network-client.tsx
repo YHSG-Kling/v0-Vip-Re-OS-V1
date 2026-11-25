@@ -15,7 +15,7 @@ import {
   listFraudBulletins, openFraudBulletin, setFraudWarningSubscription, listMyFraudWarningSubscriptions, requestFraudBulletinCorrection,
   addFraudBulletinToTopicPool, getFraudNetworkMetrics, listFraudModerationQueue, addFraudCaseModerationNote, draftFraudBulletinFromCase,
   linkFraudCaseToBulletin, updateFraudBulletinDraft, publishFraudBulletin, correctFraudBulletin, takeDownFraudBulletin,
-  recordFraudSubjectCorrection, resolveFraudCorrectionRequest, uploadFraudEvidenceFile, clearFraudNameReview,
+  recordFraudSubjectCorrection, resolveFraudCorrectionRequest, uploadFraudEvidenceFile, clearFraudNameReview, getFraudBulletinHistory, listMyFraudBulletinReads,
 } from "@/app/actions/fraud-network"
 
 type Typ = { kind: string; label: string; evidenceChecklist: string[]; protectiveAction: string }
@@ -49,7 +49,9 @@ export function FraudNetworkClient(p: Props) {
   const [bulletins, setBulletins] = useState<Any[]>([])
   const [open, setOpen] = useState<Any | null>(null)
   const [correction, setCorrection] = useState("")
-  const loadBulletins = async () => { const r: Any = await listFraudBulletins({ typology: filter.typology || null, jurisdiction: filter.jurisdiction || null }); if (r.ok) setBulletins(r.bulletins); else setMsg(r.error) }
+  const [readAt, setReadAt] = useState<Record<string, string>>({})
+  const loadReads = async () => { const r: Any = await listMyFraudBulletinReads(); if (r.ok) setReadAt(Object.fromEntries(r.reads.map((x: Any) => [x.bulletinId, x.firstReadAt]))); else setMsg(r.error) }
+  const loadBulletins = async () => { const r: Any = await listFraudBulletins({ typology: filter.typology || null, jurisdiction: filter.jurisdiction || null }); if (r.ok) setBulletins(r.bulletins); else setMsg(r.error); if (p.viewer.tenant) await loadReads() }
   // ── cases / subscriptions / metrics ──
   const [cases, setCases] = useState<Any[]>([])
   const [caseView, setCaseView] = useState<Any | null>(null)
@@ -89,6 +91,7 @@ export function FraudNetworkClient(p: Props) {
 
   // ── staff ──
   const [queue, setQueue] = useState<Any | null>(null)
+  const [history, setHistory] = useState<Any>({})
   const [edit, setEdit] = useState<Any>({})
   const [pub, setPub] = useState({ attest: false, legal: false, note: "" })
   const [subject, setSubject] = useState({ bulletinId: "", channel: "support_ticket", supportTicketId: "", statement: "" })
@@ -123,9 +126,9 @@ export function FraudNetworkClient(p: Props) {
           {bulletins.length === 0 && <p className="text-sm text-muted-foreground">No published warnings match.</p>}
           {bulletins.map((b) => (
             <div key={b.id} className="rounded-md border p-3">
-              <div className="flex flex-wrap items-center gap-2"><strong>{b.title}</strong><Badge variant="outline">{human(b.claim_class)}</Badge><Badge variant="outline">{b.confidence} confidence</Badge>{b.jurisdiction && <Badge variant="outline">{b.jurisdiction}</Badge>}</div>
+              <div className="flex flex-wrap items-center gap-2"><strong>{b.title}</strong><Badge variant="outline">{human(b.claim_class)}</Badge><Badge variant="outline">{b.confidence} confidence</Badge>{b.jurisdiction && <Badge variant="outline">{b.jurisdiction}</Badge>}{p.viewer.tenant && (readAt[b.id] ? <span className="text-xs text-muted-foreground">read {String(readAt[b.id]).slice(0, 10)}</span> : <Badge>unread</Badge>)}</div>
               <p className="mt-1 text-sm">{b.tactic_summary}</p>
-              {p.viewer.tenant && <Button size="sm" variant="link" onClick={async () => { const r: Any = await openFraudBulletin(b.id); if (r.ok) setOpen(r); else setMsg(r.error) }}>Read how to verify</Button>}
+              {p.viewer.tenant && <Button size="sm" variant="link" onClick={async () => { const r: Any = await openFraudBulletin(b.id); if (r.ok) { setOpen(r); await loadReads() } else setMsg(r.error) }}>Read how to verify</Button>}
             </div>
           ))}
           {open && (
@@ -243,7 +246,15 @@ export function FraudNetworkClient(p: Props) {
             <div className="space-y-2"><b>Warnings</b>
               {queue.bulletins.map((b: Any) => (
                 <div key={b.id} className="space-y-1 rounded-md border p-2">
-                  <div className="flex flex-wrap items-center gap-2"><Badge variant="outline">{b.status}</Badge>{b.title} · {human(b.claim_class)} · v{b.version}<Button size="sm" variant="link" onClick={() => setEdit({ id: b.id, status: b.status })}>Edit</Button></div>
+                  <div className="flex flex-wrap items-center gap-2"><Badge variant="outline">{b.status}</Badge>{b.title} · {human(b.claim_class)} · v{b.version}<Button size="sm" variant="link" onClick={() => setEdit({ id: b.id, status: b.status })}>Edit</Button><Button size="sm" variant="link" onClick={async () => { const r: Any = await getFraudBulletinHistory(b.id); if (r.ok) setHistory(r.history); else setMsg(r.error) }}>History</Button></div>
+                  {history.bulletin?.id === b.id && (
+                    <div className="space-y-1 rounded-md bg-muted p-2 text-xs">
+                      <div>Published by {history.bulletin.publishedBy ? history.people[history.bulletin.publishedBy] ?? history.bulletin.publishedBy : "—"}{history.bulletin.publishedAt ? ` on ${String(history.bulletin.publishedAt).slice(0, 10)}` : ""}</div>
+                      {history.revisions.map((r: Any) => <details key={r.id}><summary>v{r.version} · {human(r.changeKind)} · {String(r.at).slice(0, 16)} · {r.actorUserId ? history.people[r.actorUserId] ?? r.actorUserId : "—"}{r.correctionRequestId ? ` · answers request ${r.correctionRequestId.slice(0, 8)}` : ""} — {r.reason}</summary><pre className="whitespace-pre-wrap">{JSON.stringify(r.snapshot, null, 1)}</pre></details>)}
+                      {history.corrections.map((c: Any) => <div key={c.id}>Correction ({human(c.requesterKind)}{c.requesterUserId ? `: ${history.people[c.requesterUserId] ?? c.requesterUserId}` : ""}) via {human(c.channel)}{c.supportTicketId ? ` · ticket ${c.supportTicketId.slice(0, 8)}` : ""} · recorded by {c.recordedBy ? history.people[c.recordedBy] ?? c.recordedBy : "the requester"} · {human(c.status)}{c.resolution ? ` — ${c.resolution}` : ""}{c.resolvedBy ? ` by ${history.people[c.resolvedBy] ?? c.resolvedBy} on ${String(c.resolvedAt).slice(0, 10)}` : ""}</div>)}
+                      {history.sources.map((s: Any) => <div key={s.caseId}>Source case {s.caseId.slice(0, 8)} linked by {s.linkedBy ? history.people[s.linkedBy] ?? s.linkedBy : "—"} on {String(s.at).slice(0, 10)}</div>)}
+                    </div>
+                  )}
                   {edit.id === b.id && (
                     <div className="space-y-1">
                       <Input placeholder="Title" onChange={(e) => setEdit({ ...edit, title: e.target.value })} />
