@@ -191,6 +191,20 @@ export async function publishFraudBulletin(bulletinId: string, ctx: { attestNoPe
   return (await net()).publishBulletin(createServiceClient(), s.actor, bulletinId, ctx)
 }
 
+/** STAFF ONLY: a bulletin's full history — revisions with their snapshots, correction requests, publisher, source linkers. */
+export async function getFraudBulletinHistory(bulletinId: string) {
+  const s = await staffSeat(false)
+  if (!s.ok) return s
+  return (await net()).bulletinHistory(createServiceClient(), s.actor, bulletinId)
+}
+
+/** THIS seat's own read state (which published warnings it has opened, and when) — so the list can mark unread ones. */
+export async function listMyFraudBulletinReads() {
+  const s = await tenantSeat()
+  if (!s.ok) return s
+  return (await net()).myBulletinReads(createServiceClient(), s.actor)
+}
+
 /** The SECOND moderator's review of a name-review hold (the moderator who triggered it cannot clear it). */
 export async function clearFraudNameReview(bulletinId: string, note: string) {
   const s = await staffSeat(true)

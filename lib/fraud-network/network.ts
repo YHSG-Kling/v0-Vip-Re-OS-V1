@@ -131,17 +131,18 @@ export const FRAUD_TYPOLOGY: readonly FraudTypology[] = Object.freeze([
     educationalTopic: "What warning signs should real estate professionals know about investment pitches?" },
 ])
 
-export const FRAUD_TYPOLOGY_KINDS: readonly string[] = FRAUD_TYPOLOGY.map((t) => t.kind)
+/** Module vocabulary (round 4: no outside importer, so not exported — FRAUD_TYPOLOGY is the shared one). */
+const FRAUD_TYPOLOGY_KINDS: readonly string[] = FRAUD_TYPOLOGY.map((t) => t.kind)
 export const FRAUD_CLAIM_CLASSES = ["unverified_report", "verified_operational_pattern", "official_public_warning"] as const
-export type FraudClaimClass = (typeof FRAUD_CLAIM_CLASSES)[number]
+type FraudClaimClass = (typeof FRAUD_CLAIM_CLASSES)[number]
 export const FRAUD_CHANNELS = ["email", "text_message", "phone_call", "video_call", "social_media", "listing_site", "e_sign_platform", "postal_mail", "in_person", "other"] as const
 export const FRAUD_EVIDENCE_KINDS = ["screenshot", "email_headers", "document", "message_export", "audio_recording", "payment_record", "listing_capture", "other"] as const
 export const FRAUD_INDICATOR_KINDS = ["email", "phone", "domain", "name", "account_last4", "url", "other"] as const
 export const FRAUD_BULLETIN_INDICATOR_KINDS = ["lookalike_domain", "phrase", "document_trait", "channel_trait", "timing"] as const
 export const FRAUD_REPORT_AGENCIES = ["police", "ic3", "ftc", "state_regulator", "other"] as const
 export const FRAUD_CONFIDENCE = ["low", "medium", "high"] as const
-export const FRAUD_CASE_STATUSES = ["submitted", "under_review", "used_for_bulletin", "closed_no_action", "withdrawn"] as const
-export const FRAUD_BULLETIN_STATUSES = ["draft", "published", "taken_down"] as const
+const FRAUD_CASE_STATUSES = ["submitted", "under_review", "used_for_bulletin", "closed_no_action", "withdrawn"] as const
+const FRAUD_BULLETIN_STATUSES = ["draft", "published", "taken_down"] as const
 
 /** Seats that may take part (read bulletins, report, subscribe): the operational admin roster plus the producing and
  *  coordinating seats — DERIVED from TENANT_ADMIN_USER_TYPES, never restated (CLAUDE.md §4). A contact or a vendor seat
@@ -161,7 +162,7 @@ const DAY_MS = 86_400_000
 export const EVIDENCE_STORAGE_NOT_ENABLED = "Evidence storage is not enabled yet. Your case keeps the file fingerprints, descriptions and report numbers; keep the original files safely until platform safety staff ask for them."
 export const VERIFICATION_TASK_SOURCE = "fraud_bulletin_match"
 
-const typologyOf = (kind: string | null | undefined): FraudTypology | null => FRAUD_TYPOLOGY.find((t) => t.kind === kind) ?? null
+const typologyOf = (kind: string | null | undefined): FraudTypology | null => (FRAUD_TYPOLOGY_KINDS.includes(String(kind)) ? FRAUD_TYPOLOGY.find((t) => t.kind === kind) ?? null : null)
 const inList = <T extends string>(list: readonly T[], v: unknown): v is T => typeof v === "string" && (list as readonly string[]).includes(v)
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const FINGERPRINT = /^[0-9a-f]{64}$/
@@ -509,7 +510,7 @@ export async function addModerationNote(svc: Svc, staff: StaffActor, caseId: str
   if (!r.ok) return r
   const text = str(note, 2000)
   if (!text) return { ok: false, error: "Write the note." }
-  if (status && !inList(["under_review", "closed_no_action"] as const, status)) return { ok: false, error: "A note can move a case to under review or closed with no action only." }
+  if (status && !inList(FRAUD_CASE_STATUSES.filter((x) => x === "under_review" || x === "closed_no_action"), status)) return { ok: false, error: "A note can move a case to under review or closed with no action only." }
   const notes = [...((r.case.moderation_notes ?? []) as unknown[]), { at: new Date().toISOString(), by: staff.userId, note: text, status: status ?? null }]
   return receipt(svc, { brokerageId: r.case.brokerage_id, action: "fraud.case.moderate", actorUserId: staff.userId, subject: { type: "fraud_incident_case", id: caseId }, reason: `moderation note${status ? ` → ${status}` : ""}` }, async () => {
     const { data, error } = await svc.from("fraud_incident_cases").update({ moderation_notes: notes, ...(status ? { status } : {}), updated_at: new Date().toISOString() }).eq("id", caseId).eq("brokerage_id", r.case.brokerage_id).select("id")
@@ -530,7 +531,7 @@ export function cleanBulletinFields(f: BulletinFields): { ok: true; value: Recor
   if (f.source_url !== undefined) out.source_url = str(f.source_url, 500) || null
   if (f.recency_date !== undefined) { const t = Date.parse(String(f.recency_date ?? "")); out.recency_date = Number.isFinite(t) ? new Date(t).toISOString().slice(0, 10) : null }
   if (f.confidence !== undefined) { if (!inList(FRAUD_CONFIDENCE, f.confidence)) return { ok: false, error: "Unknown confidence." }; out.confidence = f.confidence }
-  if (f.claim_class !== undefined) { if (!inList(FRAUD_CLAIM_CLASSES, f.claim_class)) return { ok: false, error: "Unknown claim class." }; out.claim_class = f.claim_class }
+  if (f.claim_class !== undefined) { if (!inList(FRAUD_CLAIM_CLASSES, f.claim_class)) return { ok: false, error: "Unknown claim class." }; out.claim_class = f.claim_class as FraudClaimClass }
   if (f.named_entity !== undefined) out.named_entity = str(f.named_entity, 200) || null
   if (f.named_entity_citation_url !== undefined) out.named_entity_citation_url = str(f.named_entity_citation_url, 500) || null
   if (f.red_flags !== undefined) out.red_flags = (Array.isArray(f.red_flags) ? f.red_flags : []).map((x) => str(x, 300)).filter(Boolean).slice(0, 12)
@@ -598,7 +599,7 @@ export async function linkCaseToBulletin(svc: Svc, staff: StaffActor, bulletinId
   if (!r.ok) return r
   const { data: b, error: bErr } = await svc.from("fraud_bulletins").select("id, status").eq("id", bulletinId).maybeSingle()
   if (bErr || !b) return { ok: false, error: "Bulletin not found." }
-  if ((b as any).status === "taken_down") return { ok: false, error: "A taken-down bulletin takes no new sources." }
+  if ((b as any).status === FRAUD_BULLETIN_STATUSES[2]) return { ok: false, error: "A taken-down bulletin takes no new sources." }
   const fp = (r.evidence[0]?.fingerprint_sha256 as string | undefined) ?? null
   const { error } = await svc.from("fraud_bulletin_sources").insert({ brokerage_id: r.case.brokerage_id, bulletin_id: bulletinId, case_id: caseId, evidence_fingerprint: fp, linked_by: staff.userId, created_at: new Date().toISOString() })
   if (error && error.code !== "23505") return { ok: false, error: "The case was not linked." }
@@ -1010,12 +1011,12 @@ export interface FraudNetworkMetrics {
 export async function fraudNetworkMetrics(svc: Svc, scope: { kind: "platform" } | { kind: "tenant"; brokerageId: string }): Promise<Ok<{ metrics: FraudNetworkMetrics }> | Refusal> {
   const held = fraudMetricsScope(scope)
   if (!held) return { ok: false, error: "The network metrics could not be read: no tenant is on this session." }
-  const pin = (q: any) => applyTenantScope(q, held)
+  // The scope is written AT each tenant-table query (test:tenant-scope reads it beside the query, never through a wrapper).
   const [bul, reads, tasks, corr] = await Promise.all([
     svc.from("fraud_bulletins").select("id").eq("status", "published").limit(METRIC_ROW_CAP),
-    pin(svc.from("fraud_bulletin_reads").select("id")).limit(METRIC_ROW_CAP),
-    pin(svc.from("tasks").select("id, status, created_at, completed_at").eq("source", VERIFICATION_TASK_SOURCE)).limit(METRIC_ROW_CAP),
-    pin(svc.from("fraud_correction_requests").select("id, status").in("status", ["corrected", "taken_down"])).limit(METRIC_ROW_CAP),
+    applyTenantScope(svc.from("fraud_bulletin_reads").select("id"), held).limit(METRIC_ROW_CAP),
+    applyTenantScope(svc.from("tasks").select("id, status, created_at, completed_at").eq("source", VERIFICATION_TASK_SOURCE), held).limit(METRIC_ROW_CAP),
+    applyTenantScope(svc.from("fraud_correction_requests").select("id, status").in("status", ["corrected", "taken_down"]), held).limit(METRIC_ROW_CAP),
   ])
   if (bul.error || reads.error || tasks.error || corr.error) return { ok: false, error: "The network metrics could not be read." }
   const done = ((tasks.data ?? []) as Array<{ status: string; created_at: string; completed_at: string | null }>).filter((t) => t.status === "completed" && t.completed_at)
@@ -1268,4 +1269,58 @@ function fraudMetricsScope(scope: { kind: "platform" } | { kind: "tenant"; broke
   } catch {
     return null
   }
+}
+
+// ═══ 15. THE AUDIT TRAIL, READ BACK (round 4) — a record nobody can read is not an audit trail ═════════════════════
+
+export interface BulletinHistory {
+  bulletin: { id: string; title: string; status: string; version: number; publishedBy: string | null; publishedAt: string | null }
+  revisions: Array<{ id: string; version: number; changeKind: string; reason: string; at: string; actorUserId: string | null; correctionRequestId: string | null; snapshot: unknown }>
+  corrections: Array<{ id: string; requesterKind: string; requesterUserId: string | null; channel: string; status: string; statement: string; resolution: string | null; recordedBy: string | null; resolvedBy: string | null; resolvedAt: string | null; supportTicketId: string | null; at: string }>
+  sources: Array<{ caseId: string; linkedBy: string | null; at: string }>
+  /** Display names for every user id above (platform staff and the requesting tenant seat — never a reporter). */
+  people: Record<string, string>
+}
+
+/**
+ * PLATFORM SAFETY STAFF ONLY (the caller gates with requirePlatformCapability("support")): a bulletin's full history —
+ * every revision (version, change kind, reason, when, who, the correction request it answered, the stored snapshot), every
+ * correction request (who recorded it, the tenant requester, who resolved it and when, the support ticket), who published
+ * it and who linked each source case. PACKET-7 §5.2: "every earlier version is kept in the correction history" — this is
+ * where it is read. A refused read is REPORTED, never shown as "no history". None of it is in the tenant projection.
+ */
+export async function bulletinHistory(svc: Svc, staff: StaffActor, bulletinId: string): Promise<Ok<{ history: BulletinHistory }> | Refusal> {
+  if (staff.kind !== "staff") return { ok: false, error: "Platform safety staff only." }
+  if (!UUID.test(String(bulletinId ?? ""))) return { ok: false, error: "Bulletin not found." }
+  const { data: b, error: bErr } = await svc.from("fraud_bulletins").select("id, title, status, version, published_by, published_at").eq("id", bulletinId).maybeSingle()
+  if (bErr) return { ok: false, error: "The bulletin's history could not be read right now — this is not an empty history." }
+  if (!b) return { ok: false, error: "Bulletin not found." }
+  const [rev, corr, src] = await Promise.all([
+    svc.from("fraud_bulletin_revisions").select("id, version, change_kind, reason, snapshot, correction_request_id, actor_user_id, created_at").eq("bulletin_id", bulletinId).order("created_at", { ascending: true }).limit(500),
+    svc.from("fraud_correction_requests").select("id, requester_kind, requester_user_id, channel, status, statement, resolution, recorded_by, resolved_by, resolved_at, support_ticket_id, created_at").eq("bulletin_id", bulletinId).order("created_at", { ascending: true }).limit(500),
+    svc.from("fraud_bulletin_sources").select("case_id, linked_by, created_at").eq("bulletin_id", bulletinId).order("created_at", { ascending: true }).limit(500),
+  ])
+  if (rev.error || corr.error || src.error) return { ok: false, error: "The bulletin's history could not be read right now — this is not an empty history." }
+  const revisions = ((rev.data ?? []) as any[]).map((r) => ({ id: r.id, version: Number(r.version), changeKind: r.change_kind, reason: r.reason, at: r.created_at, actorUserId: r.actor_user_id ?? null, correctionRequestId: r.correction_request_id ?? null, snapshot: r.snapshot }))
+  const corrections = ((corr.data ?? []) as any[]).map((c) => ({ id: c.id, requesterKind: c.requester_kind, requesterUserId: c.requester_kind === "tenant" ? (c.requester_user_id ?? null) : null, channel: c.channel, status: c.status, statement: c.statement, resolution: c.resolution ?? null, recordedBy: c.recorded_by ?? null, resolvedBy: c.resolved_by ?? null, resolvedAt: c.resolved_at ?? null, supportTicketId: c.support_ticket_id ?? null, at: c.created_at }))
+  const sources = ((src.data ?? []) as any[]).map((s) => ({ caseId: s.case_id, linkedBy: s.linked_by ?? null, at: s.created_at }))
+  const ids = [...new Set([(b as any).published_by, ...revisions.map((r) => r.actorUserId), ...corrections.flatMap((c) => [c.recordedBy, c.resolvedBy, c.requesterUserId]), ...sources.map((s) => s.linkedBy)].filter((x): x is string => !!x))]
+  const people: Record<string, string> = {}
+  if (ids.length) {
+    const { data: us, error: uErr } = await svc.from("users").select("id, first_name, last_name, email").in("id", ids)
+    if (uErr) return { ok: false, error: "The bulletin's history could not be read right now — this is not an empty history." }
+    for (const u of (us ?? []) as Array<{ id: string; first_name: string | null; last_name: string | null; email: string | null }>) people[u.id] = [u.first_name, u.last_name].filter(Boolean).join(" ") || u.email || u.id
+  }
+  return { ok: true, history: { bulletin: { id: (b as any).id, title: (b as any).title, status: (b as any).status, version: Number((b as any).version), publishedBy: (b as any).published_by ?? null, publishedAt: (b as any).published_at ?? null }, revisions, corrections, sources, people } }
+}
+
+/**
+ * A TENANT SEAT'S OWN read state: which bulletins THIS seat opened and when — pinned to the session user AND the session
+ * tenant, so it can never show another user's reads (and a read row carries nothing about any reporter).
+ */
+export async function myBulletinReads(svc: Svc, actor: TenantActor): Promise<Ok<{ reads: Array<{ bulletinId: string; firstReadAt: string }> }> | Refusal> {
+  if (!isParticipant(actor)) return { ok: false, error: "Your seat cannot use the fraud network." }
+  const { data, error } = await applyTenantScope(svc.from("fraud_bulletin_reads").select("bulletin_id, first_read_at").eq("user_id", actor.userId), tenantScope(actor.brokerageId, "a seat's own fraud bulletin read state")).limit(METRIC_ROW_CAP)
+  if (error) return { ok: false, error: "Your read state could not be loaded — warnings are shown without read marks." }
+  return { ok: true, reads: ((data ?? []) as Array<{ bulletin_id: string; first_read_at: string }>).map((r) => ({ bulletinId: r.bulletin_id, firstReadAt: r.first_read_at })) }
 }
