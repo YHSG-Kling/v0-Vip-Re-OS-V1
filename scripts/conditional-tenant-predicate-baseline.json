@@ -8,7 +8,6 @@
   "app/api/webhooks/linkedin/route.ts :: brokerageId": 1,
   "app/api/webhooks/sendgrid-events/route.ts :: eventBrokerageId": 2,
   "app/api/webhooks/twitter/route.ts :: brokerageId": 1,
-  "app/api/webhooks/whatsapp/route.ts :: brokerageId": 2,
   "app/portal/vendor/page.tsx :: userRow.brokerage_id": 1,
   "lib/ai/cost-tracking.ts :: params.brokerageId": 1,
   "lib/analytics/assignment-outcomes.ts :: brokerageId": 3,
