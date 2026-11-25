@@ -352,6 +352,118 @@ async function main(): Promise<void> {
     check("scripts/os-coverage-ledger-baseline.json is byte-identical to the starting commit's (no gap was added, none hidden)", base.length > 0 && cur === base, `base ${base.length} bytes · now ${cur.length} bytes`)
   }
 
+  // ══ H (round 2) ═══════════════════════════════════════════════════════════════════════════════════════════════════════
+  section("H · a REAL caller carries a decision — a held send approved by a person is released carrying that approval (red at base: no release door)")
+  {
+    const D = await mod("lib/providers/dispatch.ts")
+    const has = typeof D.approveHeldSend === "function" && typeof D.releaseApprovedSend === "function"
+    check("the approval door and the release door exist (dispatch.ts approveHeldSend / releaseApprovedSend)", has)
+    if (has) {
+      const seed = () => ({ contacts: [{ id: X, brokerage_id: B, phone: "+15555550156", email: "x@example.test", tcpa_consent: true, dnc_status: false, state: "FL" }], messages: [{ id: "m-1", brokerage_id: B, contact_id: X, direction: "inbound", created_at: new Date(now.getTime() - 60_000).toISOString() }], email_suppressions: [], deconflict_suppression_log: [], isa_outreach_log: [] })
+      const w = world(seed())
+      const propose = (cycle: string) => quiet(() => D.dispatchSms({ brokerageId: B, to: "+15555550156", message: "Following up.", contactId: X, systemSource: "ai_isa", origin: { trustClass: "model_output", cycle } }))
+      await propose("h-1")
+      const hold = w.rows().find((r) => r.action === "comms.decision.wait")
+      const ap = await D.approveHeldSend(w.client, { brokerageId: B, holdId: hold?.id, approverUserId: U, authority: "approval queue" }) as Row
+      const sendsBefore = w.rows().filter((r) => r.action === "comms.sms.send").length
+      await quiet(() => D.releaseApprovedSend(w.client, { brokerageId: B, approvalId: ap.approvalId }))
+      const sends = w.rows().filter((r) => r.action === "comms.sms.send").length
+      const prop = w.rows().find((r) => r.action === "comms.sms.propose")
+      check("POSITIVE · the approved hold is released ONCE carrying the approval: the sink ALLOWs it and the dispatcher's own send row follows", ap.ok && sends === sendsBefore + 1 && prop?.detail?.governance?.decision === "ALLOW", JSON.stringify({ ap, sends }))
+      await quiet(() => D.releaseApprovedSend(w.client, { brokerageId: B, approvalId: ap.approvalId }))
+      check("  at most once · the same approval released again sends nothing new", w.rows().filter((r) => r.action === "comms.sms.send").length === sends)
+      const foreign = await quiet(() => D.releaseApprovedSend(w.client, { brokerageId: B2, approvalId: ap.approvalId })) as Row
+      check("ANOTHER TENANT'S approval · refused before anything else is read (approval_gate)", foreign?.providerKey === "approval_gate")
+      await propose("h-2")
+      const hold2 = w.rows().filter((r) => r.action === "comms.decision.wait").find((r) => r.id !== hold?.id)
+      const ap2 = await D.approveHeldSend(w.client, { brokerageId: B, holdId: hold2?.id, approverUserId: U, authority: "approval queue", ttlMinutes: -1 }) as Row
+      const exp = await quiet(() => D.releaseApprovedSend(w.client, { brokerageId: B, approvalId: ap2.approvalId })) as Row
+      check("an EXPIRED approval · refused at the sink (decision_expired), nothing sent", exp?.providerKey === "sink_rule_gate" && w.rows().some((r) => (r.detail?.governance?.constraints?.policy ?? []).includes("sink rule: decision_expired")))
+      await propose("h-3")
+      const hold3 = w.rows().filter((r) => r.action === "comms.decision.wait").find((r) => r.id !== hold?.id && r.id !== hold2?.id)
+      const ap3 = await D.approveHeldSend(w.client, { brokerageId: B, holdId: hold3?.id, approverUserId: U, authority: "approval queue" }) as Row
+      ;(w.mem.tables.messages as Row[]).push({ id: "m-2", brokerage_id: B, contact_id: X, direction: "inbound", created_at: new Date().toISOString() })
+      const sup = await quiet(() => D.releaseApprovedSend(w.client, { brokerageId: B, approvalId: ap3.approvalId })) as Row
+      check("a SUPERSEDED approval (they wrote again after it) · refused at the sink (decision_superseded), nothing sent", sup?.providerKey === "sink_rule_gate" && w.rows().some((r) => (r.detail?.governance?.constraints?.policy ?? []).includes("sink rule: decision_superseded")))
+      const wrong = await D.approveHeldSend(w.client, { brokerageId: B2, holdId: hold3?.id, approverUserId: U, authority: "x" }) as Row
+      check("NEGATIVE · another tenant cannot approve this tenant's hold", !wrong.ok)
+    }
+  }
+
+  // ══ I (round 2) ═══════════════════════════════════════════════════════════════════════════════════════════════════════
+  section("I · origin trust stated ONCE at the shared boundaries (the kernel event processor, the verified cron scheduler)")
+  {
+    const CA = await mod("lib/kernel/causation.ts")
+    const has = typeof CA.withOriginTrust === "function" && typeof CA.enterOriginTrust === "function"
+    check("the scope carries origin trust (causation.ts withOriginTrust / enterOriginTrust)", has)
+    if (has) {
+      const w = world()
+      const act = (action: string, extra: Row = {}) => L.withActionLedger({ brokerageId: B, action, actor: { type: "manager", managerKey: "deal_coordinator" }, subject: { type: "transaction", id: X }, riskClass: "LOW_RISK_WRITE", cycle: action, ...extra }, async () => ({ ok: true }), { settle: () => ({ status: "executed", outcome: "done" }), replay: () => ({ ok: false }) }, { client: w.client })
+      await CA.withOriginTrust("verified_first_party", "kernel_event_processor", () => quiet(() => act("kernel.reaction.probe")))
+      const r1 = w.rows().find((r) => r.action === "kernel.reaction.probe")?.detail?.governance
+      check("a reaction's autonomous row takes the processor's origin trust, and SAYS where it came from", r1?.trust_class === "verified_first_party" && r1?.trust_source === "boundary:kernel_event_processor", JSON.stringify(r1 && { t: r1.trust_class, s: r1.trust_source }))
+      await CA.withOriginTrust("verified_first_party", "kernel_event_processor", () => quiet(() => act("kernel.reaction.stated", { trustClass: "model_output" })))
+      const r2 = w.rows().find((r) => r.action === "kernel.reaction.stated")?.detail?.governance
+      check("NEGATIVE · a STATED trust class always wins over the boundary's", r2?.trust_class === "model_output" && r2?.trust_source === "stated")
+      await CA.withOriginTrust("verified_first_party", "kernel_event_processor", () => quiet(() => L.withActionLedger({ brokerageId: B, action: "kernel.reaction.human", actor: { type: "user", userId: U }, subject: { type: "transaction", id: X }, cycle: "hum" }, async () => ({ ok: true }), { settle: () => ({ status: "executed", outcome: "done" }), replay: () => ({ ok: false }) }, { client: w.client })))
+      check("NEGATIVE · a person acting keeps authorized_human", w.rows().find((r) => r.action === "kernel.reaction.human")?.detail?.governance?.trust_class === "authorized_human")
+      await quiet(() => act("kernel.reaction.outside"))
+      check("NEGATIVE · outside any boundary the gap stays a named gap (null) — never a guess", w.rows().find((r) => r.action === "kernel.reaction.outside")?.detail?.governance?.trust_class === null)
+      const CR = await mod("lib/cron-auth.ts")
+      process.env.CRON_SECRET = "156m-test-secret"
+      const cronRun = async () => { const denied = CR.verifyCronAuth(new Request("http://x/api/cron/probe", { headers: { authorization: "Bearer 156m-test-secret" } })); if (denied) return "denied"; await Promise.resolve(); await quiet(() => act("intel.cron.probe")); return "ran" }
+      const ran = await cronRun()
+      const r3 = w.rows().find((r) => r.action === "intel.cron.probe")?.detail?.governance
+      check("a cron run that passed verifyCronAuth states tenant_policy for its autonomous rows (boundary:cron_scheduler)", ran === "ran" && r3?.trust_class === "tenant_policy" && r3?.trust_source === "boundary:cron_scheduler", JSON.stringify(r3 && { t: r3.trust_class, s: r3.trust_source }))
+      const badRun = async () => { const denied = CR.verifyCronAuth(new Request("http://x/api/cron/probe", { headers: { authorization: "Bearer wrong" } })); return denied ? denied.status : 0 }
+      check("NEGATIVE · a refused cron credential states nothing (401) — the boundary only speaks for a verified scheduler", (await badRun()) === 401)
+      delete process.env.CRON_SECRET
+      const ne = stripComments(raw("lib/kernel/notification-engine.ts"))
+      check("WIRING · the kernel event processor opens the boundary on its own re-entry (stripped source)", /withOriginTrust\(\s*"verified_first_party",\s*"kernel_event_processor"/.test(ne))
+      // The census split: the 'autonomous, no stated trust' sites now covered by a shared boundary, derived from code.
+      const DOORS = /\b(withActionLedger|ledgerSessionAction|ledgerToolCall|recordNonAction)\s*(?:<[^()]*?>)?\s*\(/g
+      const files = walk(["app", "lib"]).filter((f) => f !== "lib/kernel/action-ledger.ts")
+      const reactionGraph = new Set<string>(["lib/kernel/notification-engine.ts", "lib/kernel/event-reactor.ts"])
+      for (const hub of ["lib/kernel/notification-engine.ts", "lib/kernel/event-reactor.ts"]) for (const m of stripComments(raw(hub)).matchAll(/(?:from\s*|import\(\s*)["']@\/(lib\/[^"']+)["']/g)) for (const ext of [".ts", ".tsx", "/index.ts"]) if (existsSync(join(ROOT, m[1] + ext))) reactionGraph.add(m[1] + ext)
+      const sites: Array<{ f: string; cls: string }> = []
+      for (const f of files) {
+        const src = raw(f), bare = blankStrings(src), code = blankComments(src)
+        for (const m of bare.matchAll(DOORS)) {
+          if (/function\s+$/.test(bare.slice(Math.max(0, m.index! - 12), m.index!))) continue
+          let depth = 0, i = m.index! + m[0].length - 1, end = i
+          for (; i < bare.length; i++) { const ch = bare[i]; if (ch === "(") depth++; else if (ch === ")") { depth--; if (depth === 0) { end = i; break } } }
+          const arg = code.slice(m.index!, end).slice(0, 4000)
+          const actor = /actor:\s*\{\s*type:\s*"(\w+)"/.exec(arg)?.[1] ?? "dynamic"
+          if (!(actor === "manager" || actor === "system") || /\btrustClass\s*:|\bgovernance\s*:/.test(arg)) continue
+          const cls = /^app\/api\/cron\//.test(f) && /\bverifyCronAuth\(/.test(code) ? "cron_scheduler (boundary)"
+            : reactionGraph.has(f) ? "kernel_event_processor (boundary)"
+            : /^app\/api\/(webhooks|voice)\//.test(f) ? "remains: provider-signed webhook — each verifies its own signature; no shared boundary to state it once"
+            : /^app\/(actions|api)\//.test(f) ? "remains: a request door acting for a visitor / provider event — its trust is that door's to state"
+            : "remains: a library function — covered at run time when called under a cron or a reaction, not provable statically"
+          sites.push({ f, cls })
+        }
+      }
+      const by = new Map<string, number>()
+      for (const s of sites) by.set(s.cls, (by.get(s.cls) ?? 0) + 1)
+      const covered = sites.filter((s) => /\(boundary\)$/.test(s.cls)).length
+      console.log(`  · TRUST-CLASS DENOMINATOR: ${sites.length} autonomous ledger-door call sites state no trust class; ${covered} sit in a shared boundary that now states it (statically proven), ${sites.length - covered} remain:`)
+      for (const [k, v] of [...by.entries()].sort((a, b) => b[1] - a[1])) console.log(`      ${v} × ${k}`)
+      check(`the census derives the split (denominator ${sites.length} > 0; ${covered} covered by a boundary)`, sites.length > 0 && covered > 0)
+    }
+  }
+
+  // ══ J (round 2) ═══════════════════════════════════════════════════════════════════════════════════════════════════════
+  section("J · lane 156N's request — a CAMPAIGN text never rides a signed representation as consent (refused at dispatch); a servicing text does")
+  {
+    const D = await mod("lib/providers/dispatch.ts")
+    const seed = () => ({ contacts: [{ id: X, brokerage_id: B, phone: "+15555550157", tcpa_consent: false, dnc_status: false, state: "FL" }], transactions: [{ id: "tx-j", brokerage_id: B, contact_id: X, buyer_contact_id: null, seller_contact_id: null, status: "active", deleted_at: null }], deconflict_suppression_log: [], isa_outreach_log: [], email_suppressions: [], listing_agreements: [], buyer_broker_agreements: [], offers: [] })
+    const sms = (purpose: string) => { world(seed()); return quiet(() => D.dispatchSms({ brokerageId: B, to: "+15555550157", message: "A note for you.", contactId: X, channelPurpose: purpose })) as Promise<Row> }
+    const campaign = await sms("campaign")
+    const servicing = await sms("transactional")
+    check("a CAMPAIGN text to a contact with an active representation and no TCPA consent is refused at the consent gate", campaign?.success === false && campaign?.providerKey === "compliance_gate", JSON.stringify(campaign))
+    check("  NEGATIVE CONTROL · a SERVICING (transactional) text to the same contact passes the consent gate (refused, if at all, by a later gate)", servicing?.providerKey !== "compliance_gate", JSON.stringify(servicing))
+  }
+
   console.log("\n BLIND SPOTS: SIMULATED throughout (in-memory PostgREST, fetch throws, counted model seam). The superseded check needs both the decision and the door to name a fact's version; the office check needs both to name an office; the census reads literal actor / trust spellings (a context built elsewhere reads 'dynamic'); the decider finder reads literal `cls:` / `conflictClass:` sites (a class computed elsewhere is not seen until it is spelled).")
   console.log(`\nGUARD_RESULT wave156-m: ${pass} passed, ${fail} failed`)
   if (fail > 0) { console.log(` failed: ${failures.join(" | ")}`); process.exit(1) }
