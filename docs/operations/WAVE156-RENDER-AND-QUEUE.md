@@ -43,15 +43,15 @@ Drained one claim per tick (the cron's real rhythm):
 
 | Measure | Oldest-first (before) | Fair pick (after) |
 |---|---|---|
-| ticks until the solo agent's render is claimed | MEASURE_SOLO_BEFORE | MEASURE_SOLO_AFTER |
-| ticks until the team's first render is claimed | MEASURE_TEAM_BEFORE | MEASURE_TEAM_AFTER |
+| ticks until the solo agent's render is claimed | 96 | 2 |
+| ticks until the team's first render is claimed | 90 | 1 |
 | rows claimed / rows queued | 97 / 97 | 97 / 97 |
 | cross-tenant claims | 0 | 0 |
 | office desks inside the big tenant, first 6 claims | — | each desk twice |
 | two ticks racing for one row | — | one winner |
 | a dead claim under two concurrent sweeps | — | recovered once, requeued once |
 
-Throughput is unchanged (one render per tick); only the order changed.
+Throughput is unchanged (one render per tick); only the order changed. "Ticks before first claim" counts claims made before that tenant's first (0-based). Paid-door census (§C): 28 egress sites to classified vendors, 15 billable, 16 billable doors — 4 through the composition, 12 named.
 
 ## 4. What is still isolated today, and what a separate render worker would need (owner-held)
 

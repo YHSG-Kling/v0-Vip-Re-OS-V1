@@ -39,7 +39,9 @@
  * process (Promise.all) — not two Postgres sessions. Offices are modelled as team scopes: the render row has no office
  * column. §C finds a door by the NAME of its enclosing function and follows transports ONE level by name (didPost, didRequest,
  * the SDK adapter's exports); a call through a computed name, a class method or a second hop is not seen. Billability is
- * judged per site by method + path (stated); a vendor's own pricing page is not read here. §D drives the doors, not their
+ * judged per site by method + path (stated); a vendor's own pricing page is not read here. Egress through a vendor SDK other
+ * than the ElevenLabs adapter (exa-js in lib/content-intel/exa-scraper.ts) and a gateway call whose method is not a literal
+ * are not seen; a door is keyed by its TOP-LEVEL enclosing function, so two egresses in one function count as one door. §D drives the doors, not their
  * callers. The research door gates TENANT-attributed searches only; platform-paid research has no tenant ceiling (owner-held).
  */
 import { registerHooks } from "node:module"
@@ -113,12 +115,12 @@ registerHooks({
   },
 })
 const load = async (p: string): Promise<any> => { try { return await import(pathToFileURL(join(ROOT, p)).href) } catch (e) { console.log(`  (load ${p} failed: ${(e as Error).message.slice(0, 200)})`); return {} } }
-const quiet = async <X,>(fn: () => Promise<X>): Promise<X> => {
+const quiet = async (fn: () => Promise<any>): Promise<any> => {
   const w = console.warn, e = console.error, l = console.log, i = console.info
   console.warn = () => {}; console.error = () => {}; console.log = () => {}; console.info = () => {}
   try { return await fn() } finally { console.warn = w; console.error = e; console.log = l; console.info = i }
 }
-async function drive<X>(fn: () => Promise<X>): Promise<{ r: X | undefined; threw: string | null }> {
+async function drive(fn: () => Promise<any>): Promise<{ r: any; threw: string | null }> {
   try { return { r: await quiet(fn), threw: null } } catch (e) { return { r: undefined, threw: (e as Error)?.message ?? String(e) } }
 }
 
@@ -242,7 +244,7 @@ async function main() {
     const s = await quiet(() => playable.resolvePlayableVideo({ videoProjectId: "p-script" }, db))
     const r = await quiet(() => playable.resolvePlayableVideo({ renderId: "r-rendering" }, db))
     const d = await quiet(() => playable.resolvePlayableVideo({ videoProjectId: "p-done" }, db))
-    check("a project holding only a SCRIPT never resolves `ready`", s?.state === "none", s)
+    check("a project holding only a SCRIPT never resolves `ready` (it reads `in_progress` / `none` — nothing to send)", !!s?.state && s.state !== "ready", s)
     check("a render still `rendering` resolves `in_progress`, never `ready`", r?.state === "in_progress", r)
     check("POSITIVE CONTROL: a completed project with a hosted URL resolves `ready`", d?.state === "ready", d)
     const variant = await load("lib/video/media-variant-contract.ts")
@@ -276,7 +278,8 @@ async function main() {
   type Site = { file: string; fn: string; vendor: string; family: string; method: string; path: string; line: number; kind: "gateway" | "fetch" | "sdk" }
   const enclosing = (src: string, idx: number): string => {
     const head = src.slice(0, idx)
-    const re = /(?:export\s+)?(?:async\s+)?function\s+([A-Za-z0-9_$]+)\s*[<(]|(?:export\s+)?(?:const|let)\s+([A-Za-z0-9_$]+)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*(?::[^=]*)?=>|^export\s+async\s+function\s+(GET|POST|PUT|PATCH|DELETE)/gm
+    // TOP-LEVEL declarations only (column 0): an inner arrow / helper is part of the door that encloses it.
+    const re = /^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z0-9_$]+)\s*[<(]|^(?:export\s+)?(?:const|let)\s+([A-Za-z0-9_$]+)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*(?::[^=]*)?=>|^export\s+async\s+function\s+(GET|POST|PUT|PATCH|DELETE)/gm
     let m: RegExpExecArray | null, name = "(module)"
     while ((m = re.exec(head))) name = m[1] ?? m[2] ?? m[3] ?? name
     return name
@@ -290,7 +293,7 @@ async function main() {
       const body = m[1]
       const conn = /connector:\s*["'`]([a-z_\-]+)["'`]/.exec(body)?.[1]
       if (!conn || !FAMILY[conn]) continue
-      sites.push({ file: f, fn: enclosing(s, m.index!), vendor: conn, family: FAMILY[conn], method: /method:\s*["'`](\w+)["'`]/.exec(body)?.[1] ?? "GET", path: (/path:\s*([^,\n]+)/.exec(body)?.[1] ?? "").trim(), line: s.slice(0, m.index).split("\n").length, kind: "gateway" })
+      sites.push({ file: f, fn: enclosing(s, m.index!), vendor: conn, family: conn === "vercel-ai-gateway" && /transcription/.test(body) ? "voice" : FAMILY[conn], method: /method:\s*["'`](\w+)["'`]/.exec(body)?.[1] ?? "GET", path: (/path:\s*([^,\n]+)/.exec(body)?.[1] ?? "").trim(), line: s.slice(0, m.index).split("\n").length, kind: "gateway" })
     }
     for (const m of s.matchAll(/fetch\(\s*[`"']https:\/\/([a-z0-9.\-]+)([^`"']*)[`"']\s*(?:,\s*\{([\s\S]{0,200}?)method:\s*["'](\w+)["'])?/g)) {
       const vendor = HOSTS[m[1]]
@@ -311,11 +314,13 @@ async function main() {
     [/^"?\/agents|`\/agents\//, "a D-ID agent definition / client key — billed per streamed minute on the session, not per call"],
   ]
   const billable = (x: Site) => x.method !== "GET" && !NOT_BILLED.some(([re]) => re.test(x.path))
+  // A transport's method is its caller's (didRequest takes `init.method ?? "GET"`), so its site is expanded regardless.
+  const TRANSPORT_FNS = new Set(["didPost", "didRequest"])
   // A transport (a private wrapper every caller goes through) is attributed to its CALLERS, one hop, by name.
   const TRANSPORTS: Record<string, string> = { didPost: "lib/did/index.ts", didRequest: "lib/did/gateway.ts" }
   type Door = { file: string; fn: string; vendor: string; family: string; via: string }
   const doors: Door[] = []
-  for (const x of sites.filter(billable)) {
+  for (const x of sites.filter((y) => billable(y) || (TRANSPORT_FNS.has(y.fn)))) {
     const t = TRANSPORTS[x.fn]
     if (t && x.file === t) {
       for (const f of files) {
@@ -323,8 +328,11 @@ async function main() {
         for (const m of s.matchAll(new RegExp(`\\b${x.fn}\\s*(?:<[^>]*>)?\\(\\s*([^,)]*)`, "g"))) {
           if (/function\s+$/.test(s.slice(Math.max(0, m.index! - 20), m.index))) continue
           const arg = m[1]
-          if (/consents|\/agents|statusPath|\$\{engine\}|\/talks\/\$|\/scenes\/avatars\/\$/.test(arg) && !/scenes\/avatars"/.test(arg)) continue
-          if (/didRequest/.test(x.fn) && /method:\s*["']GET/.test(s.slice(m.index!, m.index! + 300))) continue
+          // The caller decides billability: a POST that is not a provisioning path (NOT_BILLED) renders; a call with no
+          // method (didRequest's GET default) or an explicit GET / PATCH is a read or a definition update.
+          const opts = s.slice(m.index!, m.index! + 400)
+          const method = x.fn === "didPost" ? "POST" : (/method:\s*["'](\w+)["']/.exec(opts)?.[1] ?? "GET")
+          if (method !== "POST" || NOT_BILLED.some(([re]) => re.test(arg))) continue
           doors.push({ file: f, fn: enclosing(s, m.index!), vendor: x.vendor, family: x.family, via: `${x.fn} ${arg.trim().slice(0, 40)}` })
         }
       }
@@ -349,23 +357,18 @@ async function main() {
   })
   // NAMED — billable doors that do not reach the composition yet, each with the reason it was not converted in this lane.
   const NAMED: Record<string, string> = {
-    "app/api/did/create-avatar/route.ts#POST": "budget-checked inline (checkVendorBudget + checkUsageCap) before the avatar scene is created; no receipt — avatar creation is a one-time setup, converting it is follow-on work",
-    "app/api/did/generate-video/route.ts#POST": "the legacy D-ID route: no budget, no receipt, no booking; its callers are the agent's own manual video tools — converting it needs its tenant resolution read first (follow-on, reported)",
-    "app/actions/external-services.ts#generateEducationVideo": "the education-video D-ID submit: no budget, no booking (reported; follow-on)",
-    "lib/providers/dispatch.ts#sendAvatarVideoEmail": "dispatch's avatar-video leg — lane 156M owns lib/providers/dispatch.ts; its own budget pre-flight covers the send, not this render (integrator request)",
-    "lib/providers/dispatch.ts#dispatchAvatarVideo": "dispatch's avatar-video leg — lane 156M owns lib/providers/dispatch.ts (integrator request)",
-    "app/actions/podcast-generation.ts#synthesizeWithElevenLabs": "the podcast TTS leg calls the SDK adapter directly with no budget and no booking — should call synthesizeSpeech (follow-on, reported)",
-    "app/api/elevenlabs/voice-clone/route.ts#POST": "instant voice clone creation — included in the ElevenLabs plan, not a per-character charge; no receipt (reported)",
-    "lib/repurpose/transcribe-core.ts#transcribeWithScribe": "speech-to-text: budget-checked by its caller (transcribe.ts) and metered; no receipt (reported)",
-    "lib/repurpose/transcribe-core.ts#transcribeWithGateway": "speech-to-text through the AI gateway: budget-checked by its caller and metered; no receipt (reported)",
-    "lib/repurpose/transcribe-core.ts#fetchMediaBuffer": "a media download inside transcription (classified by its connector) — not a render (reported)",
-    "lib/providers/simli/client.ts#mintSimliSessionToken": "a live-avatar session token — Simli bills per session minute; no budget pre-flight on session start (reported; owner-held pricing)",
+    "app/api/did/create-avatar/route.ts#POST": "budget-checked inline (checkVendorBudget + checkUsageCap) before the avatar scene is created; no receipt — one-time avatar setup, conversion is follow-on work",
+    "app/api/did/generate-video/route.ts#POST": "the legacy D-ID route: no budget, no receipt, no booking; converting it needs its tenant resolution read first (follow-on, reported)",
+    "lib/providers/dispatch.ts#dispatchVideoViaDID": "dispatch's avatar-video leg (TTS + D-ID submit) — lane 156M owns lib/providers/dispatch.ts; its egress budget pre-flight covers the send, not this render (integrator request)",
+    "app/actions/podcast-generation.ts#synthesizeVoice": "the podcast TTS leg calls the ElevenLabs SDK adapter directly — no budget, no booking; it should call synthesizeSpeech (follow-on, reported)",
+    "app/api/elevenlabs/voice-clone/route.ts#POST": "instant voice clone creation — plan-included, not a per-character charge; no receipt (reported)",
+    "lib/repurpose/transcribe-core.ts#transcribeWithScribe": "speech-to-text: budget-checked by its caller (lib/repurpose/transcribe.ts) and metered; no receipt (reported)",
+    "lib/repurpose/transcribe-core.ts#transcribeWithGatewayWhisper": "speech-to-text through the AI gateway: budget-checked by its caller and metered; no receipt (reported)",
+    "lib/providers/simli/client.ts#mintSimliSessionToken": "a live-avatar session token — Simli bills per session minute; no budget pre-flight on session start (reported; pricing owner-held)",
     "lib/providers/simli/faces.ts#ensureSimliFaceForAgent": "one-time face creation per agent (reported)",
-    "lib/external/tavily-client.ts#tavilySearch": "the Tavily transport — its tenant-attributed caller (lib/ai/web-search.ts webSearch) is the door; platform-paid research has no tenant ceiling (owner-held)",
-    "lib/content-intel/exa-scraper.ts#exaSearch": "the Exa transport — same as Tavily: webSearch is the tenant door; platform-paid research is owner-held",
-    "lib/content-intel/newsapi-ai.ts#searchNewsApiAiArticles": "platform-paid news research — no tenant ceiling applies (owner-held research cap)",
-    "lib/ai/image-generation.ts#callGptImage1Gateway": "the gpt-image-1 transport inside generateImage — generateImage is the door",
-    "lib/ai/image-generation.ts#generateImageBehindTheDoor": "the DALL-E transport inside generateImage — generateImage is the door",
+    "lib/external/tavily-client.ts#tavilySearch": "the Tavily transport — its tenant-attributed caller lib/ai/web-search.ts webSearch is the door (driven in §D); platform-paid research has no tenant ceiling (owner-held)",
+    "lib/ai/image-generation.ts#callGptImage1Gateway": "the gpt-image-1 transport inside generateImage — generateImage is the door (driven in §D)",
+    "lib/ai/image-generation.ts#generateImageBehindTheDoor": "the DALL-E transport inside generateImage — generateImage is the door (driven in §D)",
   }
   console.log(`  census: ${sites.length} egress sites to classified vendors (${sites.filter(billable).length} billable), ${uniq.size} billable doors`)
   for (const v of verdicts) console.log(`    ${v.verdict.padEnd(11)} ${v.family.padEnd(8)} ${v.vendor.padEnd(18)} ${v.file}#${v.fn}  [${v.via}]`)
