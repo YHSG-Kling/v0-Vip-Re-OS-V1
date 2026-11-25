@@ -277,7 +277,9 @@ function newWorld(over: Partial<World> = {}): World {
   getRentcastAvmAndComps: async (args: any) => {
     W.rentcastCalls.push(args)
     const answer = args?.maxRadiusMiles != null && W.rentcastWide ? W.rentcastWide : W.rentcast
-    return { ...answer, eligibility: W.eligibility }
+    // wave 156 (156I r5): the real read now SAYS whether it billed (paidRequest); a stub that answered was a billed request
+    // unless it answered with a provider error (RentCast does not bill an error) — the CMA books cost from this field only.
+    return { ...answer, eligibility: W.eligibility, paidRequest: answer?.avmUnavailableReason !== "provider_error" }
   },
   logVendorUsage: async (row: any) => { W.ledger.push(row); return null },
   meterVendorSpend: async (row: any) => { W.ledger.push(row); return true },
