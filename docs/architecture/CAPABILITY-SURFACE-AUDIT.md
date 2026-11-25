@@ -6,7 +6,7 @@ Owner ruling 18 (2026-10-29): *"All capabilities at all levels … Validate each
 
 **Verdicts.** BUILT — the screen reaches a data path. PARTIAL — it reaches one and says honestly that a part is not available / not configured. UNWIRED — interactive controls, no data path. STATIC — informational, no controls, no data (not a defect). REDIRECT — an alias that lands elsewhere. MISSING — no page serves the href. Dead CONTROLS inside a BUILT screen are `test:ui-wiring-census`'s (hard zero on every journey); page role gates are `test:page-role-gate-roster`'s; colour contrast is `test:ui-palette-contrast`'s.
 
-**Totals:** 836 role-surfaces — BUILT 750 · PARTIAL 71 · UNWIRED 0 · STATIC 14 · REDIRECT 1 · MISSING 0. Public pages: 39; contact-portal pages: 31. Expected-coverage gaps: 0.
+**Totals:** 843 role-surfaces — BUILT 757 · PARTIAL 71 · UNWIRED 0 · STATIC 14 · REDIRECT 1 · MISSING 0. Public pages: 39; contact-portal pages: 31. Expected-coverage gaps: 0.
 
 ## Role × domain (B = BUILT, P = PARTIAL, U = UNWIRED, S = STATIC, R = REDIRECT, M = MISSING; **GAP** = ruling 18 expects this level here and no surface exists; · = not expected, none)
 
@@ -31,8 +31,9 @@ Owner ruling 18 (2026-10-29): *"All capabilities at all levels … Validate each
 | operations · managers · reports | B30 P3 R1 | · | B32 P5 | B7 P2 | B12 P2 | · | · | · | · | P1 |
 | settings · people · support | B6 | · | B27 P4 S1 | B14 | B21 P2 | B3 | B4 | B5 P1 | B2 | B3 |
 | (journey) agents & vendors | · | · | B1 | B1 | B1 | B1 | · | · | · | S1 |
+| (journey) compliance | B1 | · | B1 | B1 | B1 | B1 | B1 | B1 | · | · |
 | (journey) transactions & closing | · | · | · | · | · | · | · | · | · | S1 |
-| (unclassified) | · | B2 | B1 | · | B1 | · | · | · | · | · |
+| (unclassified) | · | B2 | · | · | · | · | · | · | · | · |
 
 ## Expected-coverage gaps (ruling 18) and their owners
 
@@ -323,10 +324,11 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 
 ## Journey table — role × domain × surface × the action behind it × verdict
 
-### platform staff (72)
+### platform staff (73)
 
 | domain | surface | page | action behind it | verdict |
 |---|---|---|---|---|
+| (journey) compliance | Fraud & Trust Network `/dashboard/fraud-network` | `app/dashboard/fraud-network/page.tsx` | app/actions/fraud-network.ts (getFraudNetworkViewer, submitFraudIncident, listMyFraudCases, …) · lib/fraud-network/network.ts | BUILT |
 | agent referral · recruiting · agreements · gamification | ↳ from More `/dashboard/recruiting-roi` | `app/dashboard/recruiting-roi/page.tsx` | app/actions/recruiting-roi.ts (getRecruitingROISummary, getRecruitROIByRecruit, getRecruitingCostBreakdown, …) · app/actions/settings/recruiting-pitch.ts (getRecruitingPitch, setRecruitingPitch) | BUILT |
 | agent referral · recruiting · agreements · gamification | ↳ from Billing Administration `/dashboard/superadmin/affiliates` | `app/dashboard/superadmin/affiliates/page.tsx` | app/dashboard/superadmin/affiliates/actions.ts (listAffiliatesAction, createAffiliateAction, updateAffiliateAction, …) · lib/platform/require-capability.ts | BUILT |
 | compliance · approvals | AI Audit `/dashboard/admin/ai-audit` | `app/dashboard/admin/ai-audit/page.tsx` | app/actions/flight-recorder.ts (getEntityCausalChain, replayTenantDecisions, getTenantExperimentPolicy, …) | BUILT |
@@ -449,7 +451,7 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | domain | surface | page | action behind it | verdict |
 |---|---|---|---|---|
 | (journey) agents & vendors | ↳ from Twin Studio `/dashboard/agent/ai-identity` | `app/dashboard/agent/ai-identity/page.tsx` | app/actions/ai-identity.ts (getAIIdentityProfile, getParentAIIdentityProfile, saveAIIdentityProfile, …) · lib/auth/resolve-user-role.ts | BUILT |
-| (unclassified) | ↳ from Help & Support `/dashboard/fraud-network` | `app/dashboard/fraud-network/page.tsx` | app/actions/fraud-network.ts (getFraudNetworkViewer, submitFraudIncident, listMyFraudCases, …) · lib/fraud-network/network.ts | BUILT |
+| (journey) compliance | Fraud & Trust Network `/dashboard/fraud-network` | `app/dashboard/fraud-network/page.tsx` | app/actions/fraud-network.ts (getFraudNetworkViewer, submitFraudIncident, listMyFraudCases, …) · lib/fraud-network/network.ts | BUILT |
 | agent referral · recruiting · agreements · gamification | ↳ from Leaderboard `/dashboard/challenges` | `app/dashboard/challenges/page.tsx` | app/actions/challenges.ts (getChallenges, createChallenge, enrollInChallenge, …) | BUILT |
 | agent referral · recruiting · agreements · gamification | ↳ from Commissions `/dashboard/financials/agreements` | `app/dashboard/financials/agreements/page.tsx` | app/actions/commission-policy/agreements.ts (listAgentAgreementGovernanceAction, recordAgreementEffectiveDateAction, recordAgentAgreementAmendmentAction, …) · app/actions/commission-agreement-history.ts (listCommissionAgreementHistoryAction) | BUILT |
 | agent referral · recruiting · agreements · gamification | Gift Studio `/dashboard/gifts` | `app/dashboard/gifts/page.tsx` | app/actions/gift-studio.ts (getGiftStudioAction, orderGiftSelectionAction, GiftableClosing) | BUILT |
@@ -673,11 +675,12 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | website · landing pages · lead magnets | ↳ from Settings `/settings/branding` | `app/settings/branding/page.tsx` | app/actions/custom-domains.ts (getCustomDomainsPanel, addCustomDomainAction, checkCustomDomainStatusAction, …) · app/actions/settings/business-registration.ts (getBusinessRegistrationAction, saveBusinessRegistrationAction, BusinessRegistrationView) | BUILT |
 | website · landing pages · lead magnets | ↳ from Video Pages `/v/x` | `app/v/[slug]/page.tsx` | app/actions/listing-video.ts (trackVideoView) · lib/kernel/agent-identity.ts | BUILT |
 
-### teams · team leads (123)
+### teams · team leads (124)
 
 | domain | surface | page | action behind it | verdict |
 |---|---|---|---|---|
 | (journey) agents & vendors | ↳ from Twin Studio `/dashboard/agent/ai-identity` | `app/dashboard/agent/ai-identity/page.tsx` | app/actions/ai-identity.ts (getAIIdentityProfile, getParentAIIdentityProfile, saveAIIdentityProfile, …) · lib/auth/resolve-user-role.ts | BUILT |
+| (journey) compliance | Fraud & Trust Network `/dashboard/fraud-network` | `app/dashboard/fraud-network/page.tsx` | app/actions/fraud-network.ts (getFraudNetworkViewer, submitFraudIncident, listMyFraudCases, …) · lib/fraud-network/network.ts | BUILT |
 | agent referral · recruiting · agreements · gamification | ↳ from Leaderboard `/dashboard/challenges` | `app/dashboard/challenges/page.tsx` | app/actions/challenges.ts (getChallenges, createChallenge, enrollInChallenge, …) | BUILT |
 | agent referral · recruiting · agreements · gamification | Gift Studio `/dashboard/gifts` | `app/dashboard/gifts/page.tsx` | app/actions/gift-studio.ts (getGiftStudioAction, orderGiftSelectionAction, GiftableClosing) | BUILT |
 | agent referral · recruiting · agreements · gamification | Leaderboard `/dashboard/motivation` | `app/dashboard/motivation/page.tsx` | app/actions/gamification.ts (getPointsCorrectionRoster, getAgentBadges, getAgentPointsAndTier, …) · app/actions/challenges.ts (getChallenges) | BUILT |
@@ -806,7 +809,7 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | domain | surface | page | action behind it | verdict |
 |---|---|---|---|---|
 | (journey) agents & vendors | ↳ from Twin Studio `/dashboard/agent/ai-identity` | `app/dashboard/agent/ai-identity/page.tsx` | app/actions/ai-identity.ts (getAIIdentityProfile, getParentAIIdentityProfile, saveAIIdentityProfile, …) · lib/auth/resolve-user-role.ts | BUILT |
-| (unclassified) | Fraud & Trust Network `/dashboard/fraud-network` | `app/dashboard/fraud-network/page.tsx` | app/actions/fraud-network.ts (getFraudNetworkViewer, submitFraudIncident, listMyFraudCases, …) · lib/fraud-network/network.ts | BUILT |
+| (journey) compliance | Fraud & Trust Network `/dashboard/fraud-network` | `app/dashboard/fraud-network/page.tsx` | app/actions/fraud-network.ts (getFraudNetworkViewer, submitFraudIncident, listMyFraudCases, …) · lib/fraud-network/network.ts | BUILT |
 | agent referral · recruiting · agreements · gamification | First Deal `/dashboard/agent/first-deal` | `app/dashboard/agent/first-deal/page.tsx` | server-side read in the page tree | BUILT |
 | agent referral · recruiting · agreements · gamification | Refer an Agent `/dashboard/agent/refer` | `app/dashboard/agent/refer/page.tsx` | server-side read in the page tree | BUILT |
 | agent referral · recruiting · agreements · gamification | Referral Network `/dashboard/agent/referral-network` | `app/dashboard/agent/referral-network/page.tsx` | app/actions/referrals/agent-referral-actions.ts (getReferralNetwork, createAgentReferralAction) · lib/kernel/resolve-user-office.ts | BUILT |
@@ -985,11 +988,12 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | website · landing pages · lead magnets | ↳ from Ad Campaigns `/pricing` | `app/pricing/page.tsx` | lib/platform/public-tiers.ts · lib/platform/product-brand.ts | BUILT |
 | website · landing pages · lead magnets | ↳ from Video Pages `/v/x` | `app/v/[slug]/page.tsx` | app/actions/listing-video.ts (trackVideoView) · lib/kernel/agent-identity.ts | BUILT |
 
-### ISA (32)
+### ISA (33)
 
 | domain | surface | page | action behind it | verdict |
 |---|---|---|---|---|
 | (journey) agents & vendors | ↳ from Twin Studio `/dashboard/agent/ai-identity` | `app/dashboard/agent/ai-identity/page.tsx` | app/actions/ai-identity.ts (getAIIdentityProfile, getParentAIIdentityProfile, saveAIIdentityProfile, …) · lib/auth/resolve-user-role.ts | BUILT |
+| (journey) compliance | Fraud & Trust Network `/dashboard/fraud-network` | `app/dashboard/fraud-network/page.tsx` | app/actions/fraud-network.ts (getFraudNetworkViewer, submitFraudIncident, listMyFraudCases, …) · lib/fraud-network/network.ts | BUILT |
 | CRM · contacts · lifetime | ↳ from AI-ISA Console `/crm` | `app/crm/page.tsx` | app/actions/contacts.ts (getContacts, getContactById, createContact, …) · app/actions/buyer-financial.ts (loadFinancialProfile, upsertFinancialProfile, markFinanciallyVerified, …) | PARTIAL |
 | CRM · contacts · lifetime | ↳ from AI-ISA Console `/crm/contacts/x` | `app/crm/contacts/[contactId]/page.tsx` | app/actions/buyer-lifecycle-core.ts (getBuyerEnabledGates, checkBuyerOfferEligibility, getCurrentBuyerState, …) · app/actions/workflow-orchestrator.ts (getRunsForContact, getRunDetail, approveChainStep, …) | BUILT |
 | dedup · enrichment · behavioural intent | Movement Signals `/dashboard/intelligence/movement-signals` | `app/dashboard/intelligence/movement-signals/page.tsx` | app/actions/movement-signals.ts (listMovementSignalsAction, markMovementSignalOutcomeAction, recordStatedDateAction) | BUILT |
@@ -1022,10 +1026,11 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | settings · people · support | Settings `/dashboard/settings/general` | `app/dashboard/settings/general/page.tsx` (redirects → app/settings/general/page.tsx) | app/actions/settings/brokerage-identity.ts (getBrokerageIdentity, BrokerageIdentity, updateBrokerageIdentity) · app/actions/settings/brokerage-affiliation.ts (getBrokerageAffiliationPanelAction, declareBrokerageAffiliationAction, AffiliationPanel) | BUILT |
 | settings · people · support | Twin Studio `/dashboard/settings/twin-studio` | `app/dashboard/settings/twin-studio/page.tsx` | app/actions/twin-studio.ts (listMyTwins, listPendingApprovals, setDefaultTwin, …) · app/actions/settings/brokerage-column-settings.ts (getLiveFaceProviderSettingAction, saveLiveFaceProviderOrderAction) | BUILT |
 
-### transaction coordinators (44)
+### transaction coordinators (45)
 
 | domain | surface | page | action behind it | verdict |
 |---|---|---|---|---|
+| (journey) compliance | Fraud & Trust Network `/dashboard/fraud-network` | `app/dashboard/fraud-network/page.tsx` | app/actions/fraud-network.ts (getFraudNetworkViewer, submitFraudIncident, listMyFraudCases, …) · lib/fraud-network/network.ts | BUILT |
 | compliance · approvals | Violations `/compliance/violations` | `app/compliance/violations/page.tsx` | app/actions/compliance-monitoring.ts (getComplianceViolations) · fetch /api/compliance/flags | BUILT |
 | compliance · approvals | ↳ from Violations `/dashboard/compliance` | `app/dashboard/compliance/page.tsx` | app/actions/compliance-monitoring.ts (getPendingApprovals, getComplianceViolations, generateComplianceReport, …) · app/actions/transaction-compliance.ts (getAllTransactionComplianceLogs, updateComplianceCheck, batchPassComplianceChecks, …) | BUILT |
 | compliance · approvals | Compliance Queue `/dashboard/compliance/queue` | `app/dashboard/compliance/queue/page.tsx` | app/actions/compliance/representation-review.ts (listRepresentationReviewQueueAction, getRepresentationReviewAction, recordRepresentationReview, …) · app/actions/compliance/dashboard.ts (getComplianceDashboard, resolveComplianceFlagAction) | BUILT |
@@ -1071,10 +1076,11 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | website · landing pages · lead magnets | ↳ from Marketing Studio `/lm/x${c.isActive ` | `app/lm/[slug]/page.tsx` | app/actions/calculator-artifacts.ts (computeCalculatorArtifactAction, optInCalculatorArtifactAction, recordCalculatorOpenAction) · app/actions/lead-magnet-capture.ts (captureFormSubmissionAction) | BUILT |
 | website · landing pages · lead magnets | ↳ from Video Pages `/v/x` | `app/v/[slug]/page.tsx` | app/actions/listing-video.ts (trackVideoView) · lib/kernel/agent-identity.ts | BUILT |
 
-### compliance officers (55)
+### compliance officers (56)
 
 | domain | surface | page | action behind it | verdict |
 |---|---|---|---|---|
+| (journey) compliance | Fraud & Trust Network `/dashboard/fraud-network` | `app/dashboard/fraud-network/page.tsx` | app/actions/fraud-network.ts (getFraudNetworkViewer, submitFraudIncident, listMyFraudCases, …) · lib/fraud-network/network.ts | BUILT |
 | compliance · approvals | Approvals Queue `/approvals` | `app/approvals/page.tsx` | fetch /api/approvals/pending · fetch /api/approvals/approve | BUILT |
 | compliance · approvals | Audit Logs `/compliance/audits` | `app/compliance/audits/page.tsx` | server-side read in the page tree | BUILT |
 | compliance · approvals | Policies `/compliance/policies` | `app/compliance/policies/page.tsx` | — | STATIC |

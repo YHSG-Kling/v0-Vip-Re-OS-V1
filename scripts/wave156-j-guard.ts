@@ -62,6 +62,7 @@ const MIG = "supabase/migrations/m1035-fraud-intelligence-network.sql"
 const u = (p: string, n: number) => `${p}${String(n).padStart(7, "0")}-0000-4000-8000-000000000156`
 const B0 = u("b", 0), B1 = u("b", 1), B2 = u("b", 2)
 const U_AGENT = u("a", 1), U_AGENT2 = u("a", 2), U_CO = u("a", 3), U_VENDOR = u("a", 4), U_X = u("a", 5), U_XAGENT = u("a", 6), U_STAFF = u("a", 7), U_MKT = u("a", 8), U_SOLO = u("a", 9)
+const U_STAFF2 = u("a", 10), U_CONTACT = u("a", 11), U_BOWNER = u("a", 12), U_BADMIN = u("a", 13), U_ADMIN = u("a", 14), U_TC = u("a", 15), U_ISA = u("a", 16), U_LEAD = u("a", 17)
 const AG_A = u("e", 1), AG_B = u("e", 2), AG_X = u("e", 6), AG_SOLO = u("e", 9)
 const TX1 = u("d", 1), TX_OTHER = u("d", 2), C1 = u("c", 1), B3 = u("b", 3)
 const FP = (n: number) => n.toString(16).padStart(2, "0").repeat(32)
@@ -75,6 +76,8 @@ function world(): MemClient {
       { id: U_X, brokerage_id: B2, user_type: "broker" }, { id: U_XAGENT, brokerage_id: B2, user_type: "agent" },
       { id: U_STAFF, brokerage_id: B0, user_type: "admin", platform_role: "support" }, { id: U_MKT, brokerage_id: B0, user_type: "admin", platform_role: "marketing" },
       { id: U_SOLO, brokerage_id: B3, user_type: "agent" },
+      { id: U_STAFF2, brokerage_id: B0, user_type: "admin", platform_role: "support" }, { id: U_CONTACT, brokerage_id: B1, user_type: "contact" }, { id: U_BOWNER, brokerage_id: B1, user_type: "broker_owner" }, { id: U_BADMIN, brokerage_id: B1, user_type: "broker_admin" },
+      { id: U_ADMIN, brokerage_id: B1, user_type: "admin" }, { id: U_TC, brokerage_id: B1, user_type: "tc" }, { id: U_ISA, brokerage_id: B1, user_type: "isa" }, { id: U_LEAD, brokerage_id: B1, user_type: "team_lead" },
     ],
     agents: [{ id: AG_A, user_id: U_AGENT, brokerage_id: B1 }, { id: AG_B, user_id: U_AGENT2, brokerage_id: B1 }, { id: AG_X, user_id: U_XAGENT, brokerage_id: B2 }, { id: AG_SOLO, user_id: U_SOLO, brokerage_id: B3 }],
     transactions: [
@@ -103,6 +106,9 @@ const OVERRIDE: Record<string, string> = {
 }
 /** COUNTED model seams — a network path that reached a model would show here. */
 const REPLACE: Record<string, string> = {
+  // §I: the page's two possible renders, as named stubs — the page's own gate is driven, the components are not rendered.
+  "app/dashboard/fraud-network/fraud-network-client.tsx": "export function FraudNetworkClient(p){ return { kind: 'client', p } }",
+  "app/components/shared/role-gate-notice.tsx": "export function RoleGateNotice(p){ return { kind: 'notice', p } }",
   "lib/ai/models.ts": "export async function generateTextRouted(){ globalThis.__J.model++; return { text: '' } }; export async function generateObjectRouted(){ globalThis.__J.model++; return { object: {} } }; export async function streamTextRouted(){ globalThis.__J.model++; throw new Error('no stream') }",
   "lib/ai/generate.ts": "export function bookedGenerateObject(){ return async () => { globalThis.__J.model++; return { object: {} } } }",
   "lib/teams/team-scope.ts": "export async function leadsAgentsTeam(){ return { ok: true, leads: false, ledTeamId: null } }",
@@ -110,6 +116,7 @@ const REPLACE: Record<string, string> = {
 const BY_SPEC: Record<string, string> = {
   "server-only": "export {}",
   "next/cache": "export function revalidatePath(){}; export function revalidateTag(){}; export function unstable_noStore(){}; export function unstable_cache(f){ return f }",
+  "next/navigation": "export function redirect(u){ throw new Error('REDIRECT:' + u) }; export function notFound(){ throw new Error('NOT_FOUND') }",
   "next/headers": "export async function headers(){ return new Map() }; export async function cookies(){ return { get(){}, getAll(){ return [] }, set(){}, delete(){} } }",
 }
 const dataUrl = (code: string) => `data:text/javascript,${encodeURIComponent(code)}`
@@ -351,8 +358,130 @@ async function main() {
   check("every exported door has a caller on the screen (derived from the action file)", exported.length >= 20 && exported.every((e) => new RegExp(`\\b${e}\\b`).test(client)), exported.filter((e) => !new RegExp(`\\b${e}\\b`).test(client)))
   check("every exported door of the \"use server\" file is async and gates on the session first", exported.length > 0 && exported.every((e) => { const at = stripComments(raw(ACTIONS)).indexOf(`function ${e}(`); const body = stripComments(raw(ACTIONS)).slice(at, at + 600); return /(tenantSeat|staffSeat|caseReader)\(\)|staffSeat\((true|false)\)/.test(body) }))
 
+  await roundTwo(net, A)
+
   console.log(`\n${passed} passed, ${failed} failed`)
   if (failed) { console.log("FAILED:\n  - " + fails.join("\n  - ")); process.exit(1) }
+}
+
+// ═══ ROUND 2 ═════════════════════════════════════════════════════════════════════════════════════════════════════════
+/** A minimal JPEG: SOI, APP0 (JFIF), APP1 (EXIF with a GPS / serial marker), COM, SOS + scan data, EOI. */
+function fixtureJpeg(): Uint8Array {
+  const seg = (m: number, payload: string) => { const p = Buffer.from(payload, "latin1"); const len = p.length + 2; return [0xff, m, len >> 8, len & 0xff, ...p] }
+  return Uint8Array.from([0xff, 0xd8, ...seg(0xe0, "JFIF\u0000\u0001\u0001"), ...seg(0xe1, "Exif\u0000\u0000GPSLatitude=25.77N;CameraSerial=SN998877"), ...seg(0xfe, "shot by J. Example phone"), 0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3f, 0x00, 0x12, 0x34, 0x56, 0x78, 0xff, 0xd9])
+}
+/** A minimal PNG: signature, IHDR, tEXt (author), IDAT, IEND (CRCs zeroed — the stripper does not validate them). */
+function fixturePng(): Uint8Array {
+  const chunk = (type: string, data: string) => { const d = Buffer.from(data, "latin1"); return [d.length >>> 24, (d.length >> 16) & 255, (d.length >> 8) & 255, d.length & 255, ...Buffer.from(type, "latin1"), ...d, 0, 0, 0, 0] }
+  return Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, ...chunk("IHDR", "\u0000\u0000\u0000\u0001\u0000\u0000\u0000\u0001\b\u0002\u0000\u0000\u0000"), ...chunk("tEXt", "Author\u0000Jordan Example"), ...chunk("IDAT", "xyz"), ...chunk("IEND", "")])
+}
+const hasText = (b: Uint8Array | undefined, s: string) => !!b && Buffer.from(b).toString("latin1").includes(s)
+
+async function roundTwo(net: any, A: any) {
+  section("§I every legitimate seat reaches the network; the page's own gate per seat")
+  const navMod = await load("app/config/navigation-config.ts")
+  const roles: string[] = navMod ? Object.keys(navMod.NAVIGATION_BY_ROLE) : []
+  const EXTERNAL = ["contact", "vendor", "lender", "title_agent"]
+  const has = (r: string) => (navMod?.getNavigationForRole(r).sidebarItems ?? []).some((i: any) => i.href === "/dashboard/fraud-network")
+  const staffRoles = roles.filter((r) => !EXTERNAL.includes(r))
+  check("every staff role's sidebar (derived from NAVIGATION_BY_ROLE) carries the network — including the platform-staff menu", staffRoles.length >= 8 && staffRoles.every(has) && staffRoles.includes("superadmin"), staffRoles.filter((r) => !has(r)))
+  check("no client, vendor, lender or title portal sidebar carries it", roles.length > 0 && EXTERNAL.filter((r) => roles.includes(r)).every((r) => !has(r)))
+  check("positive control: the nav reader sees the entry where it is (agent) — a broken reader would also read 'absent' for the portals", has("agent"))
+  const navSrc = stripComments(raw("app/config/navigation-config.ts"))
+  check("ONE definition of the entry (the href is written once; every role spreads FRAUD_NETWORK_ITEM)", (navSrc.match(/'\/dashboard\/fraud-network'/g) ?? []).length === 1 && (navSrc.match(/FRAUD_NETWORK_ITEM,/g) ?? []).length >= 8)
+  check("the page is classified under the compliance journey (scripts/ui-journeys.ts)", (await load("scripts/ui-journeys.ts"))?.journeyOf("app/dashboard/fraud-network/page.tsx") === "compliance")
+  const page = await load("app/dashboard/fraud-network/page.tsx")
+  /** What the page RENDERS: a JSX element whose type is one of the two named stubs (the element, not a call of it). */
+  const kindOf = (out: any): string => out?.type?.name === "FraudNetworkClient" ? "client" : out?.type?.name === "RoleGateNotice" ? "notice" : out?.threw ? `threw:${out.error}` : "none"
+  const render = async (seat: string) => { G.__J.seat = seat; return kindOf(await quiet(() => page.default())) }
+  G.__J.mem = world()
+  for (const [who, seat] of [["agent", U_AGENT], ["solo principal (agent seat of a solo tenant)", U_SOLO], ["broker", U_X], ["broker owner", U_BOWNER], ["broker admin", U_BADMIN], ["admin", U_ADMIN], ["compliance officer", U_CO], ["transaction coordinator", U_TC], ["ISA", U_ISA], ["team lead", U_LEAD], ["platform safety staff", U_STAFF]] as const) {
+    check(`page gate admits the ${who}`, !!page && (await render(seat)) === "client")
+  }
+  for (const [who, seat] of [["client (contact) seat", U_CONTACT], ["vendor seat", U_VENDOR]] as const) {
+    check(`page gate shows the ${who} the role notice (never a blank screen)`, !!page && (await render(seat)) === "notice")
+  }
+
+  section("§J tenant departure by STATUS (the product's tenant-lifecycle vocabulary)")
+  G.__J.mem = world(); G.__J.model = 0
+  check("the departed set is DERIVED from TENANT_LIFECYCLE_REFUSED minus the resumable 'suspended'", !!net && [...net.FRAUD_DEPARTED_TENANT_STATUSES].sort().join(",") === "archived,cancelled" && /TENANT_LIFECYCLE_REFUSED\]\.filter/.test(stripComments(raw(NET))))
+  const inc = { incidentKind: "credential_phishing", channel: "email", summary: "Fake e-sign request asking for the MLS password.", lossOccurred: "no" }
+  const cX = A ? await as(U_XAGENT, () => A.submitFraudIncident({ ...inc, evidence: [{ kind: "screenshot", fingerprint: FP(40) }] })) : null
+  const c1 = A ? await as(U_AGENT, () => A.submitFraudIncident({ ...inc, evidence: [{ kind: "screenshot", fingerprint: FP(41) }] })) : null
+  const dj = A ? await as(U_STAFF, () => A.draftFraudBulletinFromCase(c1?.caseId)) : null
+  await as(U_STAFF, () => A.linkFraudCaseToBulletin(dj?.bulletinId, cX?.caseId))
+  await as(U_XAGENT, () => A.setFraudWarningSubscription({ typology: "credential_phishing", on: true }))
+  const corrBefore = (await as(U_STAFF, () => A.linkFraudCaseToBulletin(dj?.bulletinId, c1?.caseId)))?.corroboration?.independentTenants
+  check("before departure: the other tenant's case corroborates (2 tenants) and its staff can read it", corrBefore === 2 && (await as(U_STAFF, () => A.getFraudCase(cX?.caseId)))?.ok === true)
+  const b2 = T("brokerages").find((b) => b.id === B2)
+  if (b2) b2.status = "cancelled"
+  check("a CANCELLED tenant's seat can no longer take part (it could before)", corrBefore === 2 && (await as(U_XAGENT, () => A.listMyFraudCases()))?.ok === false && (await as(U_XAGENT, () => A.submitFraudIncident(inc)))?.ok === false)
+  check("its private case is unreadable — to platform staff too — and leaves the moderation queue", (await as(U_STAFF, () => A.getFraudCase(cX?.caseId)))?.ok === false && !((await as(U_STAFF, () => A.listFraudModerationQueue()))?.cases ?? [{ id: cX?.caseId }]).some((c: any) => c.id === cX?.caseId))
+  const corrAfter = (await as(U_STAFF, () => A.linkFraudCaseToBulletin(dj?.bulletinId, c1?.caseId)))?.corroboration?.independentTenants
+  check("its evidence no longer corroborates (2 → 1)", corrAfter === 1, corrAfter)
+  const seal = net ? await quiet(() => net.sealDepartedTenants(G.__J.sess())) : null
+  check("the seal removes its bulletin source links and subscriptions — counted", (seal as any)?.sourcesRemoved === 1 && (seal as any)?.subscriptionsRemoved === 1 && !T("fraud_bulletin_sources").some((s) => s.brokerage_id === B2) && !T("fraud_warning_subscriptions").some((s) => s.brokerage_id === B2), seal)
+  check("an ACTIVE tenant is untouched by the seal (positive control)", T("fraud_bulletin_sources").some((s) => s.brokerage_id === B1) && (await as(U_AGENT, () => A.getFraudCase(c1?.caseId)))?.ok === true)
+  const soloCase = A ? await as(U_SOLO, () => A.submitFraudIncident(inc)) : null
+  const b3 = T("brokerages").find((b) => b.id === B3)
+  if (b3) b3.status = "suspended"
+  check("a SUSPENDED tenant is paused, not departed: its seat cannot take part, its case is kept for staff", soloCase?.ok === true && (await as(U_SOLO, () => A.listMyFraudCases()))?.ok === false && (await as(U_STAFF, () => A.getFraudCase(soloCase.caseId)))?.ok === true)
+  if (b2) { b2.status = "active"; b2.deleted_at = new Date().toISOString() }
+  check("a soft-deleted tenant (deleted_at) is departed too (re-activated first: status alone no longer hides it)", !!net && (await as(U_STAFF, () => A.getFraudCase(cX?.caseId)))?.ok === false)
+  const pageX = await load("app/dashboard/fraud-network/page.tsx")
+  G.__J.seat = U_XAGENT
+  check("the page gate shows a departed tenant's seat the role notice", kindOf(await quiet(() => pageX.default())) === "notice")
+
+  section("§K evidence files: metadata stripped BEFORE the storage check; owner bucket still absent")
+  G.__J.mem = world()
+  const ec = A ? await as(U_AGENT, () => A.submitFraudIncident({ ...inc, evidence: [] })) : null
+  const jpeg = fixtureJpeg()
+  check("fixture positive control: the JPEG carries EXIF / GPS / serial and a comment", hasText(jpeg, "Exif") && hasText(jpeg, "GPSLatitude") && hasText(jpeg, "J. Example"))
+  const s1 = net ? net.stripImageMetadata(jpeg) : null
+  check("the stripper removes APP1 (EXIF) and COM, keeps JFIF and the image data", s1?.ok === true && !hasText(s1.bytes, "Exif") && !hasText(s1.bytes, "GPSLatitude") && !hasText(s1.bytes, "J. Example") && hasText(s1.bytes, "JFIF") && Buffer.from(s1.bytes).includes(Buffer.from([0x12, 0x34, 0x56, 0x78])) && s1.removed.includes("APP1 (EXIF / XMP)") && s1.removed.includes("COM (comment)"), s1?.removed)
+  const s2 = net ? net.stripImageMetadata(fixturePng()) : null
+  check("PNG: the tEXt author chunk is removed, the image chunks kept", s2?.ok === true && !hasText(s2.bytes, "Jordan Example") && hasText(s2.bytes, "IDAT") && hasText(s2.bytes, "IEND"))
+  check("a PDF (cannot be cleaned here) is refused, and a truncated JPEG is refused", net?.stripImageMetadata(Uint8Array.from(Buffer.from("%PDF-1.7 author=x")))?.ok === false && net?.stripImageMetadata(jpeg.slice(0, 12))?.ok === false)
+  const b64 = Buffer.from(jpeg).toString("base64")
+  const upA = A ? await as(U_AGENT, () => A.uploadFraudEvidenceFile(ec?.caseId, "screenshot", "shot.jpg", b64)) : null
+  check("the real door (bucket absent live): cleans first, then refuses with the honest state, naming what it removed", !!net && upA?.ok === false && upA.error === net.EVIDENCE_STORAGE_NOT_ENABLED && (upA.metadataRemoved ?? []).includes("APP1 (EXIF / XMP)"), upA)
+  check("…and the bucket's absence is read from the generated live bucket map, not a flag", /LIVE_BUCKET_CONFIG\[FRAUD_EVIDENCE_BUCKET\]/.test(stripComments(raw(NET))))
+  const upX = A ? await as(U_X, () => A.uploadFraudEvidenceFile(ec?.caseId, "screenshot", "x.jpg", b64)) : null
+  const upCo = A ? await as(U_AGENT2, () => A.uploadFraudEvidenceFile(ec?.caseId, "screenshot", "x.jpg", b64)) : null
+  check("another tenant learns only 'not found'; a co-worker who did not report it is refused", upX?.ok === false && upX.error === "Case not found." && upCo?.ok === false && !upCo.metadataRemoved)
+  const uploads: Array<{ path: string; bytes: Uint8Array }> = []
+  const actor = { kind: "tenant", userId: U_AGENT, brokerageId: B1, userType: "agent", agentId: AG_A }
+  const upOn = net ? await quiet(() => net.uploadEvidenceFile(G.__J.sess(), actor, { caseId: ec?.caseId, kind: "screenshot", label: "shot.jpg", bytes: jpeg }, { bucketEnabled: true, upload: async (path: string, bytes: Uint8Array) => { uploads.push({ path, bytes }); return { ok: true } } })) : null
+  check("with the bucket (seam): only the CLEANED bytes are stored, at <tenant>/<case>/<original fingerprint>, and the row is marked stored", (upOn as any)?.ok === true && uploads.length === 1 && !hasText(uploads[0].bytes, "GPSLatitude") && uploads[0].path === `${B1}/${ec?.caseId}/${(upOn as any).fingerprint}` && T("fraud_case_evidence").some((e) => e.fingerprint_sha256 === (upOn as any).fingerprint && e.storage_status === "stored"))
+  const view = net ? await quiet(() => net.evidenceFileView(G.__J.sess(), actor, ec?.caseId, { bucketEnabled: true, sign: async (p: string) => ({ url: `signed://${p}` }) })) : null
+  const viewX = net ? await quiet(() => net.evidenceFileView(G.__J.sess(), { ...actor, userId: U_X, brokerageId: B2, userType: "broker" }, ec?.caseId, { bucketEnabled: true, sign: async () => ({ url: "leak" }) })) : null
+  check("with the bucket: the view mints a short-lived URL only after the case gate (another tenant gets none)", (view as any)?.ok === true && (view as any).urls.length === 1 && (viewX as any)?.ok === false)
+
+  section("§L a person's or business's name in free text HOLDS publication for a second moderator")
+  check("pure: a capitalized two-word personal name is matched", JSON.stringify(net?.nameReviewSpans({ claim_class: "verified_operational_pattern", title: "x", tactic_summary: "A caller named Maria Gonzalez asked for the wire.", how_to_verify: "" })) === JSON.stringify(["Maria Gonzalez"]))
+  check("pure: a business-entity suffix is matched", (net?.nameReviewSpans({ claim_class: "unverified_report", title: "x", tactic_summary: "Invoices from Acme Closing Services LLC changed bank details.", how_to_verify: "" }) ?? []).some((s: string) => /LLC$/.test(s)))
+  check("negative control: ordinary sentences, places and the typology texts are NOT matched", !!net && net.nameReviewSpans({ claim_class: "verified_operational_pattern", title: "Look-alike escrow domain", tactic_summary: "Call the title company in New York before any wire. The buyer was told on Monday.", how_to_verify: net.FRAUD_TYPOLOGY[0].protectiveAction, red_flags: [...net.FRAUD_TYPOLOGY[0].redFlags] }).length === 0 && net.FRAUD_TYPOLOGY.every((t: any) => net.nameReviewSpans({ claim_class: "unverified_report", title: t.label, tactic_summary: "x", how_to_verify: t.protectiveAction, red_flags: [...t.redFlags] }).length === 0))
+  check("an official public warning is exempt (its name has the citation + legal-review rule)", net?.nameReviewSpans({ claim_class: "official_public_warning", title: "x", tactic_summary: "Example Cloned Title LLC per the regulator", how_to_verify: "" })?.length === 0)
+  G.__J.mem = world()
+  const nc = A ? await as(U_AGENT, () => A.submitFraudIncident({ ...inc, evidence: [{ kind: "screenshot", fingerprint: FP(50) }] })) : null
+  const nb = A ? await as(U_STAFF, () => A.draftFraudBulletinFromCase(nc?.caseId)) : null
+  await as(U_STAFF, () => A.updateFraudBulletinDraft(nb?.bulletinId, { title: "Fake e-sign request phishing", tactic_summary: "A caller named Jordan Example sends a fake e-sign link asking for the MLS password.", claim_class: "verified_operational_pattern", confidence: "medium" }))
+  const ctx = { attestNoPersonIdentified: true, legalReviewConfirmed: false, verificationNote: "verified with the MLS help desk" }
+  const h1 = A ? await as(U_STAFF, () => A.publishFraudBulletin(nb?.bulletinId, ctx)) : null
+  const nRow = T("fraud_bulletins").find((b) => b.id === nb?.bulletinId)
+  check("publication is HELD (not refused, not published) with the matched span shown", h1?.ok === false && h1.held === true && JSON.stringify(h1.spans) === JSON.stringify(["Jordan Example"]) && /second moderator/.test(h1.error) && nRow?.status === "draft" && nRow?.name_review_hold?.requested_by === U_STAFF, h1)
+  const self = A ? await as(U_STAFF, () => A.clearFraudNameReview(nb?.bulletinId, "not a person")) : null
+  check("the moderator who triggered the hold cannot clear it", self?.ok === false && /different moderator/.test(self.error))
+  const other = A ? await as(U_STAFF2, () => A.clearFraudNameReview(nb?.bulletinId, "Confirmed with the reporter: the caller used a fictitious alias; it identifies no real person.")) : null
+  check("a SECOND moderator's review is recorded with a receipt", other?.ok === true && nRow?.name_review_clearance?.cleared_by === U_STAFF2 && T("agent_action_ledger").some((r) => r.action === "fraud.bulletin.clear_name_review"))
+  const p1 = A ? await as(U_STAFF, () => A.publishFraudBulletin(nb?.bulletinId, ctx)) : null
+  check("after the second review the bulletin publishes", p1?.ok === true && nRow?.status === "published", p1)
+  const reh = A ? await as(U_STAFF2, () => A.correctFraudBulletin(nb?.bulletinId, { tactic_summary: "A caller named Jordan Example, sometimes Casey Sample, sends a fake e-sign link." }, "more detail")) : null
+  check("a correction that ADDS a new name is held again (the clearance covered only the old span)", reh?.held === true && (reh.spans ?? []).includes("Casey Sample") && nRow?.version === 1)
+  const ent = A ? await as(U_STAFF, () => A.draftFraudBulletinFromCase(nc?.caseId)) : null
+  await as(U_STAFF, () => A.updateFraudBulletinDraft(ent?.bulletinId, { title: "Vendor invoice substitution", tactic_summary: "Invoices that look like they come from Acme Closing Services LLC carry new bank details.", claim_class: "unverified_report", confidence: "low" }))
+  const he = A ? await as(U_STAFF, () => A.publishFraudBulletin(ent?.bulletinId, ctx)) : null
+  check("a business-entity suffix outside an official warning is held with its span", he?.held === true && (he.spans ?? []).some((s: string) => /LLC$/.test(s)))
 }
 
 // A crash is a failure WITH its count (a base run must still say how many checks were red before it stopped).
