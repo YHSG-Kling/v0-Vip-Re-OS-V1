@@ -32,9 +32,10 @@ import { simulateProviderPilot } from "@/lib/providers/provider-pilot"
 // each provider's TENANT-connectability (route B) sit beside the provider stack — one console for what the platform may spend,
 // what it has spent, and what a tenant may bring of its own.
 import { deriveTenantProviderConnectionState } from "@/lib/providers/tenant-provider-connections"
-import { loadAcquisitionEconomics } from "@/lib/vendor-governance/acquisition-economics"
-import { getAcquisitionCapsAction } from "@/app/actions/superadmin/platform-controls"
+import { loadAcquisitionEconomics, PROVIDER_COMMITMENT_TERMS, costUnderCommitment } from "@/lib/vendor-governance/acquisition-economics"
+import { getAcquisitionCapsAction, getRentcastRequestCapAction } from "@/app/actions/superadmin/platform-controls"
 import { AcquisitionCapsPanel } from "./acquisition-caps-panel"
+import { RentcastCapPanel } from "./rentcast-cap-panel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { redirect } from "next/navigation"
 import { AlertTriangle, CheckCircle2, XCircle, ExternalLink } from "lucide-react"
@@ -86,8 +87,8 @@ export default async function ConnectorHealingPage() {
 
   // Wave 151 (151F): the owner's acquisition caps + month-to-date platform spend (gated action), and the measured economics
   // over the last 90 days — a refused read is a caveat on the page, never a zero.
-  const [capsRes, economics] = await Promise.all([
-    getAcquisitionCapsAction(),
+  const [capsRes, rentcastCap, economics] = await Promise.all([
+    getAcquisitionCapsAction(), getRentcastRequestCapAction(),
     loadAcquisitionEconomics(createServiceClient(), {
       sinceIso: new Date(Date.now() - 90 * 86_400_000).toISOString(),
       duplicateUnitUsd: PROVIDER_FIELD_SCORECARD.find((r) => r.provider === "batchdata" && r.capability === "motivated_seller_list")?.unitUsd ?? null,
@@ -484,6 +485,15 @@ export default async function ConnectorHealingPage() {
       {/* ── PLATFORM ACQUISITION BUDGET (wave 151F) — the owner's caps; null = stop before spend, no default ─────────── */}
       <section className="space-y-3">
         <h2 className="text-lg font-medium">Platform acquisition budget (owner caps)</h2>
+        {/* Wave 156 (156G round 2): the platform's own RentCast ceiling — RentCast has no hard cap of its own. */}
+        <Card>
+          <CardContent className="space-y-2 p-4">
+            <h3 className="text-sm font-medium">RentCast request ceiling (the platform&apos;s own hard cutoff)</h3>
+            {rentcastCap.ok
+              ? <RentcastCapPanel applied={rentcastCap.applied} setting={rentcastCap.setting} verdict={rentcastCap.verdict} windowStart={rentcastCap.windowStart} windowEnd={rentcastCap.windowEnd} />
+              : <p className="text-sm text-destructive">RentCast ceiling unreadable: {rentcastCap.error} — every RentCast request refuses while it cannot be read.</p>}
+          </CardContent>
+        </Card>
         <Card>
           <CardContent className="p-4">
             {capsRes.ok
@@ -503,6 +513,30 @@ export default async function ConnectorHealingPage() {
               <div>Raw Lead gate yield: {economics.rawLeadGateYield === null ? "n/a" : `${(economics.rawLeadGateYield * 100).toFixed(1)}%`}</div>
               <div>Contact conversion (leads from raw): {economics.contactConversion === null ? "n/a" : `${(economics.contactConversion * 100).toFixed(1)}%`}</div>
               <div>Appointments / accepted relationships / attributed transactions: {economics.appointments ?? "—"} / {economics.acceptedRelationships ?? "—"} / {economics.attributedTransactions ?? "—"}</div>
+            </div>
+            {/* Wave 156 (156G): cohort finance — the fully loaded cost per USABLE PERSON; an unmeasured part is shown as unknown. */}
+            {economics.cohort && (
+              <div className="grid gap-2 sm:grid-cols-3 text-xs">
+                <div>Known cost (person data + acquisition): <strong>${economics.cohort.knownCostUsd.toFixed(2)}</strong>{economics.cohort.complete ? "" : " — incomplete: every figure below is a LOWER BOUND"}</div>
+                <div>Cost per usable person: {economics.cohort.costPerUsablePersonUsd === null ? "unknown (no blinded match verification)" : `$${economics.cohort.costPerUsablePersonUsd.toFixed(4)}`}</div>
+                <div>Cost per promoted Lead: {economics.cohort.costPerPromotedLeadUsd === null ? "n/a" : `$${economics.cohort.costPerPromotedLeadUsd.toFixed(4)}`}</div>
+                <div>Cost per AI-ISA-qualified Contact: {economics.cohort.costPerQualifiedContactUsd === null ? "n/a" : `$${economics.cohort.costPerQualifiedContactUsd.toFixed(4)}`}</div>
+                <div>Cost per closed opportunity: {economics.cohort.costPerClosedOpportunityUsd === null ? "unknown (roi-ledger attribution)" : `$${economics.cohort.costPerClosedOpportunityUsd.toFixed(2)}`}</div>
+                <ul className="list-disc pl-5 text-[11px] text-muted-foreground sm:col-span-3">{economics.cohort.unknowns.map((c) => <li key={c}>{c}</li>)}</ul>
+              </div>
+            )}
+            {/* Wave 156 (156G): published plans modeled WITH their minimums — indications, never executed quotes (docs/operations/WAVE156-PROVIDER-DECISION-PACKET.md). */}
+            <div className="text-xs">
+              <h4 className="font-medium">Plan minimums, modeled (public indications — not quotes)</h4>
+              <table className="mt-1 w-full text-[11px]">
+                <thead><tr className="text-left text-muted-foreground"><th>Provider / plan</th><th>10,000 units / month</th><th>50,000 units / month</th></tr></thead>
+                <tbody>
+                  {PROVIDER_COMMITMENT_TERMS.map((t) => {
+                    const cell = (u: number) => { const c = costUnderCommitment(t, u); return c.monthlyUsd === null ? "unknown (no published overage)" : `$${c.monthlyUsd.toFixed(2)} ($${(c.effectiveUnitUsd ?? 0).toFixed(4)}/${t.unit})${c.minimumBinding ? " — minimum binds" : ""}` }
+                    return <tr key={`${t.provider}:${t.plan}`}><td>{t.provider} — {t.plan}</td><td>{cell(10_000)}</td><td>{cell(50_000)}</td></tr>
+                  })}
+                </tbody>
+              </table>
             </div>
             <ul className="list-disc pl-5 text-[11px] text-muted-foreground">{economics.caveats.map((c) => <li key={c}>{c}</li>)}</ul>
           </CardContent>

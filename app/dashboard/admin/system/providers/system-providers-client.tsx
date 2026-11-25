@@ -36,6 +36,8 @@ interface ProviderResult {
   ok: boolean
   message: string
   latencyMs?: number
+  /** Wave 156 (156G): the provider's activation state (PROVIDER_ACTIVATION) — a dormant provider is never shown as connected. */
+  routing?: string
 }
 
 type Status = "idle" | "testing" | "ok" | "error"
@@ -64,7 +66,7 @@ const PROVIDERS = [
     id: "apify",
     label: "Apify",
     description: "Web scraping orchestration for raw lead collection from public sources.",
-    envKey: "APIFY_API_KEY",
+    envKey: "APIFY_API_TOKEN",
     docsUrl: "https://apify.com/",
   },
   {
@@ -198,7 +200,7 @@ export function SystemProvidersClient() {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <CardTitle className="text-base">{provider.label}</CardTitle>
-                    <StatusBadge status={state.status} />
+                    <StatusBadge status={state.status} routing={state.result?.routing} />
                   </div>
                   <Button
                     size="sm"
@@ -262,11 +264,15 @@ export function SystemProvidersClient() {
   )
 }
 
-function StatusBadge({ status }: { status: Status }) {
+function StatusBadge({ status, routing }: { status: Status; routing?: string }) {
   if (status === "idle") return null
   if (status === "testing") return <Badge variant="secondary" className="text-xs">Testing…</Badge>
+  // Wave 156 (156G): an accepted key on a DORMANT provider is not a live connection — it is not routed (owner ruling R9).
+  if (status === "ok" && routing && routing !== "active" && routing !== "not_on_the_data_route") return (
+    <Badge variant="secondary" className="text-xs">Key accepted — dormant, not routed</Badge>
+  )
   if (status === "ok") return (
-    <Badge className="text-xs bg-green-100 text-green-700 border-green-200">Connected</Badge>
+    <Badge className="text-xs bg-green-100 text-green-700 border-green-200">Key accepted</Badge>
   )
   return <Badge variant="destructive" className="text-xs">Failed</Badge>
 }

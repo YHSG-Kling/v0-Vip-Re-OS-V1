@@ -107,8 +107,9 @@ const pp = stripped("lib/lead-pipeline/pipeline-processor.ts")
 // BatchData row skips both the call and its meter — a call that never happened books nothing).
 check("every raw-path PeopleData call is booked (name/phone/email was unmetered anywhere)",
   // Wave 93 (93B2): the meter carries the SAME guard as the call — skipPeopleData and (new) versiumAnswered.
-  /if \((?:!skipPeopleData && )?(?:!versiumAnswered && )?fields\.brokerageId && \(profileUrl \|\| hasNamePhoneEmail\)\)/.test(pp) && /usageType: profileUrl \? 'social_identity_resolve' : 'skip_trace'/.test(pp)
-  && (!/!skipPeopleData && (?:!versiumAnswered && )?fields\.brokerageId/.test(pp) || /skipPeopleData(?: \|\| versiumAnswered)?\s*\?\s*\{ data: null \}\s*:\s*await skipTraceWithPeopleData\(/.test(pp)))
+  // Wave 156 (156G): + pdlUnlicensed — a platform PeopleData that is not licensed is neither called nor booked (same guard on both).
+  /if \((?:!skipPeopleData && )?(?:!versiumAnswered && )?(?:!pdlUnlicensed && )?fields\.brokerageId && \(profileUrl \|\| hasNamePhoneEmail\)\)/.test(pp) && /usageType: profileUrl \? 'social_identity_resolve' : 'skip_trace'/.test(pp)
+  && (!/!skipPeopleData && (?:!versiumAnswered && )?(?:!pdlUnlicensed && )?fields\.brokerageId/.test(pp) || /skipPeopleData(?: \|\| versiumAnswered)?(?: \|\| pdlUnlicensed)?\s*\?\s*\{ data: null \}\s*:\s*await skipTraceWithPeopleData\(/.test(pp)))
 check("POSITIVE CONTROL: the old profile-only booking condition is recognised as narrower", !/hasNamePhoneEmail/.test(`if (profileUrl && fields.brokerageId) {`))
 check("the enrichment result carries the built profile", /peopleDataProfile:\s*buildPeopleDataProfile\(data as any\)/.test(pp))
 const ins = pp.slice(pp.indexOf(".from('leads')\n    .insert({"), pp.indexOf("raw_record_id:         rawRecordId"))

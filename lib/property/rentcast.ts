@@ -47,8 +47,8 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { logVendorUsage } from "@/lib/vendor-governance/usage-logger"
 import { buildRentcastListingQuery } from "./rentcast-query"
 import {
-  callRentcastGet,
-  callRentcastGetById,
+  callRentcastGet as uncappedRentcastGet,
+  callRentcastGetById as uncappedRentcastGetById,
   type RentcastSaleListingsQuery,
   type RentcastSaleListing as RentcastSaleListingRow,
   type RentcastSaleListingResponse,
@@ -150,7 +150,7 @@ function meterCall(params: {
   metadata?: Record<string, any>
   /** Wave 93 (lane 93B) — a POOLED sweep served every brokerage named here with the SAME rows. */
   pooledBrokerageIds?: readonly string[] | null
-}) {
+}) { if (params.metadata?.ok !== true) return // wave 156 (156G): RentCast bills ONLY "a 200 status code and a response body" — a refused / failed request is never booked (billing-and-pricing, read 2026-11-25)
   // ONE PULL, SPLIT LEDGER (wave 93, lane 93B — owner: "pull all of the active territories … to
   // make it one pull to keep the cost down"). A pooled area sweep is one billed request whose
   // identical rows every pool member receives, so the split by records received is EQUAL: one
@@ -420,12 +420,12 @@ async function cachedRentcastRead<T>(
       return { ok: true, data: hit, cacheHit: true }
     }
   }
-  const fresh = await fetcher()
+  const { fresh, joined } = await rentcastSingleFlight(key, fetcher)
   if (fresh.ok && fresh.data != null) {
     rememberInMemory(key, fresh.data)
     if (store) void store.setCachedProviderPayload(`rentcast:${key}`, fresh.data, Math.round(RENTCAST_USD_PER_REQUEST * 100)).catch(() => null)
   }
-  return { ...fresh, cacheHit: false }
+  return { ...fresh, cacheHit: joined }
 }
 
 // ---------------------------------------------------------------------------
@@ -1401,4 +1401,46 @@ export async function getRentcastComps(
   params: RentcastCaller & { address: string; limit?: number },
 ): Promise<RentcastComp[]> {
   return (await getRentcastAvmAndComps(params)).comps
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// WAVE 156 (lane 156G) — THE TWO SPEND RULES EVERY REQUEST ABOVE NOW PASSES THROUGH (foot of file, line-neutral above).
+//
+// 1. THE PLATFORM'S OWN HARD CUTOFF. `callRentcastGet` / `callRentcastGetById` below are the names every reader in this
+//    file calls; they reserve one request against lib/property/rentcast-eligibility.ts reserveRentcastPlatformRequest
+//    (RentCast supplies no cap of its own) BEFORE the typed façade reaches the network, and release the reservation when
+//    the vendor did not answer 200 (an unbilled request). A refusal resolves the façade's own never-throws shape
+//    ({ ok: false, status: null }) so every reader's existing honest-empty path runs and nothing is metered.
+// 2. THE SAME PROPERTY IS NEVER BOUGHT TWICE AT ONCE. `cachedRentcastRead` asks rentcastSingleFlight on a miss: concurrent
+//    reads of one address share ONE in-flight request (one meter row), then the read-through cache serves the window.
+//    (A store that cannot be read still degrades to "make the request" — rentcast.ts's documented cache contract.)
+// ═════════════════════════════════════════════════════════════════════════════
+
+const callRentcastGet: typeof uncappedRentcastGet = async (path, query, apiKey) => {
+  const { reserveRentcastPlatformRequest } = await import("./rentcast-eligibility")
+  const slot = await reserveRentcastPlatformRequest()
+  if (!slot.allowed) return { ok: false, status: null, data: null, error: slot.verdict.reason }
+  const res = await uncappedRentcastGet(path, query, apiKey)
+  slot.settle(res.ok)
+  return res
+}
+
+const callRentcastGetById: typeof uncappedRentcastGetById = async (pathTemplate, id, apiKey) => {
+  const { reserveRentcastPlatformRequest } = await import("./rentcast-eligibility")
+  const slot = await reserveRentcastPlatformRequest()
+  if (!slot.allowed) return { ok: false, status: null, data: null, error: slot.verdict.reason }
+  const res = await uncappedRentcastGetById(pathTemplate, id, apiKey)
+  slot.settle(res.ok)
+  return res
+}
+
+const rentcastInflight = new Map<string, Promise<{ ok: boolean; data: unknown }>>()
+
+/** Concurrent misses on ONE cache key share ONE in-flight request; a joiner made no request (reported as a cache hit). */
+async function rentcastSingleFlight<T>(key: string, fetcher: () => Promise<{ ok: boolean; data: T | null }>): Promise<{ fresh: { ok: boolean; data: T | null }; joined: boolean }> {
+  const pending = rentcastInflight.get(key)
+  if (pending) return { fresh: (await pending) as { ok: boolean; data: T | null }, joined: true }
+  const p = fetcher()
+  rentcastInflight.set(key, p)
+  try { return { fresh: await p, joined: false } } finally { rentcastInflight.delete(key) }
 }

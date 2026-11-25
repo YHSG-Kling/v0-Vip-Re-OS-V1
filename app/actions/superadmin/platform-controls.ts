@@ -284,3 +284,64 @@ export async function setHealingCeilingsAction(input: Record<string, unknown>): 
   }
   return { ok: true }
 }
+
+// ─── Wave 156 (lane 156G round 2): the platform's OWN RentCast ceiling (m1019 provider_request_caps.rentcast) ──────────
+// RentCast supplies no hard cap ("We do not currently support hard usage caps"); the cutoff in
+// lib/property/rentcast-eligibility.ts reads this setting before every request. Read behind the providers capability (the
+// connector-healing console), written by the superadmin only — validated, audited in superadmin_audit_log and receipted on
+// agent_action_ledger (who, when, from what to what). Until m1019 is live the read says so (applied: false) and the write
+// refuses with that sentence — the page never fails on it.
+
+export async function getRentcastRequestCapAction(): Promise<
+  | { ok: true; applied: boolean; setting: import("@/lib/property/rentcast-eligibility").RentcastRequestCapSetting | null; verdict: import("@/lib/property/rentcast-eligibility").RentcastPlatformCapVerdict; windowStart: string; windowEnd: string }
+  | { ok: false; error: string }
+> {
+  const gate = await requirePlatformCapability("providers")
+  if (!gate.ok) return { ok: false, error: gate.error ?? "Forbidden — requires platform 'providers' capability" }
+  const svc = createServiceClient()
+  const { loadRentcastRequestCap, rentcastCapStatus } = await import("@/lib/property/rentcast-eligibility")
+  const [cur, status] = await Promise.all([loadRentcastRequestCap(svc), rentcastCapStatus(svc)])
+  if (!cur.ok) return { ok: false, error: cur.error }
+  return { ok: true, applied: cur.applied, setting: cur.setting, verdict: status.verdict, windowStart: status.windowStart, windowEnd: status.windowEnd }
+}
+
+/** Set the platform's RentCast ceiling (superadmin only). monthly_requests: positive integer or null; billing_anchor_day: 1–31 or null. */
+export async function setRentcastRequestCapAction(input: Record<string, unknown>): Promise<{ ok: true } | { ok: false; error: string }> {
+  const auth = await requireSuperadmin()
+  if (!auth.ok) return auth
+  const svc = createServiceClient()
+  const { setRentcastRequestCap } = await import("@/lib/property/rentcast-eligibility")
+  const src = input && typeof input === "object" ? input : {}
+  const clean: Record<string, unknown> = {}
+  if ("monthly_requests" in src) clean.monthly_requests = src.monthly_requests
+  if ("billing_anchor_day" in src) clean.billing_anchor_day = src.billing_anchor_day
+  // LAW 5 — the receipt. A platform singleton has no tenant and agent_action_ledger.brokerage_id is NOT NULL, so the row is
+  // filed under the acting staff member's own home brokerage with detail.scope "platform_singleton"; staff with no home
+  // brokerage still get the superadmin_audit_log row below (who, when, before → after).
+  const { data: me } = await svc.from("users").select("brokerage_id").eq("id", auth.userId).maybeSingle()
+  const homeBrokerage = (me as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+  const write = () => setRentcastRequestCap(svc, clean, { userId: auth.userId })
+  const r = homeBrokerage
+    ? await (await import("@/lib/kernel/action-ledger")).ledgerSessionAction({
+        brokerageId: homeBrokerage, action: "platform.provider_caps.set", actor: { type: "user", userId: auth.userId },
+        subject: { type: "platform_settings", ref: "provider_request_caps.rentcast" }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED",
+        reasonDetail: "platform staff set the RentCast request ceiling", detail: { scope: "platform_singleton", input: clean },
+      }, write)
+    : await write()
+  const res = r as { ok?: boolean; error?: string; before?: unknown; after?: unknown }
+  if (res.ok !== true) return { ok: false, error: res.error ?? "RentCast ceiling NOT saved" }
+  try {
+    const hdrs = await headers()
+    const { error: auditErr } = await svc.from("superadmin_audit_log").insert({
+      actor_user_id: auth.userId, actor_email: auth.email,
+      action: "provider_request_caps.set", target_type: "platform_settings", target_id: null,
+      details: { provider: "rentcast", before: res.before, after: res.after },
+      ip_address: hdrs.get("x-forwarded-for") ?? hdrs.get("x-real-ip"),
+      user_agent: hdrs.get("user-agent"),
+    })
+    if (auditErr) console.error("[provider-request-caps] audit write refused:", auditErr.message)
+  } catch (err) {
+    console.error("[provider-request-caps] audit write failed:", err)
+  }
+  return { ok: true }
+}
