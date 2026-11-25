@@ -347,7 +347,7 @@ export async function GET(request: Request) {
         const { data: account, error: accountError } = await supabase
           .from("social_media_accounts")
           .select("platform, access_token, refresh_token, account_id")
-          .eq("id", post.social_account_id)
+          .eq("id", post.social_account_id).eq("brokerage_id", post.brokerage_id) // wave 156 (156N): only the POST's tenant's token — social_account_id arrives from request bodies
           .eq("is_active", true)
           .maybeSingle()
 
