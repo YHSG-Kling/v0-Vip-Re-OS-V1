@@ -379,10 +379,13 @@ export async function GET(request: Request) {
 
     // 156J — the fraud network's retention timer rides this platform cron (no new schedule): private incident cases past
     // retention_until are deleted, evidence fingerprints and bulletin source links cascade. Counted, never silent.
-    const { purgeExpiredFraudCases } = await import("@/lib/fraud-network/network")
+    const { purgeExpiredFraudCases, sealDepartedTenants } = await import("@/lib/fraud-network/network")
     const retention = await purgeExpiredFraudCases(supabase)
+    // A tenant that LEFT (status cancelled / archived, or soft-deleted) is sealed: bulletin source links and subscriptions removed.
+    const departure = await sealDepartedTenants(supabase)
     const payload = {
       fraud_case_retention: retention,
+      fraud_tenant_departure: departure,
       scanned,
       batch_cap: BATCH * 2,
       capped: (txDocs?.length ?? 0) >= BATCH || (docs?.length ?? 0) >= BATCH,

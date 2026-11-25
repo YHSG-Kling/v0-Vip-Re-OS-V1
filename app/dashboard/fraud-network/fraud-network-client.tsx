@@ -15,7 +15,7 @@ import {
   listFraudBulletins, openFraudBulletin, setFraudWarningSubscription, listMyFraudWarningSubscriptions, requestFraudBulletinCorrection,
   addFraudBulletinToTopicPool, getFraudNetworkMetrics, listFraudModerationQueue, addFraudCaseModerationNote, draftFraudBulletinFromCase,
   linkFraudCaseToBulletin, updateFraudBulletinDraft, publishFraudBulletin, correctFraudBulletin, takeDownFraudBulletin,
-  recordFraudSubjectCorrection, resolveFraudCorrectionRequest,
+  recordFraudSubjectCorrection, resolveFraudCorrectionRequest, uploadFraudEvidenceFile, clearFraudNameReview,
 } from "@/app/actions/fraud-network"
 
 type Typ = { kind: string; label: string; evidenceChecklist: string[]; protectiveAction: string }
@@ -30,6 +30,13 @@ const sel = "h-9 rounded-md border bg-background px-2 text-sm"
 async function sha256(file: File): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-256", await file.arrayBuffer())
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("")
+}
+
+async function toBase64(file: File): Promise<string> {
+  const bytes = new Uint8Array(await file.arrayBuffer())
+  let bin = ""
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...Array.from(bytes.subarray(i, i + 0x8000)))
+  return btoa(bin)
 }
 
 export function FraudNetworkClient(p: Props) {
@@ -201,6 +208,13 @@ export function FraudNetworkClient(p: Props) {
                 <p className="text-muted-foreground">Evidence fingerprints: {caseView.evidence.length}. Retained until {String(caseView.case.retention_until).slice(0, 10)}.</p>
                 <div className="flex flex-wrap gap-2">
                   <Button size="sm" variant="outline" onClick={async () => say(await requestFraudEvidenceView(caseView.case.id), "")}>View evidence files</Button>
+                  <label className="text-xs">Add a file (hidden metadata is removed first):
+                    <input type="file" accept="image/jpeg,image/png" aria-label="Evidence file for this case" onChange={async (e) => {
+                      const f = e.target.files?.[0]; if (!f) return
+                      const r: Any = await uploadFraudEvidenceFile(caseView.case.id, evKind, f.name, await toBase64(f))
+                      setMsg(r.ok ? "File stored with its metadata removed." : `${r.error}${r.metadataRemoved?.length ? ` (removed: ${r.metadataRemoved.join(", ")})` : ""}`)
+                    }} />
+                  </label>
                   <Button size="sm" variant="outline" onClick={async () => { say(await withdrawFraudCase(caseView.case.id), "Report withdrawn."); await refresh() }}>Withdraw</Button>
                 </div>
                 <Textarea placeholder="Appeal the moderation outcome" value={appeal} onChange={(e) => setAppeal(e.target.value)} />
@@ -254,6 +268,7 @@ export function FraudNetworkClient(p: Props) {
                           <label className="flex items-center gap-2"><input type="checkbox" checked={pub.attest} onChange={(e) => setPub({ ...pub, attest: e.target.checked })} />I confirm this warning identifies no private person, client, account or home address.</label>
                           <label className="flex items-center gap-2"><input type="checkbox" checked={pub.legal} onChange={(e) => setPub({ ...pub, legal: e.target.checked })} />Legal review is complete for any named entity.</label>
                           <Textarea placeholder="How was it verified?" value={pub.note} onChange={(e) => setPub({ ...pub, note: e.target.value })} />
+                          <Button size="sm" variant="outline" onClick={async () => { say(await clearFraudNameReview(b.id, pub.note), "Second-moderator review recorded; publish again."); await loadQueue() }}>Second-moderator review of a name hold</Button>
                           <Button size="sm" onClick={async () => { say(await publishFraudBulletin(b.id, { attestNoPersonIdentified: pub.attest, legalReviewConfirmed: pub.legal, verificationNote: pub.note }), "Published."); await loadQueue(); await loadBulletins() }}>Publish</Button>
                         </div>
                       )}

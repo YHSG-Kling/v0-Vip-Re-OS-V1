@@ -3,6 +3,7 @@ import { getAgentContext } from "@/lib/identity"
 import { FRAUD_TYPOLOGY, FRAUD_CHANNELS, FRAUD_EVIDENCE_KINDS, FRAUD_REPORT_AGENCIES, FRAUD_CLAIM_CLASSES, EVIDENCE_STORAGE_NOT_ENABLED } from "@/lib/fraud-network/network"
 import { getFraudNetworkViewer } from "@/app/actions/fraud-network"
 import { FraudNetworkClient } from "./fraud-network-client"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
@@ -20,6 +21,11 @@ export default async function FraudNetworkPage() {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) redirect("/login")
   const viewer = await getFraudNetworkViewer()
+  // THE PAGE'S GATE: a participating tenant seat of an ACTIVE tenant, or platform safety staff. Everyone else (a client or
+  // vendor seat, a paused or departed tenant) is told why — never a blank screen or a silent bounce.
+  if (!viewer.tenant && !viewer.staff) {
+    return <RoleGateNotice surface="The Fraud & Trust Network" audience="the staff seats of an active member business (agents, coordinators, ISAs, team leads, brokers and compliance officers) and platform safety staff" />
+  }
   return (
     <FraudNetworkClient
       viewer={viewer}
