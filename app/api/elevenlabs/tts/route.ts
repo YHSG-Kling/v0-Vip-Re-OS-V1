@@ -71,6 +71,8 @@ export async function POST(request: NextRequest) {
       console.error("[ElevenLabs] TTS error:", tts.error)
       // The module's own error classes reach the caller: a quota pause and a
       // bad voice id are different problems and were both a 500 before.
+      // THIS month's vendor budget is spent (the paid door refused before ElevenLabs): 402 + budgetExceeded, its own reason.
+      if (tts.budgetExceeded) return NextResponse.json({ error: tts.error ?? "This month's vendor budget is used up — no audio was generated.", errorCode: tts.errorCode ?? "quota", budgetExceeded: true }, { status: 402 })
       const status = tts.errorCode === "quota" || tts.errorCode === "rate_limit" ? 429
         : tts.errorCode === "no_api_key" ? 503
         : tts.errorCode === "voice_not_found" ? 422

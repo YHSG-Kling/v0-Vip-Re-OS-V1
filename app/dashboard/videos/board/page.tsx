@@ -45,6 +45,7 @@ import {
   VIDEO_TERMINAL_STATUSES,
 } from "@/lib/video/video-status"
 import { toast } from "sonner"
+import { paidDoorRefusalMessage } from "@/lib/vendor-governance/budget-eval"
 import { distributeVideo } from "@/app/actions/video/distribute-video"
 import { VideoStudioDialog } from "./video-studio-dialog"
 import { VideoRecommendationsCard } from "./video-recommendations-card"
@@ -394,6 +395,10 @@ export default function VideoKanbanBoard() {
       if (response.ok) {
         setPollingVideoIds(prev => new Set(prev).add(videoId))
         await loadVideos()
+      } else {
+        // A refusal is SHOWN (wave 156, 156S round 6) — this retry used to fail silently, the vendor-budget pause included.
+        const body = await response.json().catch(() => ({}))
+        toast.error(paidDoorRefusalMessage({ budgetExceeded: body?.budgetExceeded, capExceeded: body?.capExceeded, error: body?.error }, "The video could not be re-submitted — try again.", "the video"))
       }
     } catch (error) {
       console.error("Error retrying video:", error)

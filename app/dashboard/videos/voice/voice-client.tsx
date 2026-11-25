@@ -31,6 +31,7 @@ import {
 } from "@/app/actions/video-voice"
 import { VOICE_CLONE_SAMPLE_PHRASES } from "@/app/actions/video-voice.constants"
 import type { SamplePhrase, SampleManifest } from "@/app/actions/video-voice.types"
+import { paidDoorRefusalMessage } from "@/lib/vendor-governance/budget-eval"
 
 // ─── PROPS ───────────────────────────────────────────────────────────────────
 
@@ -290,11 +291,8 @@ export function VoiceCloneClient({
         // capExceeded distinguishes "hit the plan's voice-clone cap" from any
         // other refusal, so the message points at the actual cause instead of
         // a generic retry.
-        throw new Error(
-          data.capExceeded
-            ? (data.error ?? "Voice clone limit reached for your plan.")
-            : (data.error ?? "Voice cloning failed — please try again."),
-        )
+        // budgetExceeded (this month's vendor budget is spent — the route's own reason) / capExceeded / the route's error.
+        throw new Error(paidDoorRefusalMessage({ budgetExceeded: data.budgetExceeded, capExceeded: data.capExceeded, error: data.error }, "Voice cloning failed — please try again.", "the voice"))
       }
 
       // First clone becomes the default so video generation can pick it up

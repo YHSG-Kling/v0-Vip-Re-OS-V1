@@ -324,3 +324,19 @@ export function splitPullCost(chargeUsd: number, receipts: ReadonlyMap<string, n
   for (const f of floors) out.set(f.id, f.c / 100)
   return out
 }
+
+// ─── WHAT THE PERSON SEES WHEN A PAID DOOR REFUSES (wave 156, lane 156S, round 6) ──────────────────────────────────────────
+// A paid route that refuses over the vendor budget answers `{ budgetExceeded: true, error: <its own reason> }` (HTTP 402) —
+// e.g. app/api/elevenlabs/voice-clone/route.ts, app/api/did/create-avatar/route.ts. A refusal nobody reads is a refusal the
+// person never sees, so every caller maps the response through THIS one pure function: the route's own budget reason first,
+// then a plan-cap refusal, then the route's error, then the caller's fallback. Pure — importable from a client component.
+export function paidDoorRefusalMessage(
+  data: { budgetExceeded?: unknown; capExceeded?: unknown; error?: unknown } | null | undefined,
+  fallback: string,
+  what: string,
+): string {
+  const err = typeof data?.error === "string" && data.error.trim() ? data.error : null
+  if (data?.budgetExceeded === true) return err ?? `This month's vendor budget is used up — ${what} was not done.`
+  if (data?.capExceeded === true) return err ?? `The plan's limit is reached — ${what} was not done.`
+  return err ?? fallback
+}

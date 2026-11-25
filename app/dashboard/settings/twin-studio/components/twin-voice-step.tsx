@@ -30,6 +30,7 @@ import { uploadTwinVoiceSample } from "@/app/actions/twin-studio-upload"
 import { listTwinVoiceOptions, setTwinStockVoice, type TwinVoiceOption } from "@/app/actions/twin-studio"
 import { previewAssistantVoiceAction } from "@/app/actions/ai-identity"
 import { VoiceRecorder } from "./voice-recorder"
+import { paidDoorRefusalMessage } from "@/lib/vendor-governance/budget-eval"
 
 type Mode = "choose" | "record" | "stock"
 
@@ -153,7 +154,7 @@ function RecordVoice({
       })
       const cloneData = await cloneRes.json().catch(() => ({}))
       if (!cloneRes.ok || !cloneData.success) {
-        toast.error(cloneData.capExceeded ? (cloneData.error ?? "Voice clone limit reached for your plan.") : (cloneData.error ?? "Voice clone failed"))
+        toast.error(paidDoorRefusalMessage({ budgetExceeded: cloneData.budgetExceeded, capExceeded: cloneData.capExceeded, error: cloneData.error }, "Voice clone failed", "the voice")) // budgetExceeded / capExceeded / the route's error
         return
       }
       toast.success("Your voice clone is ready")

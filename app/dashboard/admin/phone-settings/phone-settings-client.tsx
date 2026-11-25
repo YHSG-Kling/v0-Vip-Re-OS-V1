@@ -22,7 +22,7 @@ import {
   type PhoneAllowanceStatus,
   type NumberCandidateView,
 } from "@/app/actions/phone-provisioning"
-import type { GenericVoiceOption } from "@/lib/voice/voice-resolver"
+import type { GenericVoiceOption } from "@/lib/voice/voice-resolver"; import { paidDoorRefusalMessage } from "@/lib/vendor-governance/budget-eval"
 
 interface Props {
   initialSettings: BrokeragePhoneSettings
@@ -176,9 +176,9 @@ export function PhoneSettingsClient({ initialSettings, genericVoices, allowanceS
         setVoiceError(
           res.status === 503
             ? "Voice cloning is not switched on yet — ElevenLabs isn't configured for the platform; platform staff can turn it on, and no voice was cloned."
-            : data?.capExceeded
-            ? (data.error ?? "Voice clone limit reached for your plan.")
-            : (data?.error ?? "Voice clone failed"),
+            // budgetExceeded (this month's vendor budget is spent) / capExceeded / the route's error — the ONE mapper.
+            : paidDoorRefusalMessage({ budgetExceeded: data?.budgetExceeded, capExceeded: data?.capExceeded, error: data?.error }, "Voice clone failed", "the voice"),
+          // (line-neutral with the three-line ternary it replaced; the capability-surface audit cites the 503 sentence above by line)
         )
         return
       }

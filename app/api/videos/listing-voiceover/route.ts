@@ -232,6 +232,9 @@ export async function POST(request: NextRequest) {
     })
 
     const ttsData = await ttsRes.json()
+    if (ttsData?.budgetExceeded === true) {
+      return NextResponse.json({ error: ttsData.error ?? "This month's vendor budget is used up — no voiceover was generated.", budgetExceeded: true }, { status: 402 })
+    }
     if (!ttsRes.ok || !ttsData.audio_url) {
       return NextResponse.json({ error: "Failed to generate voiceover audio" }, { status: 500 })
     }

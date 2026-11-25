@@ -334,6 +334,11 @@ export async function POST(request: NextRequest) {
     })
 
     const ttsData = await ttsRes.json()
+    if (ttsData?.budgetExceeded === true) {
+      // The narration was refused on THIS month's vendor budget — said as that, not as a generic voice failure.
+      await releaseSlot("Vendor budget exceeded — narration paused")
+      return NextResponse.json({ error: "Your plan's monthly vendor budget is used up — the video was not rendered.", budgetExceeded: true }, { status: 402 })
+    }
     if (!ttsRes.ok || !ttsData.audio_url) {
       console.error("[D-ID] TTS step failed:", ttsData)
       // The slot is claimed and nothing will ever fill it — release it, or the
@@ -446,7 +451,7 @@ export async function POST(request: NextRequest) {
     }), (r) => ({ ok: r.ok && !!r.data?.id, providerRef: r.data?.id ?? null, error: r.ok ? null : (r.error ?? `HTTP ${r.status}`) }))
     if (!paid.ran && paid.reason === "budget_refused") {
       await releaseSlot("Vendor budget exceeded — D-ID render paused")
-      return NextResponse.json({ error: "Your plan's monthly vendor budget is used up — the video was not rendered." }, { status: 402 })
+      return NextResponse.json({ error: "Your plan's monthly vendor budget is used up — the video was not rendered.", budgetExceeded: true }, { status: 402 })
     }
     if (!paid.ran && !paid.providerRef) {
       await releaseSlot(paid.detail)
