@@ -271,8 +271,8 @@ async function sectionF() {
 
   const mig = raw("supabase/migrations/m1066-acceptance-records-carry-the-content-hash-of-the-accepted-text.sql", WT)
   const code = mig.split("\n").filter((l) => !/^\s*--/.test(l)).join("\n")
-  check("F6 m1066 is written, not applied, and additive: a nullable content_sha256 on both tables with a 64-lowercase-hex-or-NULL CHECK each, no NOT NULL / DROP COLUMN / policy",
-    /^-- WRITTEN, NOT APPLIED/.test(mig) && ["platform_tos_acceptances", "privacy_acceptances"].every((t) => new RegExp(`ALTER TABLE public\\.${t} ADD COLUMN IF NOT EXISTS content_sha256 text;`).test(code) && new RegExp(`${t}_content_sha256_check\\s+CHECK \\(content_sha256 IS NULL OR content_sha256 ~ '\\^\\[0-9a-f\\]\\{64\\}\\$'\\)`).test(code))
+  check("F6 m1066 states its own status in its first line (written, or applied live with a date) and is additive: a nullable content_sha256 on both tables with a 64-lowercase-hex-or-NULL CHECK each, no NOT NULL / DROP COLUMN / policy",
+    /^-- (WRITTEN, NOT APPLIED|APPLIED LIVE \d{4}-\d{2}-\d{2})/.test(mig) && ["platform_tos_acceptances", "privacy_acceptances"].every((t) => new RegExp(`ALTER TABLE public\\.${t} ADD COLUMN IF NOT EXISTS content_sha256 text;`).test(code) && new RegExp(`${t}_content_sha256_check\\s+CHECK \\(content_sha256 IS NULL OR content_sha256 ~ '\\^\\[0-9a-f\\]\\{64\\}\\$'\\)`).test(code))
     && !/NOT NULL|DROP COLUMN|(CREATE|ALTER|DROP) POLICY/i.test(code))
   const sheet = raw("docs/operations/WAVE156-OWNER-ACTION-SHEET.md", WT)
   check("F7 the sheet's step 6 says the hash is recorded once m1066 is applied", /m1066/.test(sheet.split(/^## Step 7/m)[0].split(/^## Step 6/m)[1] ?? ""))
