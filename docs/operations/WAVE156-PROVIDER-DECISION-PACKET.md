@@ -216,6 +216,20 @@ pilot.
 
 ---
 
+### Round 2 (same day): changes to what is enforced
+
+- **The platform failover to dormant providers is closed.** Before this, the enrichment drain
+  (`processEnrichmentQueue`) and the raw-record promotion called platform BatchData and PeopleData while both were
+  `dormant_survivor`, which meant paid calls the owner had not confirmed. The drain driven at base made `peopledata`
+  and `batchdata + peopledata` calls. Both paths now walk only licensed platform providers (`licensedContactRoute` /
+  `isPlatformProviderLicensed`). A tenant's OWN BatchData connection (its own account, key and bill) is unaffected.
+- **The RentCast health probe counts.** It reserves against the same ceiling and is booked on success only, as a
+  platform-paid `health_probe` row. At the ceiling it is skipped, and connector health falls back to credential posture.
+- **Billing anchor day.** `billing_anchor_day` (1–31) aligns the counted window with RentCast's own billing period. A
+  short month starts on its last day. The default is still the calendar month in UTC.
+- **The editor is on the platform console** (connector-healing, superadmin): it is validated, audited and receipted.
+  Until m1019 is applied it says the setting is not available yet.
+
 ## 9. Sources (fetched 2026-11-25 unless noted)
 
 - RentCast billing: <https://developers.rentcast.io/reference/billing-and-pricing>. Read: per successful (200) request; no hard
