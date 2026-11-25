@@ -53,7 +53,7 @@ export interface LiveInterpretInput extends Omit<InterpretIntentInput, "operable
 /** C17 interpretIntent with operability and the one model assist. Never throws. */
 export async function interpretIntentLive(input: LiveInterpretInput): Promise<IntentInterpretation> {
   const now = input.now ?? new Date()
-  const base: InterpretIntentInput = { ...input, now }
+  const base: InterpretIntentInput = { ...input, now, actor: await withSeatPayer(input) }
   let result = interpretIntent(base)
 
   // ── The model, only on a miss, a tie, or a required detail the rules could not lift from the words
@@ -494,3 +494,19 @@ export async function recordIntentCommand(svc: Svc, row: { actor: IntentActor; t
   if (error) console.error("[intent-interface] voice_commands record refused:", error.message)
 }
 
+
+/**
+ * WAVE 156 (lane 156Q): the seat's subscriber shape for the assistant's WORDS (a solo agent never hears "brokerage", an
+ * office seat hears the office it acts for) — read once from the SESSION tenant and the session user through the one
+ * resolver (lib/kernel/resolve-user-office.ts resolveSeatPayer). A caller that already supplied `actor.payer` keeps it.
+ * Words only: authority, scope and outcomes never read it. Never throws — an unread shape is actor-neutral wording.
+ */
+async function withSeatPayer(input: LiveInterpretInput): Promise<IntentActor> {
+  if (input.actor.payer !== undefined || !input.tenant.brokerageId) return input.actor
+  try {
+    const { resolveSeatPayer } = await import("@/lib/kernel/resolve-user-office")
+    return { ...input.actor, payer: await resolveSeatPayer(input.svc ?? createServiceClient(), input.tenant.brokerageId, input.actor.userId) }
+  } catch {
+    return { ...input.actor, payer: null }
+  }
+}

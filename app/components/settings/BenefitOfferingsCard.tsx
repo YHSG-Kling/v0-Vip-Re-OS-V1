@@ -77,7 +77,7 @@ const ROWS: RowSpec[] = [
 
 /** How the share is distributed — a form mirroring the m575 model exactly. */
 function RevenueShareModelPanel() {
-  const [state, setState] = useState<RevenueShareModelState | null>(null)
+  const [state, setState] = useState<(RevenueShareModelState & { fundingLabel?: string }) | null>(null)
   const [loadError, setLoadError] = useState("")
   const [saveError, setSaveError] = useState("")
   const [saving, setSaving] = useState(false)
@@ -89,7 +89,7 @@ function RevenueShareModelPanel() {
   useEffect(() => {
     getRevenueShareDistributionModel().then((r) => {
       if (!r.ok) { setLoadError(r.error); return }
-      setState(r.state)
+      setState({ ...r.state, fundingLabel: r.fundingLabel })
       const m = r.state.model
       if (m) {
         setForm({
@@ -123,7 +123,7 @@ function RevenueShareModelPanel() {
     if (!r.ok) { setSaveError(r.error ?? "Failed to save"); return }
     setSavedTick(true)
     const reread = await getRevenueShareDistributionModel()
-    if (reread.ok) setState(reread.state)
+    if (reread.ok) setState({ ...reread.state, fundingLabel: reread.fundingLabel })
   }
 
   if (loadError) return <p className="text-sm text-red-600 mt-2">{loadError}</p>
@@ -148,7 +148,7 @@ function RevenueShareModelPanel() {
           >
             <option value="">Choose…</option>
             <option value="agent">A portion of the agent&apos;s income</option>
-            <option value="brokerage">The brokerage pays it</option>
+            <option value="brokerage">{state.fundingLabel ?? "Your account pays it"}</option>
           </select>
         </label>
         <label className="text-xs text-gray-700">

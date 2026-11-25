@@ -178,7 +178,7 @@ export async function setBenefitOffering(
  * broker that the enabled mark alone pays nothing until the model is set.
  */
 export async function getRevenueShareDistributionModel(): Promise<
-  { ok: true; state: RevenueShareModelState } | { ok: false; error: string }
+  { ok: true; state: RevenueShareModelState; /** wave 156Q: the 'brokerage' funding choice in the payer's words. */ fundingLabel: string } | { ok: false; error: string }
 > {
   const ctx = await resolveBrokerAdmin("read")
   if (!ctx.ok) return { ok: false, error: ctx.error }
@@ -189,7 +189,7 @@ export async function getRevenueShareDistributionModel(): Promise<
   const { data, error } = await svc.from("brokerages").select("*").eq("id", ctx.brokerageId).maybeSingle()
   // §3: the error is read — a refused read must never render as "unconfigured".
   if (error) return { ok: false, error: error.message }
-  return { ok: true, state: parseRevenueShareModel((data ?? null) as Record<string, unknown> | null) }
+  return { ok: true, state: parseRevenueShareModel((data ?? null) as Record<string, unknown> | null), fundingLabel: await revenueShareFundingLabel(svc, ctx.brokerageId) }
 }
 
 export interface RevenueShareModelInput {
@@ -225,7 +225,7 @@ export async function setRevenueShareDistributionModel(
   if (!ctx.ok) return { ok: false, error: ctx.error }
 
   if (!REVENUE_SHARE_SOURCES.includes(input.sourceOfFunds)) {
-    return { ok: false, error: "Source must be 'agent' (a portion of the agent's income) or 'brokerage' (the brokerage pays)." }
+    return { ok: false, error: `Choose who funds the share: a portion of the agent's income, or ${(await revenueShareFundingLabel(createServiceClient(), ctx.brokerageId)).toLowerCase().replace(/ it$/, " it directly")}.` }
   }
   if (!REVENUE_SHARE_RATE_TYPES.includes(input.rateType)) {
     return { ok: false, error: "Rate type must be 'percent' or 'flat'." }
@@ -268,4 +268,16 @@ export async function setRevenueShareDistributionModel(
   return { ok: true }
   })
   return "ok" in r ? r : { ok: false, error: r.error ?? "This change was not recorded — nothing was saved" }
+}
+
+/**
+ * WAVE 156 (lane 156Q — directive 156A item 5): the stored funding value stays 'brokerage' (agent_relationships /
+ * brokerages vocabulary, unchanged); the WORDS for it follow the session tenant's own shape (lib/errors
+ * resolveTenantPayer → tenantPayerWords): "The brokerage pays it" only for a brokerage, "The team pays it" for a team,
+ * "You pay it" for a solo agent, "Your account pays it" when the tier is unread (fail closed). Not exported — a
+ * module-private helper of this "use server" file, never an endpoint. The tenant is the caller's resolved session tenant.
+ */
+async function revenueShareFundingLabel(svc: ReturnType<typeof createServiceClient>, brokerageId: string): Promise<string> {
+  const { resolveTenantPayer, tenantPayerWords, capitalizeWords } = await import("@/lib/errors")
+  return `${capitalizeWords(tenantPayerWords(await resolveTenantPayer(svc, brokerageId)).payerPays)} it`
 }

@@ -163,12 +163,12 @@ export async function getCommissionPayoutPolicyAction(): Promise<ActionResult<{
   const { data, error } = await createServiceClient().from("brokerages").select("*").eq("id", s.actor.brokerageId).maybeSingle()
   if (error) return { success: false, error: `policy_read_refused: ${error.message}` }
   const b = (data ?? {}) as { offers_cda?: boolean | null; commission_payout_timing?: string | null; agent_concession_approval?: string | null }
-  const { resolvePayoutTiming, COMMISSION_PAYOUT_TIMINGS, COMMISSION_PAYOUT_TIMING_LABEL } = await import("@/lib/transactions/cda-closing-policy")
-  const { resolveAgentConcessionPolicy } = await import("@/lib/commission/agent-concession")
+  const { resolvePayoutTiming, COMMISSION_PAYOUT_TIMINGS, commissionPayoutTimingLabel } = await import("@/lib/transactions/cda-closing-policy")
+  const [{ resolveAgentConcessionPolicy }, payer] = await Promise.all([import("@/lib/commission/agent-concession"), import("@/lib/errors").then((E) => E.resolveTenantPayer(createServiceClient(), s.actor.brokerageId))])
   const timing = resolvePayoutTiming({ offersCda: b.offers_cda ?? null, payoutTiming: b.commission_payout_timing })
   const timingOptions = COMMISSION_PAYOUT_TIMINGS.map((value) => ({
     value,
-    label: COMMISSION_PAYOUT_TIMING_LABEL[value],
+    label: commissionPayoutTimingLabel(value, payer), // wave 156Q: payer-true words (a solo agent never reads "the brokerage pays")
     // Closing-time payout is authorized by a CDA — offered only to a brokerage that uses one.
     available: value !== "at_closing_per_cda" || b.offers_cda === true,
   }))
