@@ -430,7 +430,7 @@ async function driven() {
     fresh({ video_completion_tracking: [] })
     const r: any = await as(ANON, () => m.POST(req({ videoId: X, positionSeconds: 10, percentWatched: 50 })))
     neg("training progress route: an anonymous POST → 401, no completion row", r?.status === 401 && T("video_completion_tracking").length === 0, `status=${r?.status} rows=${T("video_completion_tracking").length}`)
-    fresh({ video_completion_tracking: [] })
+    fresh({ video_completion_tracking: [], training_videos: [{ id: Y, brokerage_id: null, is_required: false, duration_seconds: 600 }] }) // wave 156 (156K): the route now refuses a video this tenant cannot see
     const r2: any = await as(AS_AGENT, () => m.POST(req({ videoId: Y, positionSeconds: 10, percentWatched: 50 })))
     check("training progress route: the agent's session → 200, progress recorded under the session agent", r2?.status === 200 && T("video_completion_tracking")[0]?.agent_id === AG && T("video_completion_tracking")[0]?.brokerage_id === A, `status=${r2?.status}`)
   }
