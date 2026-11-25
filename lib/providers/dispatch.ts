@@ -650,8 +650,8 @@ async function deconflictGate(args: {
 }): Promise<DispatchResult | null> {
   if (!args.contactId && !args.leadId && !args.recipientEmail && !args.recipientPhone) return null
   // 155B3 request 2 (done by 155R8): the requesting manager is named, so the verdict's loser is a manager, not null.
-  const { receipt, ...input } = args; const d = await evaluateDeconflict({ ...input, requestingManager: managerForDispatch(null, args.systemSource) })
-  if (receipt) rememberDeconflictVerdict(receipt, d, args.channel, managerForDispatch(null, args.systemSource) ?? null); if (d.allowed) return null
+  const d = await evaluateDeconflict({ ...args, requestingManager: managerForDispatch(null, args.systemSource) })
+  if (args.receipt) rememberDeconflictVerdict(args.receipt, d, args.channel, managerForDispatch(null, args.systemSource) ?? null); if (d.allowed) return null
   const refusal: DispatchResult = {
     success:     false,
     providerKey: DECONFLICT_GATE_KEY,
@@ -2253,5 +2253,8 @@ export async function releaseApprovedSend(svc: { from: (t: string) => any }, a: 
     sink: { decision, verification: { kind: "authorized_human", userId: approver, authority: `send approval ${a.approvalId}` } },
   }
   const params = { ...env.params, brokerageId: a.brokerageId, origin }
-  return env.kind === "sms" ? dispatchSms(params as unknown as DispatchSmsParams) : dispatchEmail(params as unknown as DispatchEmailParams)
+  // The WHY of a released send is the person's approval (HUMAN_REQUESTED); the approval id is the unit of once.
+  return env.kind === "sms"
+    ? dispatchSms({ ...(params as unknown as DispatchSmsParams), ledger: { reasonCode: "HUMAN_REQUESTED", reasonDetail: `released by send approval ${a.approvalId}` } })
+    : dispatchEmail({ ...(params as unknown as DispatchEmailParams), ledger: { reasonCode: "HUMAN_REQUESTED", reasonDetail: `released by send approval ${a.approvalId}` } })
 }
