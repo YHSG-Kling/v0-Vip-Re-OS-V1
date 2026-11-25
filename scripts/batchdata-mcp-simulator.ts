@@ -268,8 +268,23 @@ const read = (rel: string) => stripComments(readFileSync(join(root, rel), "utf8"
   const compProvider = stripComments(read("lib/cma/comp-provider.ts"))
   const COMPS_BD = /comparableProperty(?:Count|Preview|Page)\s*\(|fetchBatchDataComps\s*\(|batchDataMcpPreviewAvailable/
   ok(!COMPS_BD.test(compProvider), "CMA comp lane: no BatchData comps call (count / preview / page / REST) in stripped source")
-  ok(/getRentcastAvmAndComps\(\{[\s\S]{0,400}maxRadiusMiles: RENTCAST_SUPPLEMENT_RADIUS_MILES/.test(compProvider),
-     "CMA comp lane: the sold-side supplement is RentCast's WIDENED comparable search")
+  // WAVE 156 (156I r4): THE RULE, not the old spelling. Since lane 156I round 3 the supplement asks THE comparables capability
+  // (lib/avm/provider-chain.ts requestPropertyComparables — LAW 3; RentCast is the only provider on that route, BatchData's comps
+  // pull is excluded there). The rule is unchanged: the sold-side supplement is RentCast's WIDENED search — the capability call
+  // carrying the widened radius AND the widened look-back — never a BatchData mirror, never the vendor called by name.
+  const widenedSupplement = (src: string) =>
+    /requestPropertyComparables\(\{[\s\S]{0,400}maxRadiusMiles: RENTCAST_SUPPLEMENT_RADIUS_MILES[\s\S]{0,200}daysOld: RENTCAST_SUPPLEMENT_DAYS_OLD/.test(src)
+    && !/getRentcastAvmAndComps\s*\(|getRentcastComps\s*\(/.test(src) && !COMPS_BD.test(src)
+  ok(widenedSupplement(compProvider),
+     "CMA comp lane: the sold-side supplement is RentCast's WIDENED comparable search (through requestPropertyComparables, widened radius + look-back)")
+  // NEGATIVE CONTROLS (wave 156, 156I r4): a supplement that is not widened, one that calls the vendor by name, and one that
+  // calls a BatchData comps function must each fail the same rule.
+  ok(!widenedSupplement(`const wide = await requestPropertyComparables({ address: fullAddress, limit: 25 })`),
+     "negative control: a supplement that is NOT widened (no widened radius / look-back) fails the rule")
+  ok(!widenedSupplement(`const wide = await getRentcastAvmAndComps({ address, maxRadiusMiles: RENTCAST_SUPPLEMENT_RADIUS_MILES, daysOld: RENTCAST_SUPPLEMENT_DAYS_OLD })`),
+     "negative control: a supplement calling the vendor by name fails the rule")
+  ok(!widenedSupplement(`const wide = await requestPropertyComparables({ maxRadiusMiles: RENTCAST_SUPPLEMENT_RADIUS_MILES, daysOld: RENTCAST_SUPPLEMENT_DAYS_OLD }); await comparablePropertyPage({ address })`),
+     "negative control: a supplement that also calls a BatchData comps function fails the rule")
   ok(!/export async function comparableProperty(?:Count|Preview|Page)\(/.test(stripComments(read("lib/external/batchdata-mcp.ts"))),
      "batchdata-mcp.ts: the comps MCP mirrors are deleted with their one caller")
   // POSITIVE CONTROL (§2): the same finder flags a fixture that still calls the retired pre-flight.
