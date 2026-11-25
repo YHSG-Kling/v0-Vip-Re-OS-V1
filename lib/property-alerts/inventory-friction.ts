@@ -137,6 +137,10 @@ export async function detectInventoryFriction(db: Db, scope: TenantScope, deps: 
       const buyer = [person.first_name, person.last_name].filter(Boolean).join(" ").trim() || "Your buyer"
       const windowIndex = Math.floor(now.getTime() / (FRICTION_TASK_WINDOW_DAYS * 86_400_000))
       const summary = criteriaSummary(alert)
+      // WAVE 156 (156I r3, directive row 9): the tenant's OWN consented owners in the shortage area, for the AGENT to choose to call.
+      const owners = await shortageAreaOwners(db, { brokerageId, agentId: person.agent_id, alert })
+      if (owners.error) stats.errors.push(`${alert.id}: owners in the area not read (${owners.error}) — the task names none`)
+      const ownersLine = ownersSentence(owners)
       const out = await withActionLedger<{ taskId: string | null; note: string | null }>(
         {
           brokerageId, action: FRICTION_ACTION,
@@ -145,13 +149,13 @@ export async function detectInventoryFriction(db: Db, scope: TenantScope, deps: 
           reasonCode: "SERVICE_NOTICE",
           reasonDetail: `saved search answered ${ev.runs} times with homes in the area (up to ${ev.maxChecked} a run) and none fit, ${ev.firstAt.slice(0, 10)} → ${ev.lastAt.slice(0, 10)}; the agent reviews it with the buyer`,
           idempotencyKey: `${FRICTION_ACTION}:${alert.id}:${windowIndex}`, riskClass: "LOW_RISK_WRITE", channel: "in_app", systemSource: "property_alert_friction",
-          detail: { contact_id: alert.contact_id, runs: ev.runs, first_run_at: ev.firstAt, last_run_at: ev.lastAt, max_homes_checked: ev.maxChecked, criteria: summary },
+          detail: { contact_id: alert.contact_id, area_owners_with_consent: owners.ids.length, runs: ev.runs, first_run_at: ev.firstAt, last_run_at: ev.lastAt, max_homes_checked: ev.maxChecked, criteria: summary },
         },
         async () => {
           const { data: task, error: taskErr } = await db.from("tasks").insert({
             brokerage_id: brokerageId, contact_id: alert.contact_id, assigned_to_agent_id: person.agent_id, listing_id: null, transaction_id: null,
             title: `No home has fit ${buyer}'s search yet`,
-            description: `${buyer}'s saved search "${(alert.alert_name ?? "Saved search").slice(0, 80)}" (${summary}) ran ${ev.runs} times between ${ev.firstAt.slice(0, 10)} and ${ev.lastAt.slice(0, 10)}. Each time the area had homes for sale (up to ${ev.maxChecked} per run), and none fit. Review the price ceiling, bedrooms and area with them, suggest a nearby ZIP, or source an off-market match.`,
+            description: `${buyer}'s saved search "${(alert.alert_name ?? "Saved search").slice(0, 80)}" (${summary}) ran ${ev.runs} times between ${ev.firstAt.slice(0, 10)} and ${ev.lastAt.slice(0, 10)}. Each time the area had homes for sale (up to ${ev.maxChecked} per run), and none fit. Review the price ceiling, bedrooms and area with them, suggest a nearby ZIP, or source an off-market match.${ownersLine}`,
             due_date: new Date(now.getTime() + 2 * 86_400_000).toISOString().slice(0, 10),
             priority: "medium", status: "pending", assignee_type: "agent", source: FRICTION_TASK_SOURCE, auto_generated: true,
           }).select("id").single()
@@ -172,4 +176,75 @@ export async function detectInventoryFriction(db: Db, scope: TenantScope, deps: 
     }
   }
   return stats
+}
+
+// ═══ WAVE 156 (lane 156I round 3 — directive 156I row 9: "verified market shortage … prioritize tenant listing outreach") ═════════
+// MEASURED AT fec2aa5a: a measured shortage opened one buyer-side task and stopped — nothing let the agent see that the tenant's
+// OWN people own homes in that area. The task now carries a COUNT and links to those people, for the agent to CHOOSE to call.
+// Nothing is sent, proposed or enrolled (a task line, not a message or a campaign). Who appears — all of it, or nobody:
+//   · the tenant's CONTACTS only (leads are the lead desk's — agents see Contacts only), never another tenant's;
+//   · only contacts the task's agent may see: their own (contacts.agent_id), or — when that agent's user LEADS a team
+//     (teams.team_lead_id, resolveLedTeamId) — the active members of that team (team_members.is_active);
+//   · an OWNER (home_owner_status 'owner') whose address is in the alert's ZIPs or cities, with at least the buyer's minimum
+//     bedrooms when the contact's bedroom count is known;
+//   · and MARKETING CONSENT on record: answerConsentQuestion(consentScopeFor(...), { email, real_estate_services }) — a narrow
+//     grant (a home-value request, market updates) does not cover a listing conversation; an unreadable scope is "no".
+// BLIND SPOTS: team membership is read from team_members only (public.agent_team_id() also reads users.team_id / agents.team_id);
+// /crm has no id-list filter, so the task names each person's own page (at most OWNER_LINKS_MAX) beside the full count.
+
+const OWNER_LINKS_MAX = 10
+const OWNER_SCAN_MAX = 200
+
+/** The tenant's consented owners in a shortage area that the task's agent may see. Never throws. */
+export async function shortageAreaOwners(
+  db: Db,
+  a: { brokerageId: string; agentId: string; alert: Pick<AlertRow, "contact_id" | "cities" | "zip_codes" | "bedrooms_min"> },
+): Promise<{ ids: string[]; names: string[]; error: string | null }> {
+  const none = (error: string | null) => ({ ids: [], names: [], error })
+  try {
+    const zips = (a.alert.zip_codes ?? []).map((z) => String(z).slice(0, 5)).filter(Boolean)
+    const cities = (a.alert.cities ?? []).map((c) => String(c).trim().toLowerCase()).filter(Boolean)
+    if (!zips.length && !cities.length) return none(null)
+    // Which agents' contacts this agent may see: their own, plus their led team's active members.
+    const visibleAgents = new Set<string>([a.agentId])
+    const { data: ag, error: agErr } = await db.from("agents").select("id, user_id").eq("id", a.agentId).eq("brokerage_id", a.brokerageId).maybeSingle()
+    if (agErr) return none(`agent read refused: ${agErr.message}`)
+    const userId = (ag as { user_id?: string | null } | null)?.user_id ?? null
+    if (userId) {
+      const { resolveLedTeamId } = await import("@/lib/kernel/resolve-user-team")
+      const led = await resolveLedTeamId(db as never, userId)
+      if (!led.ok) return none(`led team unreadable: ${led.error}`)
+      if (led.teamId) {
+        const { data: mem, error: memErr } = await db.from("team_members").select("agent_id").eq("team_id", led.teamId).eq("brokerage_id", a.brokerageId).eq("is_active", true)
+        if (memErr) return none(`team members unreadable: ${memErr.message}`)
+        for (const m of (mem ?? []) as Array<{ agent_id: string | null }>) if (m.agent_id) visibleAgents.add(m.agent_id)
+      }
+    }
+    const { data, error } = await db.from("contacts").select("id, first_name, last_name, agent_id, zip_code, city, beds, home_owner_status")
+      .eq("brokerage_id", a.brokerageId).is("deleted_at", null).eq("home_owner_status", "owner").in("agent_id", [...visibleAgents]).limit(OWNER_SCAN_MAX)
+    if (error) return none(`contacts read refused: ${error.message}`)
+    const minBeds = Number(a.alert.bedrooms_min) || 0
+    const inArea = ((data ?? []) as Array<{ id: string; first_name: string | null; last_name: string | null; zip_code: string | null; city: string | null; beds: number | null }>)
+      .filter((c) => c.id !== a.alert.contact_id)
+      .filter((c) => (c.zip_code && zips.includes(String(c.zip_code).slice(0, 5))) || (c.city && cities.includes(String(c.city).trim().toLowerCase())))
+      .filter((c) => !(minBeds > 0 && typeof c.beds === "number" && c.beds < minBeds))
+    const { consentScopeFor, answerConsentQuestion } = await import("@/lib/kernel/compliance/require-contact-consent")
+    const ids: string[] = [], names: string[] = []
+    for (const c of inArea) {
+      const scope = await consentScopeFor(db as never, { brokerageId: a.brokerageId, contactId: c.id })
+      if (!answerConsentQuestion(scope, { channel: "email", purpose: "real_estate_services" }).allowed) continue
+      ids.push(c.id)
+      names.push([c.first_name, c.last_name].filter(Boolean).join(" ").trim() || "A homeowner")
+    }
+    return { ids, names, error: null }
+  } catch (e) {
+    return none(e instanceof Error ? e.message : String(e))
+  }
+}
+
+/** PURE. The task line: the count, and each person's own page (the agent decides whether to reach out). */
+function ownersSentence(o: { ids: string[]; names: string[] }): string {
+  if (!o.ids.length) return ""
+  const links = o.ids.slice(0, OWNER_LINKS_MAX).map((id, i) => `${o.names[i]} (/crm/contacts/${id})`).join("; ")
+  return ` ${o.ids.length} of your contacts own a home in this area and have consented to hear from you about real estate — you may choose to ask whether they would consider selling: ${links}${o.ids.length > OWNER_LINKS_MAX ? ` and ${o.ids.length - OWNER_LINKS_MAX} more` : ""}. Nothing has been sent to them.`
 }

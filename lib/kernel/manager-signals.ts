@@ -4138,3 +4138,91 @@ export async function loadRecentManagerTalk(
     payload: (r.payload && typeof r.payload === "object" ? r.payload : null) as Record<string, unknown> | null,
   }))
 }
+
+// ═══ WAVE 156 (lane 156I round 3 — directive 156I row 3: "reach consented leads when their STATED plans align") ════════════════
+// THE CONSUMER of corridor_radar_brief (catalogued at the foot of lib/kernel/signal-registry.ts). MEASURED AT fec2aa5a:
+// lib/acquisition-plays/moving-corridor.ts published the brief to the Campaign Orchestrator and nothing consumed it. It lives HERE,
+// at the foot (line-neutral above), because this module is already on the heaviest app entry's graph (app/crm/page.tsx): a module
+// of its own added one more, importing moving-corridor.ts added 18 (measured with scripts/app-import-graph.ts). No runtime import is
+// added — the consent answer and the proposal rail load lazily and are already on that graph.
+// What it does — a PROPOSAL, never a send:
+//   1. reads THIS tenant's movement records that carry a person's OWN stated relocation (captured_by 'person', deadline
+//      'relocation_start' still ahead) WITH a structured destination (m1030 stated_destination_*) in the brief's market state; a
+//      record with no stated destination is never matched, and nobody is inferred to be moving;
+//   2. keeps the Contacts whose stated city (or the label they typed) names the brief's market city;
+//   3. asks the ONE consent answer (consentScopeFor + answerConsentQuestion: email, market_updates) — no consent, an opt-out or an
+//      unreadable scope is "no";
+//   4. proposes ONE relocation-explainer message per person per brief on the gated proposal rail (proposeClientMessage → approval /
+//      autonomy posture → every outbound gate at release), deduped by a tag in the rationale read under the tenant.
+// Leads with a stated plan are the lead desk's (agents see Contacts only) — counted in the summary, never proposed here.
+// Proof: scripts/wave156-i-guard.ts §L.
+
+/** The fields of the published corridor brief the consumer reads (moving-corridor.ts CorridorBrief, structurally). */
+interface CorridorBriefPayload {
+  announcement_key?: unknown
+  market?: { city?: string | null; state?: string | null } | null
+  brief?: { announcement?: { employer?: string; citations?: Array<{ url: string; published: string | null }> } } | null
+}
+type CorridorProposeFn = (input: import("@/lib/agents/agent-client-messages").ProposeClientMessageInput, client: Svc) => Promise<{ ok: boolean; id?: string; error?: string }>
+
+const CORRIDOR_EXPLAINER_TAG = "[CORRIDOR_EXPLAINER]"
+const corridorNormPlace = (s: unknown) => String(s ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()
+
+
+export async function proposeCorridorExplainerToStatedMovers(
+  svc: Svc,
+  a: { brokerageId: string; payload: Record<string, unknown> | null; now?: Date },
+  deps: { propose?: CorridorProposeFn } = {},
+): Promise<{ proposed: number; skipped: Record<string, number>; summary: string }> {
+  const skipped: Record<string, number> = {}
+  const skip = (k: string) => { skipped[k] = (skipped[k] ?? 0) + 1 }
+  const done = (proposed: number, why: string) => ({ proposed, skipped, summary: `${why}${Object.keys(skipped).length ? ` (held: ${JSON.stringify(skipped)})` : ""}` })
+  const now = a.now ?? new Date()
+  const p = (a.payload ?? {}) as CorridorBriefPayload
+  const key = typeof p.announcement_key === "string" ? p.announcement_key : null
+  const announcement = p.brief?.announcement ?? null
+  const city = corridorNormPlace(p.market?.city), state = String(p.market?.state ?? "").trim().toUpperCase()
+  if (!a.brokerageId || !announcement?.employer || !key || !city || !/^[A-Z]{2}$/.test(state)) return done(0, "the brief names no announcement, market city and state — nobody is matched")
+  const { data, error } = await svc.from("movement_signals")
+    .select("id, contact_id, lead_id, known_deadline_at, stated_destination_label, stated_destination_city, stated_destination_state")
+    .eq("brokerage_id", a.brokerageId).eq("captured_by", "person").eq("known_deadline_kind", "relocation_start").eq("stated_destination_state", state).limit(500)
+  if (error) return done(0, `stated plans unreadable (${error.message}) — nothing proposed (fail closed)`)
+  const contacts = new Set<string>()
+  for (const r of (data ?? []) as Array<Record<string, any>>) {
+    const named = corridorNormPlace(r.stated_destination_city) === city || ` ${corridorNormPlace(r.stated_destination_label)} `.includes(` ${city} `)
+    if (!named) { skip("destination_elsewhere"); continue }
+    if (r.known_deadline_at && Date.parse(String(r.known_deadline_at)) < now.getTime()) { skip("stated_date_passed"); continue }
+    if (!r.contact_id) { skip(r.lead_id ? "lead_desk_not_proposed" : "no_person"); continue }
+    contacts.add(String(r.contact_id))
+  }
+  const { consentScopeFor, answerConsentQuestion } = await import("@/lib/kernel/compliance/require-contact-consent")
+  const propose: CorridorProposeFn = deps.propose ?? (async (input, client) => (await import("@/lib/agents/agent-client-messages")).proposeClientMessage(input, client as never))
+  // The brief exists only when a dated official source backs it (moving-corridor.ts corridorSourceProblem) — cite a dated one.
+  const cited = (announcement.citations ?? []).find((c) => !!c.published) ?? null
+  const cityLabel = String(p.market?.city ?? "").trim()
+  let proposed = 0
+  for (const contactId of contacts) {
+    const consent = answerConsentQuestion(await consentScopeFor(svc as never, { brokerageId: a.brokerageId, contactId }), { channel: "email", purpose: "market_updates" })
+    if (!consent.allowed) { skip(`no_consent:${consent.basis}`); continue }
+    const tag = `${CORRIDOR_EXPLAINER_TAG} [${key}] [${contactId}]`
+    const { data: dup, error: dupErr } = await svc.from("agent_client_messages").select("id").eq("brokerage_id", a.brokerageId).ilike("rationale", `${tag}%`).limit(1)
+    if (dupErr) { skip("dedup_unreadable"); continue }
+    if ((dup ?? []).length) { skip("already_proposed"); continue }
+    const res = await propose({
+      brokerageId: a.brokerageId, agentKind: "campaign_orchestrator", entityType: "contact", entityId: contactId, recipientContactId: contactId,
+      audience: "buyer", channel: "email",
+      subject: `${cityLabel}: a local guide for your move`,
+      body: `You mentioned you are planning a move to ${cityLabel}, ${state}. ${announcement.employer} has announced new plans there${cited?.published ? ` (published ${String(cited.published).slice(0, 10)})` : ""}, and we put together a local guide to neighborhoods and homes in the area. Reply if you would like a copy or help with the move.`,
+      rationale: `${tag} — the person's own stated destination matches the corridor brief; consent ${consent.consentEventId ?? "on record"} (email, market_updates); source ${cited?.url ?? "cited on the brief"}.`,
+      outreachReason: "relocation",
+    }, svc)
+    if (res.ok) proposed++
+    else skip("proposal_refused")
+  }
+  return done(proposed, `${proposed} relocation explainer proposal(s) on the gated rail for people whose own stated destination is ${cityLabel}, ${state}`)
+}
+
+SIGNAL_HANDLERS["campaign_orchestrator:corridor_radar_brief"] = async (signal, ctx) => {
+  const r = await proposeCorridorExplainerToStatedMovers(ctx.supabase as never, { brokerageId: ctx.brokerageId, payload: signal.payload })
+  return r.proposed > 0 ? r.summary : null
+}

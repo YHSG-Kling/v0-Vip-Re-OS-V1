@@ -999,6 +999,24 @@ export async function getHomeValueResult(requestId: string) {
     brokerageId: vr?.brokerage_id ?? null,
     contactId: resolvedContactId,
     agent,
+    // WAVE 156 (156I r3, directive row 4): the tenant's PUBLISHED seller net-sheet calculator (lane 156H's artifact), when one
+    // exists — the page links it; none published → null, and nothing new is offered (never default-rate math).
+    sellerNetCalculator: await publishedSellerNetCalculator(supabase, vr?.brokerage_id ?? null),
+  }
+}
+
+/** The tenant's published seller net-sheet calculator (lib/calculators/artifact.ts listPublishedCalculators), or null. */
+async function publishedSellerNetCalculator(svc: ReturnType<typeof createServiceClient>, brokerageId: string | null): Promise<{ slug: string; title: string } | null> {
+  if (!brokerageId) return null
+  try {
+    const { listPublishedCalculators } = await import("@/lib/calculators/artifact")
+    const notes: string[] = []
+    const found = (await listPublishedCalculators(svc as never, brokerageId, notes)).find((c) => c.kind === "seller_net_sheet")
+    if (notes.length) console.error("[home-value] published calculators:", notes.join("; "))
+    return found ? { slug: found.slug, title: found.title } : null
+  } catch (e) {
+    console.error("[home-value] published calculators not read:", e instanceof Error ? e.message : String(e))
+    return null
   }
 }
 

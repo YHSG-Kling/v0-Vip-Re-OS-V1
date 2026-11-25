@@ -274,7 +274,7 @@ export async function runMovingCorridorPlay(
         brokerageId, fromManager: "data_steward", toManager: "campaign_orchestrator", signalType: CORRIDOR_BRIEF_SIGNAL, dedupe: false,
         message: `${brief.announcement.employer} is ${EVENT_LABEL[brief.announcement.eventType]} near ${brief.coverage.territory} — a cited local buyer resource and an opt-in magnet are proposed (${brief.gapVerdict} inventory). ${brief.claimBoundary}`.slice(0, 900),
         entityType: "territory", entityId: a.market.id,
-        payload: { announcement_key: brief.announcement.key, play: PLAY, brief },
+        payload: { announcement_key: brief.announcement.key, play: PLAY, brief, market: { id: a.market.id, city: a.market.city, state: a.market.state } }, // market: wave 156 (156I r3) — the consumer matches stated destinations to it
       }, svc as never)
       actions.push({ kind: "manager_signal", target: "publishManagerSignal", detail: { announcement_key: brief.announcement.key, ok: sig.ok, reason: sig.reason ?? null, gap: brief.gapVerdict } })
       if (!sig.ok) { refused.push({ what: `brief ${brief.announcement.key}`, why: sig.reason ?? "bus refused" }); continue }
@@ -335,3 +335,4 @@ export function corridorSourceProblem(a: { employer: string; citations: Readonly
   const hosts = [...new Set(dated.map((c) => hostOf(c.url) ?? "an unreadable host"))].join(", ")
   return `no dated official source — the announcement is reported only by ${hosts}; held as cited evidence until the employer or the municipality publishes it`
 }
+
