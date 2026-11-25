@@ -199,7 +199,7 @@ The closure report names each table and its count. For each one, the Data Stewar
 ## Generated classification (do not edit by hand — `tsx --conditions=react-server scripts/transfer-classification-guard.ts --write`)
 
 <!-- BEGIN GENERATED: fk-child-classification (scripts/transfer-classification-guard.ts --write) -->
-Census: 441 FKs from 310 child tables into the 41 moved families (287 tables carry brokerage_id; 23 have no tenant column and follow their parent's tenancy implicitly). 75 further FKs run between families (follows_parent by construction).
+Census: 441 FKs from 310 child tables into the 41 moved families (286 tables carry brokerage_id; 24 have no tenant column and follow their parent's tenancy implicitly). 75 further FKs run between families (follows_parent by construction).
 
 | Class | Tables | FKs |
 |---|---|---|
@@ -316,7 +316,7 @@ Census: 441 FKs from 310 child tables into the 41 moved families (287 tables car
 **ANOTHER PARTY'S ACCESS OR RELATIONSHIP — outside agents, title-company users, deal-team members with portal grants, credit / referral partners: re-established by the target, never silently re-scoped**
 
 - `outside_agent_contact_links` — contact_id → contacts, listing_id → listings, transaction_id → transactions · data_steward
-- `title_company_users` — transaction_id → transactions · deal_coordinator
+- `title_company_users` — transaction_id → transactions · no tenant column · deal_coordinator
 - `deal_team_members` — transaction_id → transactions · recruiting_manager
 - `credit_partner_referrals` — contact_id → contacts · sphere_of_influence
 - `referral_sources` — contact_id → contacts · no tenant column · sphere_of_influence
