@@ -14,7 +14,7 @@ import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { isTenantAdminOrPlatformStaff } from "@/lib/auth/resolve-user-role"
 import TransactionFormsClient from "./transaction-forms-client"
-import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"; import { PacketBundleManager } from "@/app/components/forms/packet-bundle-manager"
 
 export const dynamic = "force-dynamic"
 
@@ -64,7 +64,7 @@ export default async function TransactionFormsPage() {
       )}
       {/* WAVE 154 (lane 154K, ledger 145A-OL-05): a stored master's link is minted per view by GET /api/admin/transaction-forms
           (the client reloads it on mount) — the first paint never carries the stored pdf_url of a storage_path row. */}
-      <TransactionFormsClient initialForms={(forms ?? []).map((f) => (f.storage_path ? { ...f, pdf_url: null } : f))} />
+      <TransactionFormsClient initialForms={(forms ?? []).map((f) => (f.storage_path ? { ...f, pdf_url: null } : f))} /><PacketBundleManager />{/* wave 156 (156C): packet bundles per state / office / team */}
     </div>
   )
 }

@@ -15,6 +15,11 @@ import { FORM_PACKET_BUCKET, resolvePacketActor, usableTenantPacketPaths } from 
  * ("ai.generate") is asked first; a refusal still returns the PDF's structure, with no model called. Spend is booked by
  * generateObjectRouted to the SESSION tenant. The text layer is read without the vision reader (no second paid call).
  */
+/** PURE: only the string values of a client map (the fill values the wizard holds). */
+function strMap(v: unknown): Record<string, string> {
+  return Object.fromEntries(Object.entries((v && typeof v === "object" ? v : {}) as Record<string, unknown>).filter(([, x]) => typeof x === "string")) as Record<string, string>
+}
+
 export async function POST(req: NextRequest) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -24,8 +29,19 @@ export async function POST(req: NextRequest) {
   if (!resolved.ok) return NextResponse.json({ error: resolved.error }, { status: 403 })
   const actor = resolved.actor
 
-  let body: { packet_id?: unknown }
+  let body: { packet_id?: unknown; action?: unknown; form_name?: unknown; fields?: unknown; current?: unknown; suggestions?: unknown; decisions?: unknown }
   try { body = await req.json() } catch { return NextResponse.json({ error: "Send JSON: { packet_id }" }, { status: 400 }) }
+  // ROUND 2: THE REVIEWER'S ACCEPT STEP — only suggestions the person marked "accept" come back as fill values (the FormWizard puts
+  // them into Step 3's fields). lib/forms/form-read-apply.ts applyAcceptedSuggestions; nothing is written anywhere; the CDA is refused.
+  if (body.action === "apply") {
+    const { applyAcceptedSuggestions } = await import("@/lib/forms/form-read-apply")
+    const out = applyAcceptedSuggestions(
+      strMap(body.current), Array.isArray(body.suggestions) ? (body.suggestions as never[]).slice(0, 200) : [],
+      (body.decisions && typeof body.decisions === "object" ? body.decisions : {}) as Record<number, "accept" | "reject">,
+      { name: typeof body.form_name === "string" ? body.form_name : null, fields: Array.isArray(body.fields) ? (body.fields as unknown[]).filter((f): f is string => typeof f === "string") : [] },
+    )
+    return NextResponse.json(out, { status: out.ok ? 200 : 422 })
+  }
   const packetId = typeof body.packet_id === "string" ? body.packet_id : ""
   const { data: row, error } = await svc.from("brokerage_form_library").select("id, name, form_code, storage_path").eq("id", packetId).eq("brokerage_id", actor.brokerageId).maybeSingle()
   if (error) return NextResponse.json({ error: `The form could not be read: ${error.message}` }, { status: 503 })

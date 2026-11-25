@@ -279,3 +279,53 @@ export async function resolveDealPacket(
     },
   }
 }
+
+// ── WAVE 156 (156C, round 2): what the SCREENS read ────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The owners this actor may add a form or bundle FOR — derived from mayManagePacketOwner, never a second rule: the brokerage and its
+ * offices for the oversight class (a solo-tier principal included), the team they lead, and always themselves (supplemental only).
+ */
+export async function ownerOptionsFor(svc: Svc, actor: PacketActor): Promise<{ ok: true; brokerage: boolean; offices: Array<{ id: string; name: string }>; teams: Array<{ id: string; name: string }>; self: true } | { ok: false; error: string }> {
+  let offices: Array<{ id: string; name: string }> = []
+  let teams: Array<{ id: string; name: string }> = []
+  if (actor.oversight) {
+    const { data, error } = await svc.from("locations").select("id, name").eq("brokerage_id", actor.brokerageId)
+    if (error) return { ok: false, error: `your offices could not be read: ${error.message}` }
+    offices = ((data ?? []) as Array<{ id: string; name: string | null }>).map((o) => ({ id: o.id, name: o.name ?? "Office" })).filter((o) => mayManagePacketOwner(actor, { teamId: null, locationId: o.id }))
+  }
+  if (actor.oversight || actor.ledTeamId) {
+    let q = svc.from("teams").select("id, name").eq("brokerage_id", actor.brokerageId).is("deleted_at", null)
+    if (!actor.oversight) q = q.eq("id", actor.ledTeamId as string)
+    const { data, error } = await q
+    if (error) return { ok: false, error: `your teams could not be read: ${error.message}` }
+    teams = ((data ?? []) as Array<{ id: string; name: string | null }>).map((t) => ({ id: t.id, name: t.name ?? "Team" })).filter((t) => mayManagePacketOwner(actor, { teamId: t.id }))
+  }
+  return { ok: true, brokerage: mayManagePacketOwner(actor, { teamId: null }), offices, teams, self: true }
+}
+
+/** The bundles this actor MANAGES, each with its live items in order and every item's status (the bundle-manager screen). */
+export async function listManagedBundles(svc: Svc, actor: PacketActor, now: Date = new Date()): Promise<{ ok: true; bundles: Array<BundleRow & { items: Array<BundleItemRow & { status: string; recoverHref: string | null }> }> } | { ok: false; error: string }> {
+  const { data, error } = await svc.from("form_packet_bundles").select("*").eq("brokerage_id", actor.brokerageId).eq("is_active", true)
+  if (error) return { ok: false, error: `your packet bundles could not be read: ${error.message}` }
+  const mine = ((data ?? []) as BundleRow[]).filter((b) => mayManagePacketOwner(actor, bundleOwner(b)))
+  const today = now.toISOString().slice(0, 10)
+  const out: Array<BundleRow & { items: Array<BundleItemRow & { status: string; recoverHref: string | null }> }> = []
+  for (const b of mine) {
+    const cur = await activeItems(svc, actor, b.id)
+    if (!cur.ok) return cur
+    const ids = cur.items.map((i) => i.library_form_id).filter((x): x is string => !!x)
+    const forms = new Map<string, TenantPacketRow>()
+    if (ids.length > 0) {
+      const { data: rows, error: fErr } = await svc.from("brokerage_form_library").select("*").eq("brokerage_id", actor.brokerageId).in("id", ids)
+      if (fErr) return { ok: false, error: `the bundle's forms could not be read: ${fErr.message}` }
+      for (const r of (rows ?? []) as TenantPacketRow[]) forms.set(r.id, r)
+    }
+    out.push({ ...b, items: cur.items.map((i) => {
+      const row = i.library_form_id ? forms.get(i.library_form_id) : undefined
+      const status = i.provider_form_id ? "ready" : row ? libraryFormStatus(row, today) : "not_configured"
+      return { ...i, status, recoverHref: status === "ready" ? null : "/dashboard/admin/transaction-forms" }
+    }) })
+  }
+  return { ok: true, bundles: out }
+}

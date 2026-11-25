@@ -27,7 +27,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 import type { SignerRole } from "./esign-anchors"
 import {
-  FORM_PACKET_TYPES, mayManagePacketOwner, registerTenantFormPacket, retireTenantFormPacket, packetChecksum,
+  FORM_PACKET_BUCKET, FORM_PACKET_TYPES, mayManagePacketOwner, registerTenantFormPacket, retireTenantFormPacket, packetChecksum, usableTenantPacketPaths,
   type PacketActor, type PacketProvenance, type TenantPacketRow,
 } from "./tenant-form-packets"
 import { findProviderFormById, type ProviderRefusal } from "./provider-form-directory"
@@ -235,4 +235,118 @@ export function libraryFormStatus(row: Pick<TenantPacketRow, "is_active" | "stor
   if (row.license_expires_at && row.license_expires_at < today) return "license_expired"
   if (!row.storage_path && !row.provider_form_id) return "not_configured"
   return "ready"
+}
+
+// ── WAVE 156 (156C, round 2): THE LICENSE / VERSION STANDING OF A FORM REFERENCE — the seam lane 156B's representation gate asks ──
+
+export type FormLicenseStanding =
+  | { standing: "licensed_current"; packetId: string; version: number | null; providerFormVersion: string | null }
+  | { standing: "retired"; packetId: string; replacementPacketId: string | null }
+  | { standing: "license_expired"; packetId: string; expiredOn: string }
+  | { standing: "unknown"; reason: string }
+
+/**
+ * For a TENANT (the caller's session brokerage — never a body value), a STATE, a FORM REFERENCE and optionally the VERSION the
+ * paperwork carries: is that form licensed and current in the tenant's directory, retired (with its replacement), license-expired,
+ * or unknown to the directory? Reads brokerage_form_library only, tenant-pinned; a refused read is an error, never "unknown".
+ *   · ref.packetId — the library row; ref.providerName + ref.providerFormId — an adopted provider form; ref.formCode / ref.name —
+ *     matched within the STATE only (case-insensitive), never across states.
+ *   · version — the row's integer `version` or the provider's `provider_form_version`. A version that is not the current one is
+ *     `retired` with the current row as its replacement (the paperwork used a superseded revision).
+ */
+export async function formLicenseStanding(
+  svc: Svc,
+  q: { brokerageId: string; state: string; ref: { packetId?: string | null; providerName?: string | null; providerFormId?: string | null; formCode?: string | null; name?: string | null }; version?: string | number | null; now?: Date },
+): Promise<{ ok: true; result: FormLicenseStanding } | { ok: false; error: string }> {
+  const state = (q.state ?? "").trim().toUpperCase()
+  if (!UUID.test(q.brokerageId ?? "")) return { ok: false, error: "no tenant" }
+  const { data, error } = await svc.from("brokerage_form_library")
+    .select("id, state, name, form_code, version, is_active, license_expires_at, replaced_by_id, provider_name, provider_form_id, provider_form_version")
+    .eq("brokerage_id", q.brokerageId)
+  if (error) return { ok: false, error: `the form directory could not be read: ${error.message}` }
+  type Row = Pick<TenantPacketRow, "id" | "state" | "name" | "form_code" | "version" | "is_active" | "license_expires_at" | "replaced_by_id" | "provider_name" | "provider_form_id" | "provider_form_version">
+  const rows = (data ?? []) as Row[]
+  const byId = new Map(rows.map((r) => [r.id, r]))
+  const lc = (s: string | null | undefined) => (s ?? "").trim().toLowerCase()
+  const r = q.ref
+  let hits: Row[]
+  if (r.packetId) hits = rows.filter((x) => x.id === r.packetId)
+  else if (r.providerFormId) hits = rows.filter((x) => x.provider_form_id === r.providerFormId && (!r.providerName || lc(x.provider_name) === lc(r.providerName)))
+  else if (r.formCode) hits = rows.filter((x) => lc(x.form_code) === lc(r.formCode))
+  else if (r.name) hits = rows.filter((x) => lc(x.name) === lc(r.name))
+  else return { ok: true, result: { standing: "unknown", reason: "no form reference given" } }
+  hits = hits.filter((x) => String(x.state).toUpperCase() === state)
+  if (hits.length === 0) return { ok: true, result: { standing: "unknown", reason: `the directory has no such form for ${state || "that state"}` } }
+  const finalOf = (row: Row): Row => { let cur = row; for (let i = 0; i < 10 && !cur.is_active && cur.replaced_by_id && byId.has(cur.replaced_by_id); i++) cur = byId.get(cur.replaced_by_id)!; return cur }
+  const active = hits.find((x) => x.is_active) ?? null
+  const v = q.version == null || q.version === "" ? null : String(q.version)
+  const matchesVersion = (x: Row) => v === null || String(x.version ?? "") === v || (x.provider_form_version ?? "") === v
+  const named = v === null ? (active ?? hits[0]) : (hits.find(matchesVersion) ?? null)
+  if (!named) {
+    return { ok: true, result: active ? { standing: "retired", packetId: hits[0].id, replacementPacketId: active.id } : { standing: "unknown", reason: `version ${v} is not in the directory` } }
+  }
+  if (!named.is_active) {
+    const repl = finalOf(named)
+    return { ok: true, result: { standing: "retired", packetId: named.id, replacementPacketId: repl.is_active && repl.id !== named.id ? repl.id : (active?.id ?? null) } }
+  }
+  const today = (q.now ?? new Date()).toISOString().slice(0, 10)
+  if (named.license_expires_at && named.license_expires_at < today) return { ok: true, result: { standing: "license_expired", packetId: named.id, expiredOn: named.license_expires_at } }
+  return { ok: true, result: { standing: "licensed_current", packetId: named.id, version: named.version ?? null, providerFormVersion: named.provider_form_version ?? null } }
+}
+
+// ── WAVE 156 (156C, round 2): A LIBRARY FORM ONTO A DEAL — a WORKING COPY; the packet master is never touched ──────────────────────
+
+export interface StageOnDealDeps {
+  /** The deal desk (lib/transactions/role-guard.ts decideDealDesk) — who may work this deal. */
+  dealDesk?: (ctx: { userId: string; role: string; brokerageId: string; transactionId: string }) => Promise<{ allowed: boolean; reason?: string }>
+  /** Files the working copy as a deal document (the private `documents` bucket + lib/documents/upload-document.ts). */
+  file?: (svc: Svc, input: { brokerageId: string; transactionId: string; path: string; bytes: Uint8Array; fileName: string; metadata: Record<string, unknown> }) => Promise<{ ok: true; documentId: string } | { ok: false; error: string }>
+}
+
+const defaultFile: NonNullable<StageOnDealDeps["file"]> = async (svc, input) => {
+  const { error: upErr } = await svc.storage.from("documents").upload(input.path, input.bytes as never, { contentType: "application/pdf", upsert: false })
+  if (upErr && !/exists/i.test(upErr.message)) return { ok: false, error: `the working copy could not be stored: ${upErr.message}` }
+  const { issueBucketObjectUrl } = await import("@/lib/storage/document-buckets")
+  const issued = await issueBucketObjectUrl(svc as never, { bucket: "documents", objectPath: input.path })
+  if (!issued.ok) return { ok: false, error: `the working copy was stored but no link could be issued: ${issued.reason}` }
+  const { uploadDocument } = await import("@/lib/documents/upload-document")
+  const r = await uploadDocument({ brokerageId: input.brokerageId, storageUrl: issued.url, fileName: input.fileName, documentType: "addendum", transactionId: input.transactionId, metadata: { ...input.metadata, storage_path: input.path } })
+  return r.success && r.documentId ? { ok: true, documentId: r.documentId } : { ok: false, error: r.error ?? "the working copy could not be filed" }
+}
+
+/**
+ * Put a library form (e.g. an addendum) on a DEAL as a working copy the parties will sign. The actor must be a forms seat that may
+ * USE the master (active, in license, their scope) AND may work the deal (the deal desk: the coordinator and the brokerage's admins on
+ * any deal of the tenant, an agent on their own deal, a lead on their team's). The master's bytes are COPIED into the deal's own
+ * document — the master row and object are never written — and the copy records the master id, version and checksum it came from.
+ * The next step is the existing addendum door (lib/esign/addendum-signature-request.ts proposeContractAddendumVersion → request).
+ */
+export async function stageLibraryFormOnDeal(
+  svc: Svc,
+  actor: PacketActor,
+  input: { packetId: string; transactionId: string },
+  deps: StageOnDealDeps = {},
+): Promise<{ ok: true; documentId: string; sourceChecksum: string } | { ok: false; error: string }> {
+  if (!UUID.test(input.packetId) || !UUID.test(input.transactionId)) return { ok: false, error: "Name the library form and the deal." }
+  const desk = deps.dealDesk ?? (async (ctx) => { const { decideDealDesk } = await import("@/lib/transactions/role-guard"); const d = await decideDealDesk(ctx); return d.allowed ? { allowed: true } : { allowed: false, reason: d.reason } })
+  const decided = await desk({ userId: actor.userId, role: actor.userType ?? "", brokerageId: actor.brokerageId, transactionId: input.transactionId })
+  if (!decided.allowed) return { ok: false, error: decided.reason ?? "You cannot work on this deal." }
+  const { data: row, error } = await svc.from("brokerage_form_library").select("id, name, storage_path, version, checksum_sha256").eq("id", input.packetId).eq("brokerage_id", actor.brokerageId).maybeSingle()
+  if (error) return { ok: false, error: `The form could not be read: ${error.message}` }
+  if (!row?.storage_path) return { ok: false, error: "That form has no master in your library (a provider form is used through the provider's window)." }
+  const usable = await usableTenantPacketPaths(svc, actor, [row.storage_path as string])
+  if (!usable.ok) return { ok: false, error: usable.error }
+  if (!usable.usable.has(row.storage_path as string)) return { ok: false, error: "That form is not available to you (retired, out of license, or shared with another team or office)." }
+  const { data: blob, error: dlErr } = await svc.storage.from(FORM_PACKET_BUCKET).download(row.storage_path as string)
+  if (dlErr || !blob) return { ok: false, error: `The form could not be opened: ${dlErr?.message ?? "no file"}` }
+  const bytes = new Uint8Array(await blob.arrayBuffer())
+  const sum = await packetChecksum(bytes)
+  if (row.checksum_sha256 && row.checksum_sha256 !== sum) return { ok: false, error: "The stored master does not match its recorded checksum — it was not used. Compliance should re-upload it." }
+  const safe = String(row.name).replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 80) || "form"
+  const filed = await (deps.file ?? defaultFile)(svc, {
+    brokerageId: actor.brokerageId, transactionId: input.transactionId, path: `${actor.brokerageId}/transactions/${input.transactionId}/library-forms/${row.id}-v${row.version ?? 1}-${sum.slice(0, 12)}.pdf`,
+    bytes, fileName: `${safe}.pdf`, metadata: { source_library_form_id: row.id, source_library_version: row.version ?? 1, source_checksum_sha256: sum, staged_by: actor.userId },
+  })
+  if (!filed.ok) return filed
+  return { ok: true, documentId: filed.documentId, sourceChecksum: sum }
 }

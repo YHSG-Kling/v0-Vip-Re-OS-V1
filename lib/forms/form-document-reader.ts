@@ -17,6 +17,10 @@
  */
 
 import { z } from "zod"
+// isCdaForm — the ONE CDA detector — lives in lib/forms/form-read-apply.ts (pure; the FormWizard client imports it too).
+import { isCdaForm } from "./form-read-apply"
+
+export { isCdaForm }
 
 export const DOCUMENT_READ_KINDS = ["field", "legal_description", "clause", "signer_box", "requirement"] as const
 export type DocumentReadKind = (typeof DOCUMENT_READ_KINDS)[number]
@@ -42,11 +46,6 @@ export interface DocumentReadResult {
   notes: string[]
 }
 
-/** PURE: is this form a Commission Disbursement Authorization? (No AI reads it for prefill — the agent fills the CDA.) */
-export function isCdaForm(meta: { name?: string | null; formCode?: string | null }): boolean {
-  const s = `${meta.name ?? ""} ${meta.formCode ?? ""}`
-  return /\bCDA\b/i.test(s) || /commission\s+disbursement/i.test(s)
-}
 
 const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim()
 
@@ -133,3 +132,7 @@ export async function readFormDocument(
   }
   return result
 }
+
+
+// The reviewer's accept step lives in lib/forms/form-read-apply.ts (pure, no model import — the FormWizard client bundles it).
+export { applyAcceptedSuggestions } from "./form-read-apply"

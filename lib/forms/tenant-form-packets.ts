@@ -252,7 +252,14 @@ export async function resolvePacketActor(svc: Svc, userId: string): Promise<{ ok
   const { withTenantRoleGrants } = await import("@/lib/auth/role-grants")
   const granted = await withTenantRoleGrants(svc, { userId, grantedRoles: null as readonly string[] | null }, brokerageId)
   if (granted.note) console.warn(`[tenant-form-packets] ${granted.note}`)
-  const oversight = PACKET_OVERSIGHT_USER_TYPES.has(String(userType ?? "")) || (granted.actor.grantedRoles ?? []).some((r) => PACKET_OVERSIGHT_USER_TYPES.has(r))
+  let oversight = PACKET_OVERSIGHT_USER_TYPES.has(String(userType ?? "")) || (granted.actor.grantedRoles ?? []).some((r) => PACKET_OVERSIGHT_USER_TYPES.has(r))
+  // wave 156 (156C, round 2) — TIER PARITY, the existing owner rule (lib/auth/require-caller.ts requireTenantAdminOrSoloOwner): a
+  // solo-tier subscriber IS their own broker, so a solo agent manages their own library and bundles. A refused tier read never widens.
+  if (!oversight) {
+    const { data: b, error: bErr } = await svc.from("brokerages").select("plan_tier").eq("id", brokerageId).maybeSingle()
+    if (bErr) console.warn(`[tenant-form-packets] plan tier unreadable — the seat alone decides: ${bErr.message}`)
+    else if ((b as { plan_tier?: string | null } | null)?.plan_tier === "solo_agent") oversight = true
+  }
   // wave 156 (156C): the office is trusted only when it is a location of THIS brokerage (a cross-tenant id is dropped, never trusted).
   let locationId = ((me as { location_id?: string | null } | null)?.location_id ?? null)
   if (locationId) {
@@ -632,7 +639,7 @@ export async function listDirectoryRowsForActor(
   svc: Svc,
   actor: PacketActor,
   q: { stateCode?: string | null; now?: Date } = {},
-): Promise<{ ok: true; rows: Array<{ packetId: string; name: string; path: string | null; scope: "brokerage" | "office" | "team" | "agent"; providerName: string | null; providerFormId: string | null; state: string | null; formCode: string | null; status: "ready" | "not_configured" }> } | { ok: false; error: string }> {
+): Promise<{ ok: true; rows: Array<{ packetId: string; name: string; path: string | null; scope: "brokerage" | "office" | "team" | "agent"; providerName: string | null; providerFormId: string | null; state: string | null; formCode: string | null; status: "ready" | "not_configured"; canManage: boolean; version: number | null }> } | { ok: false; error: string }> {
   const today = todayIso(q.now)
   const { data, error } = await svc.from("brokerage_form_library").select(PACKET_COLUMNS).eq("brokerage_id", actor.brokerageId).eq("is_active", true)
   if (error) return { ok: false, error: `your brokerage's form library could not be read: ${error.message}` }
@@ -643,7 +650,7 @@ export async function listDirectoryRowsForActor(
     rows.push({
       packetId: row.id, name: row.name, path: row.storage_path, scope: packetOwnerKind(row), providerName: row.provider_name ?? null,
       providerFormId: row.provider_form_id ?? null, state: row.state, formCode: row.form_code,
-      status: (row.storage_path || row.provider_form_id ? "ready" : "not_configured") as "ready" | "not_configured",
+      status: (row.storage_path || row.provider_form_id ? "ready" : "not_configured") as "ready" | "not_configured", canManage: mayManagePacketOwner(actor, { teamId: row.team_id, locationId: row.location_id ?? null, scopeUserId: row.scope_user_id ?? null }), version: row.version ?? null,
     })
   }
   return { ok: true, rows }

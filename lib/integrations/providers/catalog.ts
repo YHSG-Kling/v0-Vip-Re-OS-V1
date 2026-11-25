@@ -268,7 +268,7 @@ export const PROVIDER_CAPABILITY_MATRIX: Record<ProviderName, ProviderMatrixRow>
   docusign: {
     credentials:          B(`${TENANT_CRED}; tenant OAuth app/api/integrations/oauth/[provider]/route.ts:77; the DEFAULT with nothing connected rides the platform's JWT account lib/esign/docusign-platform-account.ts (minted per use, default only). BLIND SPOT, published: a tenant's OWN DocuSign OAuth access token has no refresher (lib/social/token-refresh.ts covers social only) — after it lapses the tenant reconnects`),
     settings:             B(SETTINGS),
-    forms:                B("lib/integrations/providers/docusign-provider.ts:311 listForms (GET /templates, documented) (paged by start_position) via app/api/forms/provider-library/route.ts:81 → lib/forms/provider-form-directory.ts:171 walkProviderLibrary"),
+    forms:                B("lib/integrations/providers/docusign-provider.ts:311 listForms (GET /templates, documented) (paged by start_position) via app/api/forms/provider-library/route.ts:81 → lib/forms/provider-form-directory.ts:184 walkProviderLibrary"),
     transaction_creation: B("lib/integrations/providers/docusign-provider.ts:80 createTransaction (POST /envelopes status created — eSignature REST v2.1)"),
     document_upload:      B("lib/integrations/providers/docusign-provider.ts:104 attachForms / :282 uploadDocument (PUT /envelopes/{id}/documents, base64 — documented)"),
     form_fill:            B(`${IN_APP_FILL}; embedded SENDER view places the tabs (docusign-provider.ts:196 prepareEmbeddedSend)`),
@@ -301,7 +301,7 @@ export const PROVIDER_CAPABILITY_MATRIX: Record<ProviderName, ProviderMatrixRow>
   skyslope: {
     credentials:          B(`${TENANT_CRED} (api_key = the Partnership API token, account_id = the office id; VENDOR_CONTRACTS.skyslope names token POST /ext/token — the token is obtained by the tenant and pasted; the exchange is not automated, published as a blind spot)`),
     settings:             B(SETTINGS),
-    forms:                P("lib/integrations/providers/skyslope-provider.ts:217 listForms → GET /forms?officeId", "not in the cited spec excerpt (VENDOR_CONTRACTS.skyslope contractSource) — shape unverified"),
+    forms:                P("lib/integrations/providers/skyslope-provider.ts:217 listForms → GET /forms (page + pageSize, totalRecords)", "wave 156 (156C): GET /forms with page / pageSize / totalRecords IS in the published partner OpenAPI (artifacts.apis.io skyslope-forms-api, read 2026-11-25); the officeId filter and the form-category mapping are not — left partial"),
     transaction_creation: B("lib/integrations/providers/skyslope-provider.ts:82 createTransaction (POST /files — the published path, wave 140I)"),
     document_upload:      B("lib/integrations/providers/skyslope-provider.ts:109 attachForms / :197 uploadDocument (POST /files/{id}/documents — the published path)"),
     form_fill:            B(`${IN_APP_FILL}; the ONE frameable provider window — forms.skyslope.com iframe (capabilities.embed, SkySlope Forms Widget)`),

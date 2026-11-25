@@ -29,6 +29,19 @@ import type { ITransactionProvider, ProviderForm } from "@/lib/integrations/prov
 export const FORM_DIRECTORY_CATEGORIES = ["listing", "offer", "addendum", "disclosure", "agency", "compliance", "other"] as const
 export type FormDirectoryCategory = (typeof FORM_DIRECTORY_CATEGORIES)[number]
 
+/**
+ * WHAT EACH PROVIDER'S PUBLISHED DOCUMENTATION SAYS ABOUT PAGING ITS FORM / TEMPLATE LIST (read 2026-11-25, wave 156 lane 156C
+ * round 2). `verified` = the adapter implements the documented parameters; otherwise the directory labels the library
+ * possibly-truncated and says so beside the provider.
+ */
+export const PROVIDER_PAGING_EVIDENCE: Record<string, { verified: boolean; note: string; source: string | null }> = {
+  docusign: { verified: true, note: "GET /v2.1/accounts/{accountId}/templates — count + start_position (zero-based); response startPosition / endPosition / totalSetSize / nextUri; default cap 2,000 without count.", source: "https://developers.docusign.com/docs/esign-rest-api/reference/templates/templates/list/" },
+  skyslope: { verified: true, note: "GET /forms (partner API) — page (1-based, default 1) + pageSize (default 10); response totalRecords + forms[].", source: "https://forms.skyslope.com/partner/api/docs (OpenAPI: https://artifacts.apis.io/skyslope/openapi/skyslope-forms-api-openapi.yml)" },
+  dotloop: { verified: false, note: "not verified — no public documentation: the v2 guide publishes no /profile/{id}/form endpoint (the adapter's path); its documented library, GET /profile/{id}/loop-template, takes no paging parameters (meta.total only).", source: "https://dotloop.github.io/public-api/" },
+  authentisign: { verified: false, note: "not verified — no public documentation for the adapter's /authentisign/v1/forms path; Lone Wolf's published library list (GET /forms-design/api/users/{userId}/forms) takes only libId — no paging parameters are documented.", source: "https://apidocs.lwolf.com/doc/transact-api/operation/operation-getforms" },
+  formsimplicity: { verified: false, note: "not verified — no public documentation: the published Form Simplicity API (internal use only) documents no forms-list endpoint (only listTrans / activeUsers paging with batch_size + batch_no).", source: "https://api.formsimplicity.com/docs/fsforms" },
+}
+
 /** Provider page size we ask for; a provider may cap it lower. */
 export const PROVIDER_DIRECTORY_PAGE_SIZE = 100
 /** Pages one request walks before it hands the cursor back (the UI continues from it). 10 × 100 = 1,000 forms per chunk. */
@@ -184,7 +197,9 @@ export async function walkProviderLibrary(
     cursor = next
   } while (cursor && pages < maxPages)
   const exhausted = cursor === null
-  const completeness: DirectoryChunk["completeness"] = !exhausted ? "more_available" : (!pagingReported && lastPageFull) ? "unknown_possibly_truncated" : "complete"
+  // A provider that reports a total LARGER than what it handed back, with no next page, has truncated — never "complete".
+  const shortOfTotal = providerTotal !== null && scanned < providerTotal && !opts.cursor
+  const completeness: DirectoryChunk["completeness"] = !exhausted ? "more_available" : ((!pagingReported && lastPageFull) || shortOfTotal) ? "unknown_possibly_truncated" : "complete"
   return { ok: true, forms, scanned, providerTotal, nextCursor: cursor, exhausted, completeness, pages }
 }
 

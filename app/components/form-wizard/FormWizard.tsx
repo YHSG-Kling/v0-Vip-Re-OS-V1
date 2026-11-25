@@ -879,6 +879,7 @@ export function FormWizard({ mode: initialMode, contact, brokerageId, agentUserI
                   const json = await res.json()
                   if (!res.ok) {
                     setProviderFormsError(json?.refusal?.message ?? json?.error ?? "Could not load provider forms.")
+                    setProviderPage(p => ({ ...(p ?? { total: null, nextCursor: null, completeness: "complete", adopted: {}, refusal: null, paging: null }), refusalHref: json?.refusal?.recoverHref ?? null }))
                     if (!more) setProviderForms([])
                   } else {
                     const got: ProviderFormItem[] = json.forms ?? []
@@ -891,7 +892,7 @@ export function FormWizard({ mode: initialMode, contact, brokerageId, agentUserI
                     for (const e of (json.entries ?? []) as Array<{ providerFormId: string | null; adoptedFromProvider: boolean; source: string }>) {
                       if (e.adoptedFromProvider && e.providerFormId) adopted[e.providerFormId] = e.source
                     }
-                    setProviderPage({ total: json.total ?? null, nextCursor: json.nextCursor ?? null, completeness: json.completeness ?? "complete", adopted, refusal: json.refusal?.message ?? null })
+                    setProviderPage({ total: json.total ?? null, nextCursor: json.nextCursor ?? null, completeness: json.completeness ?? "complete", adopted, refusal: json.refusal?.message ?? null, refusalHref: json.refusal?.recoverHref ?? null, paging: json.pagingEvidence ?? null })
                   }
                 } catch (err: any) {
                   setProviderFormsError(err?.message ?? "Network error loading provider forms.")
@@ -1555,6 +1556,9 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
         </TabsList>
 
         <TabsContent value="my-forms" className="mt-3 space-y-3">
+          {/* WAVE 156 (156C): "Add a form or packet" lives on the Forms page (app/dashboard/forms — app/components/forms/add-form-or-packet.tsx);
+              linked, not mounted, because this wizard is in app/crm/page.tsx's graph, which sits AT the 1,300-module budget (test:proxy-graph-budget). */}
+          <a href={`/dashboard/forms?add=1${state.propertyState ? `&state=${encodeURIComponent(state.propertyState)}` : ""}#add-forms`} target="_blank" rel="noopener noreferrer" className="text-xs underline">Add a form or packet</a>
           <StatePackagePanel mode={mode} stateCode={state.propertyState} myForms={myForms} selected={selected} onSelect={(forms) => {
             const add = forms.filter(f => !selected.find(s => s.source === "my_forms" && s.formRef === f.path))
             if (add.length) update("selectedForms", [...selected, ...add.map(f => ({ source: "my_forms" as const, formRef: f.path, name: f.name, scope: f.scope }))])
@@ -1585,7 +1589,7 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
                         catalogue
                       </Badge>
                     )}
-                    {packetRowIdOf(f.path) && <FormReadButton packetId={packetRowIdOf(f.path) as string} />}
+                    {packetRowIdOf(f.path) && <FormReadButton packetId={packetRowIdOf(f.path) as string} formName={f.name} onApply={(values) => update("fieldValues", { ...(state.fieldValues ?? {}), [f.path]: values })} current={state.fieldValues?.[f.path] ?? {}} />}
                   </label>
                 )
               })}
@@ -1632,7 +1636,7 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
               {providerFormsError && !providerFormsLoading && (
                 <Alert variant="destructive">
                   <AlertCircle className="h-4 w-4" />
-                  <AlertDescription>{providerFormsError}</AlertDescription>
+                  <AlertDescription>{providerFormsError}{providerPage?.refusalHref && <>{" "}<a href={providerPage.refusalHref} className="underline">Fix it here</a></>}</AlertDescription>
                 </Alert>
               )}
               {!providerFormsLoading && !providerFormsError && providerForms && providerForms.length === 0 && (
@@ -1674,6 +1678,7 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
                   <p className="text-xs text-muted-foreground">
                     Showing {providerForms.length}{providerPage.total != null ? ` of ${providerPage.total}` : ""} forms
                     {providerPage.completeness === "unknown_possibly_truncated" ? " — this provider does not report paging, so its library may hold more than it returned. Open the provider's window to search the rest." : providerPage.nextCursor ? "" : " — the whole authorized library."}
+                    {providerPage.paging && !providerPage.paging.verified && <span className="block">Paging {providerPage.paging.note}</span>}
                   </p>
                   {providerPage.nextCursor && (
                     <Button type="button" variant="outline" size="sm" disabled={providerFormsLoading} onClick={() => onLoadProviderForms(true)}>
@@ -2679,10 +2684,13 @@ function packetRowIdOf(path: string): string | null {
  * reader found in THIS form — fields, signature boxes, the legal description, governing clauses, requirements — each with the quote
  * it rests on. Nothing is applied: the agent reviews and fills (the CDA is refused by the reader — the agent fills the CDA).
  */
-function FormReadButton({ packetId }: { packetId: string }) {
+function FormReadButton({ packetId, formName, current, onApply }: { packetId: string; formName: string; current: Record<string, string>; onApply: (values: Record<string, string>) => void }) {
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [res, setRes] = useState<{ refused?: string; error?: string; suggestions?: Array<{ kind: string; target: string; value?: string | null; evidence: { quote: string } }>; notes?: string[] } | null>(null)
+  const [res, setRes] = useState<{ refused?: string; error?: string; structure?: { fields: string[] }; suggestions?: Array<{ kind: string; target: string; value?: string | null; evidence: { quote: string }; status?: string }>; notes?: string[] } | null>(null)
+  // ROUND 2: the reviewer decides EACH suggestion; only accepted ones reach the Step 3 fill fields, and only on "Use accepted".
+  const [decisions, setDecisions] = useState<Record<number, "accept" | "reject">>({})
+  const [applied, setApplied] = useState<string | null>(null)
   async function read(e: React.MouseEvent) {
     e.preventDefault(); e.stopPropagation()
     setOpen(true)
@@ -2693,15 +2701,40 @@ function FormReadButton({ packetId }: { packetId: string }) {
       setRes(await r.json())
     } catch (err) { setRes({ error: err instanceof Error ? err.message : "Network error" }) } finally { setBusy(false) }
   }
+  function useAccepted(e: React.MouseEvent) {
+    e.preventDefault(); e.stopPropagation()
+    // The accept step is lib/forms/form-read-apply.ts applyAcceptedSuggestions, run by the reader's own route (no client import —
+    // this wizard is at the module budget): only the suggestions marked "accept" come back as fill values.
+    void fetch("/api/forms/document-read", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "apply", form_name: formName, fields: res?.structure?.fields ?? [], current, suggestions: res?.suggestions ?? [], decisions }) })
+      .then(async (r) => {
+        const out = await r.json()
+        if (!r.ok || out.ok === false) { setApplied(out.refused ?? out.error ?? "Nothing was applied."); return }
+        onApply(out.values)
+        setApplied(out.applied.length ? `Put into the fill fields: ${out.applied.join(", ")} — review them in step 3.` : "Nothing accepted — nothing was filled.")
+      })
+      .catch((err) => setApplied(err instanceof Error ? err.message : "Network error — nothing was applied."))
+  }
+  const fillable = (s: { kind: string; value?: string | null }) => (s.kind === "field" || s.kind === "legal_description") && !!s.value
   return (
     <span className="shrink-0" onClick={(e) => e.stopPropagation()}>
       <button type="button" className="text-[11px] underline text-muted-foreground" onClick={read}>{busy ? "Reading…" : "AI read (review)"}</button>
       {open && res && (
-        <span className="block max-w-xs text-[11px] text-muted-foreground mt-1">
+        <span className="block max-w-sm text-[11px] text-muted-foreground mt-1">
           {res.refused ?? res.error ?? null}
-          {(res.suggestions ?? []).slice(0, 12).map((s, i) => (
-            <span key={i} className="block">{s.kind}: {s.target}{s.value ? ` = ${s.value}` : ""} — “{s.evidence.quote.slice(0, 120)}” (to review)</span>
+          {(res.suggestions ?? []).slice(0, 20).map((s, i) => (
+            <span key={i} className="block">
+              {s.kind}: {s.target}{s.value ? ` = ${s.value}` : ""} — “{s.evidence.quote.slice(0, 120)}”
+              {fillable(s) && (
+                <span className="ml-1">
+                  <button type="button" className={decisions[i] === "accept" ? "font-semibold underline" : "underline"} onClick={(e) => { e.preventDefault(); e.stopPropagation(); setDecisions((d) => ({ ...d, [i]: "accept" })) }}>accept</button>
+                  {" / "}
+                  <button type="button" className={decisions[i] === "reject" ? "font-semibold underline" : "underline"} onClick={(e) => { e.preventDefault(); e.stopPropagation(); setDecisions((d) => ({ ...d, [i]: "reject" })) }}>reject</button>
+                </span>
+              )}
+            </span>
           ))}
+          {(res.suggestions ?? []).some(fillable) && <button type="button" className="underline block mt-1" onClick={useAccepted}>Use accepted values in the fill</button>}
+          {applied && <span className="block">{applied}</span>}
           {(res.notes ?? []).map((n, i) => <span key={`n${i}`} className="block italic">{n}</span>)}
         </span>
       )}
@@ -2719,4 +2752,7 @@ interface ProviderDirectoryPage {
   /** Provider form id → the tenant library source that already adopted it (shown once, labelled). */
   adopted: Record<string, string>
   refusal: string | null
+  /** ROUND 2: where the seat fixes a provider refusal, and what the provider's published docs say about paging (verified or not). */
+  refusalHref?: string | null
+  paging?: { verified: boolean; note: string; source: string | null } | null
 }

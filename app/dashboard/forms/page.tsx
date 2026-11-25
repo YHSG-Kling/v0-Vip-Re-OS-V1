@@ -8,7 +8,7 @@
 
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
-import { FormsLibraryClient } from "./FormsLibraryClient"
+import { FormsLibraryClient } from "./FormsLibraryClient"; import { AddFormOrPacket } from "@/app/components/forms/add-form-or-packet"
 import type { Metadata } from "next"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
@@ -128,7 +128,7 @@ export default async function FormsLibraryPage() {
 
   const { data: listingAgreements } = await listingAgreementsQuery
 
-  return (
+  return (<div className="space-y-2"><div id="add-forms" className="px-6 pt-4"><AddFormOrPacket /></div>{/* wave 156 (156C): add forms / packets / bundles */}
     <FormsLibraryClient
       brokerageId={brokerageId}
       agentId={agentId}
@@ -140,6 +140,6 @@ export default async function FormsLibraryPage() {
       submissions={submissions ?? []}
       esignHistory={esignHistory ?? []}
       listingAgreements={listingAgreements ?? []}
-    />
+    /></div>
   )
 }

@@ -4,7 +4,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { resolveESignProviderForActor } from "@/lib/integrations/resolve-esign-provider"
 import { listDirectoryRowsForActor, resolvePacketActor } from "@/lib/forms/tenant-form-packets"
 import {
-  FORM_DIRECTORY_CATEGORIES, classifyResolveFailure, mergeFormDirectory, walkProviderLibrary, type DirectoryFilter, type FormDirectoryCategory,
+  FORM_DIRECTORY_CATEGORIES, PROVIDER_PAGING_EVIDENCE, classifyResolveFailure, mergeFormDirectory, walkProviderLibrary, type DirectoryFilter, type FormDirectoryCategory,
 } from "@/lib/forms/provider-form-directory"
 
 /**
@@ -98,5 +98,6 @@ export async function GET(req: NextRequest) {
     nextCursor: chunk.nextCursor,
     exhausted:  chunk.exhausted,
     completeness: chunk.completeness,
+    pagingEvidence: PROVIDER_PAGING_EVIDENCE[resolved.providerName] ?? { verified: false, note: "not verified — no public documentation", source: null },
   })
 }

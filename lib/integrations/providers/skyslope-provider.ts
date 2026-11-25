@@ -216,13 +216,13 @@ export class SkyslopeProvider implements ITransactionProvider {
 
   async listForms(request: ListFormsRequest): Promise<ListFormsResponse> {
     try {
-      // SkySlope's form library lives under /forms with state + category filters.
-      const query: Record<string, string> = { officeId: this.officeId, limit: String(request.pageSize ?? 100) }
+      // GET /forms — page (1-based) + pageSize, response totalRecords (OpenAPI artifacts.apis.io skyslope-forms-api, read 2026-11-25; wave 156 156C).
+      const page = Math.max(1, Number(request.cursor ?? 1) || 1), pageSize = request.pageSize ?? 100; const query: Record<string, string> = { officeId: this.officeId, page: String(page), pageSize: String(pageSize) }
       if (request.stateCode) query.state = request.stateCode
       if (request.category)  query.category = request.category
       if (request.query)     query.q = request.query
 
-      const res = await this.request<{ forms?: any[]; items?: any[] }>("/forms", { query })
+      const res = await this.request<{ forms?: any[]; items?: any[]; totalRecords?: number }>("/forms", { query })
       if (!res.ok) {
         return { success: false, status: res.status, error: `SkySlope listForms ${res.status}: ${res.error}` }
       }
@@ -236,7 +236,7 @@ export class SkyslopeProvider implements ITransactionProvider {
         version:   f.version,
         previewUrl: f.previewUrl ?? f.url,
       }))
-      return { success: true, forms }
+      const total = typeof res.data?.totalRecords === "number" ? res.data.totalRecords : null; return { success: true, forms, total, nextCursor: total !== null && page * pageSize < total && items.length > 0 ? String(page + 1) : null }
     } catch (err: any) {
       return { success: false, error: err?.message ?? "SkySlope listForms failed" }
     }
