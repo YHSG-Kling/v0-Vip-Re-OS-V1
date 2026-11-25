@@ -153,7 +153,7 @@ async function main() {
   const kinds: string[] = net ? [...net.FRAUD_TYPOLOGY_KINDS].sort() : []
   check("14 typologies, each with an evidence checklist, a protective action and an education topic", !!net && net.FRAUD_TYPOLOGY.length === 14 && net.FRAUD_TYPOLOGY.every((t: any) => t.evidenceChecklist.length > 0 && t.protectiveAction.length > 20 && /\?$/.test(t.educationalTopic)))
   check("m1035 incident_kind CHECK == the code typology (one vocabulary)", kinds.length === 14 && JSON.stringify(checkList("incident_kind", sql)) === JSON.stringify(kinds), checkList("incident_kind", sql))
-  check("m1035 bulletin typology CHECK == the code typology", JSON.stringify(checkList("typology", sql)) === JSON.stringify(kinds))
+  check("m1035 bulletin typology CHECK == the code typology", kinds.length === 14 && JSON.stringify(checkList("typology", sql)) === JSON.stringify(kinds))
   check("m1035 claim_class CHECK == FRAUD_CLAIM_CLASSES", !!net && JSON.stringify(checkList("claim_class", sql)) === JSON.stringify([...net.FRAUD_CLAIM_CLASSES].sort()))
   check("positive control: the CHECK reader sees a planted extra kind", JSON.stringify(checkList("incident_kind", sql.replace("'credential_phishing',", "'credential_phishing', 'planted_kind',"))) !== JSON.stringify(kinds))
   const policy = /create policy fraud_bulletins_published_read[\s\S]*?;/i.exec(sql)?.[0] ?? ""
