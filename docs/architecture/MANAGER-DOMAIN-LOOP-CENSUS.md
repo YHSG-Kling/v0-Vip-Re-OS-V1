@@ -10,7 +10,7 @@ sweep) → OUTCOME evidence (ledger / arbitration record / provider truth). The 
 Planes: A authority / tenant session · E Contact engagement (the follow-up arbiter) · D outbound dispatch · G manager coordination
 (delegation, missions, the signal bus) · P human approval · R resources (entitlement, vendor budget, spend, provider route) · C closing / money gates.
 
-Classes: `loop-complete` 715 · `read-surface` 418 · `partial` 221 · `writes-unread` 0 · `untriggered` 1 · `guard-only` 107 · `registry-only` 0 · `proof-unregistered` 0 — of 1462 rows, over 5452 source files.
+Classes: `loop-complete` 715 · `read-surface` 418 · `partial` 221 · `writes-unread` 0 · `untriggered` 1 · `guard-only` 107 · `registry-only` 0 · `proof-unregistered` 0 — of 1462 rows, over 5451 source files.
 
 ## Deal Coordinator (`deal_coordinator`) — 111 domains
 
@@ -240,7 +240,7 @@ Classes: `loop-complete` 715 · `read-surface` 418 · `partial` 221 · `writes-u
 | `briefing_listing_risk` | read-surface | cron `lib/kernel/cron-dispatch.ts` | P | `approval-sources.ts` +1 | — | — | — | — | — | `test:manager-ownership` |
 | `client_pulse` | read-surface | cron `api/cron/client-pulse` (+1) | — | `client-pulse.ts` | — | — | — | — | — | `test:client-pulse` |
 | `cma_compliance` | read-surface | page `portal/listing-plan/[id]` (+1) | — | `cma-reel-data.ts` +1 | — | — | — | — | — | `test:cma-compliance` |
-| `cma_presentation` | read-surface | action `actions/cma-presentation/net-sheet-calculator.ts` (+1) | — | `net-sheet-math.ts` | — | — | — | — | — | `test:cma-presentation` |
+| `cma_presentation` | read-surface | action `actions/ai-tools-hub.ts` (+1) | — | `engine.ts` | — | — | — | — | — | `test:cma-presentation` |
 | `cma_provider_lane` | read-surface | action `actions/buyer-offer-tools.ts` (+1) | R | `provider-chain.ts` +2 | — | — | — | — | — | `test:cma-provider-lane` |
 | `comp_adjustment_grid` | read-surface | action `actions/calculators.ts` (+1) | — | `cma-report-tab.tsx` +3 | — | — | — | — | — | `test:comp-adjustments` |
 | `compliance_checkpoints_parity` | read-surface | action `actions/buyer-offer/submit-to-compliance.ts` (+2) | — | `packet-analysis.ts` | — | — | — | — | — | `test:compliance-checkpoints` |
