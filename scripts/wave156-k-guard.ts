@@ -379,7 +379,7 @@ async function sectionE() {
       { id: BBA2, brokerage_id: B1, agent_id: AG, buyer_contact_id: C1, status: "active", signed_at: isoAgo(5 * 86400), signed_method: "provider", cancelled_at: null, expiration_date: null },
       { id: BBA3, brokerage_id: B1, agent_id: AG, buyer_contact_id: C2, status: "active", signed_at: isoAgo(5 * 86400), signed_method: "provider", cancelled_at: null, expiration_date: null },
     ],
-    gamification_badges: [{ id: BADGE, badge_name: "Signed on the dotted line", badge_tier: "bronze", required_points: null, trigger_event: "SIGNED_AGREEMENT_APPOINTMENT", brokerage_id: null }],
+    gamification_badges: [{ id: BADGE, badge_name: "Signed on the dotted line", badge_tier: "bronze", required_points: null, trigger_event: "SIGNED_AGREEMENT_APPOINTMENT", brokerage_id: null, is_active: true }],
     agent_badges: [], agent_points_log: [], notifications: [], open_house_attendees: [], event_attendance_evidence: [], open_house_rsvp_tracking: [], lifecycle_events: [],
   })
   const emits: any[] = []
@@ -402,8 +402,8 @@ async function sectionE() {
   const s2 = await sign(BBA2)
   const s3 = await sign(BBA3)
   const sig = T(m, "agent_points_log").filter((r) => r.reason === "SIGNED_AGREEMENT_APPOINTMENT")
-  check("an executed buyer agreement preceded by a genuine appointment earns the appointment reward once", (s1.r as any)?.awarded?.length === 1, s1.r)
-  check("a RE-SIGN with the same buyer (same engagement) adds no points and no second badge", (s2.r as any)?.awarded?.length === 0 && sig.length === 1 && T(m, "agent_badges").length === 1, { s2: s2.r, badges: T(m, "agent_badges").length })
+  check("an executed buyer agreement preceded by a genuine appointment earns the appointment reward and its badge once", (s1.r as any)?.awarded?.length === 1 && (s1.r as any)?.badgesAwarded === 1, s1.r)
+  check("a RE-SIGN with the same buyer (same engagement) adds no points and no second badge", (s2.r as any)?.awarded?.length === 0 && (s2.r as any)?.badgesAwarded === 0 && sig.length === 1 && T(m, "agent_badges").length === 1, { s2: s2.r, badges: T(m, "agent_badges").length })
   check("an executed agreement with NO genuine appointment earns nothing", (s3.r as any)?.awarded?.length === 0 && sig.length === 1, s3.r)
 
   // No browser-reachable file writes a reward itself.
@@ -412,8 +412,14 @@ async function sectionE() {
   walk("app")
   const SELF_AWARD = /\bawardAgentPoints(?:Once)?\s*\(|rpc\(\s*["']award_agent_points|from\(\s*["'](?:agent_points_log|agent_badges)["']\s*\)\s*\.(?:insert|upsert|update)\(/
   const doors = files.filter((f) => { const s = raw(f); return /^\s*["']use server["']/m.test(s) || /\/route\.tsx?$/.test(f) })
-  const offenders = doors.filter((f) => SELF_AWARD.test(stripComments(raw(f))))
-  check(`no "use server" action or route in app/ (${doors.length} files) writes points or badges or calls the award RPC itself`, offenders.length === 0, offenders)
+  // The audited, gated call sites are DERIVED from lib/gamification/award-census.ts (path "call_site", trust verified_outcome):
+  // an authorized contact reassignment and a tenant admin's audited correction (never to their own record).
+  const { AWARD_CENSUS } = await load("lib/gamification/award-census.ts")
+  const audited = new Set<string>((AWARD_CENSUS as Array<{ path: string; trust: string; emitters: Array<{ file: string }> }>)
+    .filter((c) => c.path === "call_site" && c.trust === "verified_outcome").flatMap((c) => c.emitters.map((e) => e.file)))
+  const hits = doors.filter((f) => SELF_AWARD.test(stripComments(raw(f))))
+  const offenders = hits.filter((f) => !audited.has(f))
+  check(`no "use server" action or route in app/ (${doors.length} files) writes points or badges or calls the award RPC itself, outside the ${hits.length - offenders.length} audited call sites the award census names`, offenders.length === 0 && hits.every((f) => audited.has(f)), { offenders, audited: [...audited] })
   check("POSITIVE CONTROL: the census finder recognises a self-award", SELF_AWARD.test(`await svc.from("agent_points_log").insert({ points: 50 })`) && SELF_AWARD.test(`await awardAgentPointsOnce(db, x)`))
 }
 
@@ -443,12 +449,14 @@ async function sectionF() {
   const unknown = got ? compute.computeRecruitingFunnel({ ...facts, recordedMoves: null }) : null
   check("PURE: with the ledger unreadable the ledger-dependent stages are UNKNOWN (null), never 0", !!unknown && asMap(unknown).conversation === null && asMap(unknown).offer === null && asMap(unknown).sourced === 5, unknown)
 
-  const TRAITS = /\b(age|birth|dob|gender|sex|race|ethnic|religio|national|origin|disab|marital|famil|pregnan|veteran|orientation)\w*/i
-  const body = (s: string, name: string) => { const at = s.search(new RegExp(`function\\s+${name}\\s*\\(`)); if (at < 0) return ""; const end = s.indexOf("\n}", at); return s.slice(at, end < 0 ? undefined : end) }
+  // Trait words bounded by non-letters ("agents" is not "age"; "date_of_birth" is "birth").
+  const TRAITS = /(?:^|[^a-z])(age|birth\w*|dob|gender|sex|race|ethnic\w*|religio\w*|national_?origin|nationality|disab\w*|marital\w*|family_status|pregnan\w*|veteran\w*|sexual_orientation)(?=[^a-z]|$)/i
+  // A top-level function's text: from its declaration to the first column-0 "}" line (a "}> {" type-literal close is not one).
+  const body = (s: string, name: string) => { const at = s.search(new RegExp(`function\\s+${name}\\s*\\(`)); if (at < 0) return ""; const end = s.indexOf("\n}\n", at); return s.slice(at, end < 0 ? undefined : end) }
   const computeSrc = body(stripComments(raw("lib/recruiting/recruiting-roi-compute.ts")), "computeRecruitingFunnel")
   const actionSrc = body(stripComments(raw("app/actions/recruiting-roi.ts")), "getRecruitingFunnel")
-  check("SOURCE: the funnel compute and its reader name no personal trait (comment-stripped)", computeSrc.length > 0 && actionSrc.length > 0 && !TRAITS.test(computeSrc) && !TRAITS.test(actionSrc))
-  check("POSITIVE CONTROL: the trait finder recognises a trait column", TRAITS.test(`select("id, gender, status")`) && TRAITS.test("r.date_of_birth"))
+  check("SOURCE: the funnel compute and its reader name no personal trait (comment-stripped, whole bodies)", computeSrc.includes("declined:") && actionSrc.includes("computeRecruitingFunnel(") && !TRAITS.test(computeSrc) && !TRAITS.test(actionSrc), { c: computeSrc.length, a: actionSrc.length })
+  check("POSITIVE CONTROL: the trait finder recognises a trait column, and not the word agents", TRAITS.test(`select("id, gender, status")`) && TRAITS.test("r.date_of_birth") && !TRAITS.test(`from("agents").select("id, user_id, is_active")`))
 
   // Driven: two tenants. B2 is an independent TEAM tenant; its lead must see only B2.
   let act: any
