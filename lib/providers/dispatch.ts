@@ -1916,7 +1916,7 @@ async function dispatchVideoViaDID({
     text: pacedScript,
     modelId: avatarTtsModel,
     voiceSettings: ELEVENLABS_REALISM_VOICE_SETTINGS,
-    brokerageId: params.brokerageId, // budget before the call, a receipt, the characters booked once (text normalization applied inside)
+    brokerageId: params.brokerageId, idempotencyKey: (params.ledger?.idempotencyKey ?? (params.ledger?.cycle ? `did_dispatch:${params.brokerageId}:${params.contactId ?? params.recipientEmail}:${params.ledger.cycle}` : null)) ? `${params.ledger?.idempotencyKey ?? `did_dispatch:${params.brokerageId}:${params.contactId ?? params.recipientEmail}:${params.ledger?.cycle}`}:tts` : null, // budget, a receipt, characters booked once; a replayed send gets the SAME audio back, uncharged
     // `language_code` is DELIBERATELY NEVER sent here (wave 52 research
     // finding, DispatchVideoParams.ttsLanguageCode doc above, reconfirmed
     // for v3 in realism-profile.ts's wave-57 header): ElevenLabs only

@@ -146,3 +146,32 @@ export async function runPaidEgress<T>(
   }
   return { ran: true, result: out.result, ok: out.j.ok, costUsd: out.cost, booked: out.booked }
 }
+
+// ─── THE REPLAY COPY (wave 156, lane 156S, round 4) ─────────────────────────────────────────────────────────────────────
+// A replay under one key is charged once — and must return the FIRST run's result, not an empty one. A door whose result is
+// bytes (synthesized speech, a transcript) keeps one private copy of what the provider returned, and its receipt's
+// provider_ref names that copy; the replay serves it back. The copy lives in the PRIVATE `documents` bucket
+// (lib/storage/document-buckets.ts GENERATED_DOCUMENT_BUCKET) under the tenant's own prefix, written through the ONE host
+// (lib/remotion/media-host.ts hostRenderedMedia), so it is a stored reference, never a public URL.
+
+/** Store the bytes a keyed paid call produced; returns the reference its receipt carries (provider_ref). */
+export async function storeReplayCopy(a: { brokerageId: string | null; key: string; bytes: Buffer | Uint8Array; contentType: string; ext: string }): Promise<string> {
+  const { createHash } = await import("node:crypto")
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const { hostRenderedMedia } = await import("@/lib/remotion/media-host")
+  const { GENERATED_DOCUMENT_BUCKET } = await import("@/lib/storage/document-buckets")
+  const path = `paid-replay/${a.brokerageId ?? "platform"}/${createHash("sha256").update(a.key).digest("hex").slice(0, 40)}.${a.ext}`
+  return hostRenderedMedia(createServiceClient(), path, Buffer.from(a.bytes), a.contentType, GENERATED_DOCUMENT_BUCKET)
+}
+
+/** Read a replay copy back. null when it is not a stored reference of THIS tenant, or the storage read is refused. */
+export async function loadReplayCopy(ref: string | null | undefined, brokerageId: string | null): Promise<Buffer | null> {
+  if (!ref) return null
+  const { parseDocumentRef } = await import("@/lib/storage/signed-doc-url")
+  const parsed = parseDocumentRef(ref)
+  if (!parsed || !parsed.path.startsWith(`paid-replay/${brokerageId ?? "platform"}/`)) return null
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const { data, error } = await createServiceClient().storage.from(parsed.bucket).download(parsed.path)
+  if (error || !data) return null
+  return Buffer.from(await (data as Blob).arrayBuffer())
+}

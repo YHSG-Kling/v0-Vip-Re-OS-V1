@@ -276,18 +276,35 @@ export async function transcribeMediaUrl(
     // vendor again). The budget verdict is the one asked just above (`preflight` — the ledger is not read twice); the
     // spend stays on the meter below (`book: "caller"`), booked only once the vendor heard speech.
     const audio = res.data
-    const { runPaidEgress } = await import("@/lib/vendor-governance/paid-egress")
+    const { runPaidEgress, storeReplayCopy, loadReplayCopy } = await import("@/lib/vendor-governance/paid-egress")
+    // A KEYED transcription keeps one private copy of its transcript (the receipt names it), so a replay under the same key
+    // returns THE SAME transcript — no second vendor call, no second charge, never an empty answer (156S round 4).
+    let replayRef: string | null = null
     const paid = await runPaidEgress<Awaited<ReturnType<typeof transcribeWithScribe>>>({
       brokerageId: options.brokerageId ?? null, vendor: provider === "elevenlabs_scribe" ? "elevenlabs" : "openai",
       usageType: "stt", action: "voice.stt.transcribe", estimatedCostUsd: estimatedCost, book: "caller", preflight,
       subject: { type: "transcription", id: null, ref: options.systemSource ?? "transcription" },
       idempotencyKey: options.idempotencyKey ?? null, systemSource: options.systemSource ?? "transcription",
-    }, () => provider === "elevenlabs_scribe"
-      ? transcribeWithScribe(audio, contentType, elevenLabsKey as string, options.language ?? null)
-      : transcribeWithGatewayWhisper(audio, contentType, gatewayKey as string),
+    }, async () => {
+      const r = provider === "elevenlabs_scribe"
+        ? await transcribeWithScribe(audio, contentType, elevenLabsKey as string, options.language ?? null)
+        : await transcribeWithGatewayWhisper(audio, contentType, gatewayKey as string)
+      if (options.idempotencyKey && r.ok && (r.text ?? "").trim()) {
+        replayRef = await storeReplayCopy({ brokerageId: options.brokerageId ?? null, key: options.idempotencyKey, bytes: Buffer.from(JSON.stringify({ text: r.text, durationSeconds: r.durationSeconds })), contentType: "application/json", ext: "json" }).catch(() => null)
+      }
+      return r
+    },
     (r) => r.ok
-      ? { ok: !!(r.text ?? "").trim(), costUsd: round4(STT_USD_PER_SECOND[provider] * (r.durationSeconds ?? ceilingSeconds)) }
+      ? { ok: !!(r.text ?? "").trim(), costUsd: round4(STT_USD_PER_SECOND[provider] * (r.durationSeconds ?? ceilingSeconds)), providerRef: replayRef }
       : { ok: false, error: r.message })
+    if (!paid.ran && paid.reason === "replay") {
+      const first = await loadReplayCopy(paid.providerRef, options.brokerageId ?? null)
+      if (first) {
+        const copy = JSON.parse(first.toString("utf8")) as { text: string; durationSeconds: number | null }
+        return { success: true, transcript: copy.text.trim(), provider, audioBytes, durationSeconds: copy.durationSeconds }
+      }
+      return { success: false, reason: "error", message: "This media was already transcribed and paid for, but the stored transcript cannot be served again — transcribe it again with a new request (a new, budget-checked call)." }
+    }
     if (!paid.ran) {
       return paid.reason === "budget_refused"
         ? { success: false, reason: "budget_exceeded", message: "Vendor budget exceeded — transcription paused for this brokerage" }

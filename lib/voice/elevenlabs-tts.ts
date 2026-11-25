@@ -147,7 +147,9 @@ export interface SynthesizeSpeechResult {
   audioBuffer?: Buffer
   error?: string
   /** Detail useful for fallback decisions (e.g. quota exceeded → retry with browser TTS) */
-  errorCode?: "no_api_key" | "rate_limit" | "quota" | "auth" | "voice_not_found" | "unknown"
+  errorCode?: "no_api_key" | "rate_limit" | "quota" | "auth" | "voice_not_found" | "unknown" | "replay_unavailable"
+  /** Wave 156 (156S): true when this is the SAME audio a keyed earlier call produced (no new provider call, no charge). */
+  replayed?: boolean
 }
 
 /**
@@ -177,14 +179,30 @@ export async function synthesizeSpeech(
     // THE PAID DOOR (wave 156, lane 156S): budget before the call, a receipt, the spend booked only on success
     // (lib/vendor-governance/paid-egress.ts runPaidEgress). Over budget → "quota", the provider never reached;
     // callers fall back to browser TTS on quota. A call with no tenant is now booked as platform spend.
-    const paid = await runTtsDoor(input, "voice_tts", { voice_id: voiceId }, () => convertSpeech(apiKey, {
+    // A KEYED call keeps one private copy of the audio and its receipt names it, so a replay under the same key returns
+    // THE SAME audio with no new provider call and no new charge (wave 156, 156S round 4 — never an empty replay).
+    const replayKey = input.idempotencyKey ?? null
+    let replayRef: string | null = null
+    const paid = await runTtsDoor(input, "voice_tts", { voice_id: voiceId }, async () => { const r = await convertSpeech(apiKey, {
       voiceId,
       text: input.text,
       modelId,
       voiceSettings: settings,
       applyTextNormalization: ELEVENLABS_TEXT_NORMALIZATION,
       languageCode: "language_code" in langField ? langField.language_code : null,
-    }), (r) => r.ok && !!r.data)
+    })
+      if (replayKey && r.ok && r.data) {
+        const { storeReplayCopy } = await import("@/lib/vendor-governance/paid-egress")
+        replayRef = await storeReplayCopy({ brokerageId: input.brokerageId ?? null, key: replayKey, bytes: r.data, contentType: "audio/mpeg", ext: "mp3" }).catch(() => null)
+      }
+      return r
+    }, (r) => r.ok && !!r.data, () => replayRef)
+    if (!paid.ran && paid.reason === "replay") {
+      const { loadReplayCopy } = await import("@/lib/vendor-governance/paid-egress")
+      const first = await loadReplayCopy(paid.providerRef, input.brokerageId ?? null)
+      if (first) return { success: true, audioBuffer: first, replayed: true }
+      return { success: false, errorCode: "replay_unavailable", error: "This audio was already generated and paid for, but its stored copy cannot be served again. Ask to generate it again — that is a new, budget-checked call." }
+    }
     if (!paid.ran) return { success: false, errorCode: "quota", error: paid.reason === "budget_refused" ? "Vendor budget exceeded — TTS paused" : paid.detail }
     const res = paid.result
 
@@ -272,7 +290,7 @@ export async function synthesizeSpeechWithTimestamps(
     const modelId = input.modelId ?? DEFAULT_BUFFERED_MODEL_ID
     const langField = languageCodeField(modelId, input.languageCode)
     // The same paid door as synthesizeSpeech (budget → receipt → spend on success only).
-    const paid = await runTtsDoor(input, "voice_tts_timestamped", { voice_id: voiceId, with_timestamps: true }, () => convertSpeechWithTimestamps(apiKey, {
+    const paid = await runTtsDoor({ ...input, idempotencyKey: null }, "voice_tts_timestamped", { voice_id: voiceId, with_timestamps: true }, () => convertSpeechWithTimestamps(apiKey, {
       voiceId,
       text: input.text,
       modelId,
@@ -347,7 +365,7 @@ export async function synthesizeSpeechStream(input: SynthesizeSpeechInput): Prom
     const streamModelId = input.modelId ?? DEFAULT_STREAMING_MODEL_ID
     // THE PAID DOOR (wave 156, 156S): this leg asked the budget but never BOOKED its characters — the live
     // assistant's and the Simli agent's speech was spend no ledger saw. Same door as the buffered legs now.
-    const paid = await runTtsDoor(input, "voice_tts_stream", { voice_id: voiceId, stream: true }, () => fetch(
+    const paid = await runTtsDoor({ ...input, idempotencyKey: null }, "voice_tts_stream", { voice_id: voiceId, stream: true }, () => fetch(
       `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream${outputFormatQuery}`,
       {
         method: "POST",
@@ -409,6 +427,7 @@ async function runTtsDoor<T>(
   metadata: Record<string, unknown>,
   call: () => Promise<T>,
   ok: (r: T) => boolean,
+  providerRef: () => string | null = () => null,
 ) {
   const { runPaidEgress } = await import("@/lib/vendor-governance/paid-egress")
   const { estimatePlatformVendorCost } = await import("@/lib/vendor-governance/meter-vendor")
@@ -418,5 +437,5 @@ async function runTtsDoor<T>(
     estimatedCostUsd: estimatePlatformVendorCost("elevenlabs", chars), units: chars,
     subject: { type: "tts_voice", id: null, ref: String(metadata.voice_id ?? "") || null },
     systemSource, metadata: { ...metadata, chars }, idempotencyKey: input.idempotencyKey ?? null,
-  }, call, (r) => ({ ok: ok(r), units: chars }))
+  }, call, (r) => ({ ok: ok(r), units: chars, providerRef: ok(r) ? providerRef() : null }))
 }
