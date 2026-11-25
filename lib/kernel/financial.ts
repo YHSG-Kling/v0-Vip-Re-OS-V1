@@ -1229,11 +1229,11 @@ function payoutReleaseGate(input: {
 }): { ok: true; advance: boolean; reason: string | null } | { ok: false; error: string } {
   if (input.timing === "at_closing_per_cda") {
     if (!input.closedVerified) {
-      return { ok: false, error: "closing_not_verified: this brokerage pays out at closing — the payout follows the VERIFIED closing, which is not recorded on this transaction yet" }
+      return { ok: false, error: "closing_not_verified: payouts here are set to happen at closing — the payout follows the VERIFIED closing, which is not recorded on this transaction yet" }
     }
     const cda = input.cda ?? null
     if (!cda || (cda.status ?? "") !== "approved" || !cda.broker_approved_at) {
-      return { ok: false, error: "cda_not_authorized: this brokerage pays out at closing as the CDA authorizes — the CDA is not broker-signed yet" }
+      return { ok: false, error: "cda_not_authorized: payouts here are set to happen at closing as the CDA authorizes — the CDA is not broker-signed yet" }
     }
     if (!cda.sent_to_title_at) {
       return { ok: false, error: "cda_not_delivered: the broker-signed CDA has not been delivered to title, so title has no authorization to disburse at closing" }

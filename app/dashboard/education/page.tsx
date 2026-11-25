@@ -2,7 +2,7 @@ import { createClient } from "@/lib/supabase/server"
 import { EducationLibrary } from "@/app/components/features/education/EducationLibrary"
 import { EducationEditor } from "@/app/components/features/education/EducationEditor"
 import { ProgressDashboard } from "@/app/components/features/education/ProgressDashboard"
-import { ClientLearningPanel } from "./client-learning-panel"
+import { ClientLearningPanel } from "./client-learning-panel"; import { resolveSessionSeatWords } from "@/lib/kernel/resolve-user-office"
 import { redirect } from "next/navigation"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
@@ -88,11 +88,11 @@ export default async function EducationPage() {
     email: (c.email as string | null) ?? null,
   }))
 
-  return (
+  const words = await resolveSessionSeatWords(); return (
     <div className="container mx-auto py-8 space-y-8">
       <div>
         <h1 className="text-3xl font-bold mb-2">Education Management</h1>
-        <p className="text-gray-600">Create, manage, and track educational resources for your brokerage</p>
+        <p className="text-gray-600">Create, manage, and track educational resources for {words.payer}</p>
       </div>
 
       <ProgressDashboard brokerageId={profile.brokerage_id} />
@@ -102,7 +102,7 @@ export default async function EducationPage() {
           Could not load your lessons or clients: {loadError}. Client Learning is hidden rather than shown empty.
         </div>
       ) : (
-        <ClientLearningPanel modules={modules} contacts={contacts} />
+        <ClientLearningPanel modules={modules} contacts={contacts} words={words} />
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">

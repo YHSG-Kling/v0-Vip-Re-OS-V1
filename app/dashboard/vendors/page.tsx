@@ -5,7 +5,7 @@ import { Suspense } from "react"
 import Link from "next/link"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
-import { VendorDirectoryClient } from "./vendor-directory-client"
+import { VendorDirectoryClient } from "./vendor-directory-client"; import { resolveSessionSeatWords } from "@/lib/kernel/resolve-user-office"
 import {
   PremiumPlacementPanel,
   type PlacementInvoice,
@@ -466,7 +466,7 @@ export default async function VendorsPage({
               brokerageId={profile.brokerage_id}
               userRole={profile.user_type ?? "agent"}
               deliverables={deliverables}
-              initialVendorId={initialVendorId}
+              initialVendorId={initialVendorId} words={await resolveSessionSeatWords()}
             />
           </Suspense>
         </TabsContent>

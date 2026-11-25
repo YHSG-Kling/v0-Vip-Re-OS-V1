@@ -1287,3 +1287,21 @@ export function settlementReconciliationForViewer(r: SettlementReconciliation, v
   })
   return { ...r, items, blockers, withheld }
 }
+
+/**
+ * WAVE 156 (lane 156Q — directive 156A item 5): the payout-timing label in the words of the SUBSCRIBER'S SHAPE. The
+ * stored values (COMMISSION_PAYOUT_TIMINGS) and the gate (resolvePayoutTiming) are unchanged; only what a person reads
+ * follows the payer the caller resolved from the SESSION tenant (lib/errors resolveTenantPayer). A brokerage reads the
+ * existing brokerage sentence (COMMISSION_PAYOUT_TIMING_LABEL, the brokerage spelling); a team reads its team; a solo
+ * agent never reads "the brokerage pays"; an unread tier reads an actor-neutral sentence (fail closed — the brokerage
+ * reading is never the default). The closing-time label names title and the CDA, not a payer, so it reads the same for all.
+ */
+export function commissionPayoutTimingLabel(timing: CommissionPayoutTiming, payer: import("@/lib/errors").TenantPayer | null | undefined): string {
+  if (timing === "at_closing_per_cda") return COMMISSION_PAYOUT_TIMING_LABEL.at_closing_per_cda
+  switch (payer?.kind) {
+    case "brokerage": return COMMISSION_PAYOUT_TIMING_LABEL.after_brokerage_receipt
+    case "team": return "After the team receives the commission — then the team pays its agents"
+    case "solo": return "After the commission is received — a payout is recorded only from funds that actually arrived"
+    default: return "After the commission is received — then the agent is paid"
+  }
+}

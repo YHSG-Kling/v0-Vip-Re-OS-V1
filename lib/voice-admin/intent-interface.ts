@@ -48,6 +48,7 @@ import { assistantSkillRefusal } from "./assistant-reach"
 import { parseTeamCommandText, type ParsedTeamCommand } from "@/lib/voice/parse-team-command"
 import { personaAudienceLabels } from "@/lib/portal/persona-config"
 import { getNavigationForRole } from "@/app/config/navigation-config"
+import { tenantPayerWords, capitalizeWords, type TenantPayer, type TenantPayerWords } from "@/lib/errors"
 
 // ─── Vocabulary ──────────────────────────────────────────────────────────────
 
@@ -575,6 +576,10 @@ export interface IntentActor {
    *  widen the data scope (that stays the seat's — the narrower reading) and never lift the contact / client floors.
    *  Absent or null = the seat alone (the pre-149 behaviour, and the fail-closed reading of a refused grant read). */
   grantedRoles?: readonly string[] | null
+  /** WAVE 156 (lane 156Q): the seat's subscriber shape, for WORDING only (lib/kernel/resolve-user-office.ts resolveSeatPayer) —
+   *  a solo agent never reads "brokerage", an office seat reads the office it acts for. Absent = actor-neutral words.
+   *  Never read for authority: it changes no outcome, role or scope below. */
+  payer?: TenantPayer | null
 }
 
 export interface IntentTenant {
@@ -658,14 +663,14 @@ export function checkIntentAuthority(route: IntentRoute, actor: IntentActor, opt
   // honoured here — platform staff are platform_role (CLAUDE.md §4), never a tenant grant row.
   const byGrant = bySeat ? null : grantedCanonicalRoles(actor).find((g) => g !== "superadmin" && featureRoles.includes(g)) ?? null
   const admitted = bySeat || byGrant !== null
-  if (!admitted) return refuse("refused_role", `Your role (${role.replace(/_/g, " ")}) doesn't include ${route.label.toLowerCase()} — ask your broker if you need it.`)
+  if (!admitted) return refuse("refused_role", `Your role (${role.replace(/_/g, " ")}) doesn't include ${route.label.toLowerCase()} — ask ${tenantPayerWords(actor.payer).askWho} if you need it.`)
   if (opts.operable === false) {
     return { ...base, outcome: "not_operable", allowed: false, confirmationRequired: false, approvalRequired: false, reasons: [opts.blockReason ? `I can't do that yet — ${opts.blockReason}` : "I can't do that yet: the provider it needs is not connected."] }
   }
   const reasons: string[] = []
-  if (byGrant) reasons.push(`Your ${byGrant.replace(/_/g, " ")} grant in this brokerage covers it.`)
+  if (byGrant) reasons.push(`Your ${byGrant.replace(/_/g, " ")} grant in ${tenantPayerWords(actor.payer).scope} covers it.`)
   if (route.mutates) reasons.push("It changes something, so it waits for your yes.")
-  if (route.publishes) reasons.push("Anything it produces for the public waits for your brokerage's approver before it goes out.")
+  if (route.publishes) reasons.push(`Anything it produces for the public waits for ${tenantPayerWords(actor.payer).payerPossessive} approver before it goes out.`)
   if (base.dataScope === "own") reasons.push("You'll see your own contacts and listings only.")
   return { ...base, outcome: "allowed", allowed: true, reasons }
 }
@@ -740,7 +745,7 @@ function listingWords(v: string | null): string {
 }
 
 /** PURE: what will happen, in words. */
-function explainPlan(route: IntentRoute, params: Params, authority: AuthorityCheck, missing: Array<{ param: string; ask: string }>): IntentPlan {
+function explainPlan(route: IntentRoute, params: Params, authority: AuthorityCheck, missing: Array<{ param: string; ask: string }>, words: TenantPayerWords = tenantPayerWords(null)): IntentPlan {
   const who = humanManager(route.manager)
   const executor: IntentSurface | null = (route.executors.c17 ? "c17" : (Object.keys(route.executors)[0] as IntentSurface | undefined)) ?? null
   let steps: string[]
@@ -756,7 +761,7 @@ function explainPlan(route: IntentRoute, params: Params, authority: AuthorityChe
     case "buyer_interest_search":
       steps = [
         `Read saved buyer criteria for "${params.interest ?? "…"}" — only what the buyers said themselves (C10 store).`,
-        authority.dataScope === "own" ? "Limit it to your own contacts." : "Across the brokerage's buyer contacts you can see.",
+        authority.dataScope === "own" ? "Limit it to your own contacts." : `Across ${words.actingForPossessive} buyer contacts you can see.`,
         "List them with the words they used, so you know why each one matched.",
       ]
       break
@@ -799,7 +804,7 @@ function explainPlan(route: IntentRoute, params: Params, authority: AuthorityChe
   else summary = `${who.replace(/^your /, "Your ")} is on it — ${route.label.toLowerCase()}.`
   return {
     summary, steps, willChange: route.mutates, needsConfirmation,
-    approval: route.publishes ? "Your brokerage's approver approves it before anything is published." : null,
+    approval: route.publishes ? `${capitalizeWords(words.payerPossessive)} approver approves it before anything is published.` : null,
     executor, managerSpoken: who,
   }
 }
@@ -991,7 +996,7 @@ export function interpretIntent(input: InterpretIntentInput): IntentInterpretati
   const operable = top.governedBy ? input.operable?.[top.governedBy] : undefined
   const authority = checkIntentAuthority(top, input.actor, { operable: operable ?? null, blockReason: top.governedBy ? input.blockReason?.[top.governedBy] ?? null : null })
   const missing = authority.allowed ? missingParams(top, params) : []
-  const plan = explainPlan(top, params, authority, missing)
+  const plan = explainPlan(top, params, authority, missing, tenantPayerWords(input.actor.payer))
   const second = matches.find((m) => m.route.key !== top.key)
   const confidence: IntentInterpretation["confidence"] = forced ? "medium" : !second || (matches[0].score - second.score) >= 4 ? "high" : "medium"
   return {

@@ -1072,7 +1072,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
           fromManager: "finance_manager",
           toManager:   "data_steward",
           signalType:  "subscription_cancelled",
-          message:     "The brokerage's subscription was cancelled.",
+          message:     "This account's subscription was cancelled.",
           entityType:  params.entityType,
           entityId:    params.entityId,
           payload:     params.metadata ?? {},
