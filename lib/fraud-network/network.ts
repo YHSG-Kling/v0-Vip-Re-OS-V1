@@ -37,6 +37,7 @@
 import "server-only"
 import { createHash } from "node:crypto"
 import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
+import { applyTenantScope, platformScope, tenantScope, type TenantScope } from "@/lib/kernel/tenant-scope"
 // The ONE tenant-lifecycle vocabulary (lib/billing/billing-access.ts — the paywall and the scraper roster read it too).
 import { TENANT_LIFECYCLE_REFUSED } from "@/lib/billing/billing-access"
 
@@ -954,8 +955,9 @@ export interface FraudNetworkMetrics {
 }
 
 export async function fraudNetworkMetrics(svc: Svc, scope: { kind: "platform" } | { kind: "tenant"; brokerageId: string }): Promise<Ok<{ metrics: FraudNetworkMetrics }> | Refusal> {
-  const tenant = scope.kind === "tenant" ? scope.brokerageId : null
-  const pin = (q: any) => (tenant ? q.eq("brokerage_id", tenant) : q)
+  const held = fraudMetricsScope(scope)
+  if (!held) return { ok: false, error: "The network metrics could not be read: no tenant is on this session." }
+  const pin = (q: any) => applyTenantScope(q, held)
   const [bul, reads, tasks, corr] = await Promise.all([
     svc.from("fraud_bulletins").select("id").eq("status", "published").limit(METRIC_ROW_CAP),
     pin(svc.from("fraud_bulletin_reads").select("id")).limit(METRIC_ROW_CAP),
@@ -1199,4 +1201,18 @@ export async function uploadEvidenceFile(svc: Svc, actor: TenantActor, input: { 
     : await svc.from("fraud_case_evidence").insert({ brokerage_id: r.case.brokerage_id, case_id: input.caseId, evidence_kind: input.kind, fingerprint_sha256: fingerprint, label: str(input.label, 200) || null, storage_status: "stored", created_by: actor.userId }).select("id")
   if (write.error || !(write.data ?? []).length) return { ok: false, error: "The file was stored but the case was not updated — contact platform support.", metadataRemoved: clean.removed, fingerprint }
   return { ok: true, fingerprint, metadataRemoved: clean.removed }
+}
+
+/**
+ * The scope the metrics read runs under, through the kernel's ONE discriminator (lib/kernel/tenant-scope.ts). A tenant
+ * scope whose id is blank is REFUSED (null) — it must never decay into every tenant's counts; the platform scope is
+ * something the staff door asked for by name, with its reason written down.
+ */
+function fraudMetricsScope(scope: { kind: "platform" } | { kind: "tenant"; brokerageId: string }): TenantScope | null {
+  try {
+    if (scope.kind === "platform") return platformScope("fraud network metrics — platform safety staff read every tenant's counts")
+    return tenantScope(scope.brokerageId, "fraud network metrics")
+  } catch {
+    return null
+  }
 }
