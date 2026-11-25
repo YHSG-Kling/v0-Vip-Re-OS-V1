@@ -14,7 +14,7 @@
  *       answers under review / approved / held (with the count) with the review screen's link — for a desk seat; a vendor and a
  *       Contact get nothing. The deal page mounts it on an EXISTING line (line-neutral) and it carries no decision control.
  *   §C  TWO CONFIRMS CANNOT RACE. lib/documents/governing-terms-proposal.ts applyGoverningTermsDecisions is a compare-and-set on the
- *       proposal store: two confirms that READ THE SAME VALUE before either writes (a rendezvous barrier on the read) each land,
+ *       proposal store's REVISION (`{ rev, proposals }`; a legacy bare array is read and upgraded; a NULL column matches IS NULL): two confirms that READ THE SAME VALUE before either writes (a rendezvous barrier on the read) each land,
  *       every accepted field is applied exactly once, no decision is lost; a store that keeps changing is refused plainly after
  *       one retry and the deal is unchanged.
  *   §D  A SOLO PRINCIPAL REACHES THEIR OWN QUEUE. A seat typed `agent` on a stored plan_tier = 'solo_agent' account (TIER PARITY)
@@ -25,8 +25,9 @@
  * RED AT BASE: WAVE156R_ROOT=<the starting tree> loads that tree's modules (the seam has no opinion there, the store is a blind
  * read-modify-write, the status door and the admission door do not exist).
  *
- * BLIND SPOTS (CLAUDE.md §2): the jsonb compare-and-set is modelled by the in-memory client's `filter(col, "eq", json)` arm (jsonb
- * equality, key order ignored) — PostgREST's jsonb `=` against JSON text is assumed, not exercised live; the interleaving is forced
+ * BLIND SPOTS (CLAUDE.md §2): the compare-and-set filters one JSON key (`governing_terms_proposals->>rev` eq / is-null — the data
+ * API's documented JSON-path filter) and the in-memory client models it through its existing `col->>key` reader (an array or a
+ * missing key reads NULL, a number reads as its text) — not exercised against the live API; the interleaving is forced
  * by a read barrier, so it proves the two-readers-one-value case, not every scheduler order; the deal page and the queue page are not
  * rendered in a browser (their mounts are checked in comment-stripped source); brokerage_form_library rows are fixtures — m1005 must be
  * applied for the live directory read to name its columns.
@@ -225,6 +226,25 @@ async function sectionB(gt: any, act: any) {
   G.__R.mem = world({ transactions: [txRow({ id: TX2, offer_id: null })] }); G.__R.seat = seatOf(AU, "agent", AG)
   const sn = await quiet(() => gt.loadDealPacketReviewStatusAction(TX2))
   check("a deal with no offer has no packet line (status null)", sn.success && sn.status === null, sn)
+
+  // ROUND 2 — THE SAME ACCEPTED SEQUENCE UNDER TWO IDS: the deal names the ORIGINAL offer; the contract is the executed COUNTER (the
+  // head), and the reviewer approved it under the counter's id. The line resolves the head by lane 156B's rule and reads APPROVED.
+  const O2 = u(43)
+  const seq = world({
+    offer: { status: "countered" }, library: [libRow({})], transactions: [txRow()],
+    doc: contractDoc({ metadata: { linked_offer_id: O2 }, extracted_fields: { price: 505000, earnest_money_amount: 10000, closing_date: "2026-12-30", property_address: "40 Elm St, Austin, TX 78702" } }),
+  })
+  seq.tables.offers.push(offerRow({ id: O2, parent_offer_id: O, status: "accepted", offer_type: "counter", offer_price: 505000, created_at: "2026-11-21T12:00:00.000Z" }))
+  G.__R.mem = seq
+  const q0 = await status(seatOf(AU, "agent", AG))
+  check("SEQUENCE: a deal naming the ORIGINAL offer resolves the accepted counter as the head (under review, linked to the counter's review)",
+    q0.success && q0.status?.state === "under_review" && q0.status?.offerId === O2 && q0.status?.href.endsWith(`/purchase_offer/${O2}`), q0)
+  G.__R.seat = seatOf(CO, "compliance_officer"); G.__R.calls.submit = []
+  const vq = await quiet(() => act.getRepresentationReviewAction({ record: "purchase_offer", subjectId: O2 }))
+  const aq = await quiet(() => act.recordRepresentationReview({ record: "purchase_offer", subjectId: O2, decision: "approve", evidenceHash: vq.success ? vq.decision.evidenceHash : "" }))
+  const q1 = await status(seatOf(AU, "agent", AG))
+  check("SEQUENCE: the approval recorded under the COUNTER's id reads APPROVED on the deal that names the original (red before round 2: under review / error)",
+    aq.success && q1.success && q1.status?.state === "approved", { aq, q1 })
   const page = code("app/dashboard/transactions/[id]/transaction-detail-client.tsx")
   const card = code("app/components/transactions/governing-terms-proposals-card.tsx")
   check("the deal page mounts the status line (with the deal's id) in the documents tab", /<DealPacketReviewStatusLine\s+transactionId=\{transaction\.id\}\s*\/>/.test(page))
@@ -269,7 +289,7 @@ function churnClient(m: MemClient): MemClient {
       const q = (t as any).from(table)
       if (table !== "transactions") return q
       const wrap = (b: any): any => new Proxy(b, { get(bt, bk) {
-        if (bk === "maybeSingle") return async () => { const r = await bt.maybeSingle(); const row = t.tables.transactions[0]; row.governing_terms_proposals = row.governing_terms_proposals.map((p: any) => ({ ...p, proposed_at: `${Date.now()}-${Math.random()}` })); return r }
+        if (bk === "maybeSingle") return async () => { const r = await bt.maybeSingle(); const row = t.tables.transactions[0]; const v = row.governing_terms_proposals; row.governing_terms_proposals = { rev: (typeof v?.rev === "number" ? v.rev : 0) + 100, proposals: Array.isArray(v) ? v : v.proposals }; return r }
         const v = bt[bk]
         return typeof v === "function" ? (...a: any[]) => { const r = v.apply(bt, a); return r === bt ? wrap(bt) : r } : v
       } })
@@ -278,28 +298,49 @@ function churnClient(m: MemClient): MemClient {
   } }) as MemClient
 }
 async function sectionC(store: any, gt: any) {
-  section("§C two confirms cannot race — compare-and-set on the proposal store, each accepted field applied exactly once")
+  section("§C two confirms cannot race — compare-and-set on the store's REVISION, each accepted field applied exactly once")
   if (store.__loadError) { check("the proposal store loads", false, store.__loadError); return }
   const PID = u(70)
-  const seed = (fields: Record<string, unknown> = { purchase_price: 401000, close_date: "2027-01-30", inspection_deadline: "2026-12-05" }) => {
-    const m = world({ transactions: [{ id: TX, brokerage_id: B, agent_id: AG, offer_id: O, purchase_price: 400000, close_date: "2027-01-15", property_address: "40 Elm Street",
-      governing_terms_proposals: [{ id: PID, source: { kind: "client_document", document_id: CDOC, document_name: "Purchase agreement.pdf" }, proposed_by: AU, proposed_at: T0, fields, decisions: {} }] }] })
-    return m
+  const proposal = (fields: Record<string, unknown>) => ({ id: PID, source: { kind: "client_document", document_id: CDOC, document_name: "Purchase agreement.pdf" }, proposed_by: AU, proposed_at: T0, fields, decisions: {} })
+  /** shape "legacy" = the bare array written before round 2 (no rev); "rev" = the revisioned store `{ rev, proposals }`. */
+  const seed = (shape: "legacy" | "rev" = "rev", fields: Record<string, unknown> = { purchase_price: 401000, close_date: "2027-01-30", inspection_deadline: "2026-12-05" }) => {
+    const list = [proposal(fields)]
+    return world({ transactions: [{ id: TX, brokerage_id: B, agent_id: AG, offer_id: O, purchase_price: 400000, close_date: "2027-01-15", property_address: "40 Elm Street",
+      governing_terms_proposals: shape === "legacy" ? list : { rev: 5, proposals: list } }] })
   }
-  const decisionsOf = (m: MemClient) => (m.tables.transactions[0].governing_terms_proposals?.[0]?.decisions ?? {}) as Record<string, any>
+  const storedOf = (m: MemClient) => m.tables.transactions[0].governing_terms_proposals
+  const listOf = (m: MemClient): any[] => { const v = storedOf(m); return Array.isArray(v) ? v : Array.isArray(v?.proposals) ? v.proposals : [] }
+  const decisionsOf = (m: MemClient) => (listOf(m)[0]?.decisions ?? {}) as Record<string, any>
   const priceWrites = (m: MemClient) => m.writes.filter((w) => w.table === "transactions" && w.op === "update" && "purchase_price" in w.payload && w.matched > 0).length
   const apply = (db: MemClient, accept: string[], dismiss: string[], by: string) => quiet(() => store.applyGoverningTermsDecisions(db, { transactionId: TX, brokerageId: B, proposalId: PID, accept, dismiss, by }))
 
-  // (1) DIFFERENT fields, read at the same moment.
-  let m = seed(); let db = barrierClient(m)
-  const [a, b] = await Promise.all([apply(db, ["purchase_price"], [], AU), apply(db, ["close_date"], [], CO)])
-  const d1 = decisionsOf(m)
-  check("two interleaved confirms of DIFFERENT fields: both land, and NEITHER decision is lost (red at base: the later write erases the earlier)",
-    a.ok && b.ok && d1.purchase_price?.decision === "accepted" && d1.close_date?.decision === "accepted" && m.tables.transactions[0].purchase_price === 401000 && m.tables.transactions[0].close_date === "2027-01-30", { a, b, d1 })
-  check("…the closing-day milestone is set once, by the writer that claimed it", m.tables.transaction_milestones.filter((x: Row) => x.milestone_name === "closing_day").length === 1 && m.writes.filter((w) => w.table === "transaction_milestones").length === 1, m.writes.filter((w) => w.table === "transaction_milestones"))
+  // (0) POSITIVE CONTROL of the filter shape the compare-and-set uses: a JSON-path equality on `rev`, and is-null.
+  {
+    const m = seed("rev")
+    const upd = async (f: (q: any) => any) => { const { data } = await f(m.from("transactions").update({ deal_name: "x" }).eq("id", TX)).select("id"); return (data ?? []).length }
+    const wrong = await upd((q) => q.eq("governing_terms_proposals->>rev", "4"))
+    const right = await upd((q) => q.eq("governing_terms_proposals->>rev", "5"))
+    const nullOnRev = await upd((q) => q.is("governing_terms_proposals", null))
+    const legacy = seed("legacy")
+    const { data: lg } = await legacy.from("transactions").update({ deal_name: "x" }).eq("id", TX).is("governing_terms_proposals->>rev", null).select("id")
+    check("POSITIVE CONTROL: a WRONG revision matches ZERO rows; the right one matches one; a stored value is not IS NULL; a legacy store (no rev) matches `->>rev IS NULL`",
+      wrong === 0 && right === 1 && nullOnRev === 0 && (lg ?? []).length === 1, { wrong, right, nullOnRev, legacy: (lg ?? []).length })
+  }
+
+  // (1) DIFFERENT fields, read at the same moment — on a revisioned store AND on a legacy store.
+  for (const shape of ["rev", "legacy"] as const) {
+    const m = seed(shape); const db = barrierClient(m)
+    const [a, b] = await Promise.all([apply(db, ["purchase_price"], [], AU), apply(db, ["close_date"], [], CO)])
+    const d1 = decisionsOf(m)
+    check(`two interleaved confirms of DIFFERENT fields (${shape} store): both land, and NEITHER decision is lost (red at base: the later write erases the earlier)`,
+      a.ok && b.ok && d1.purchase_price?.decision === "accepted" && d1.close_date?.decision === "accepted" && m.tables.transactions[0].purchase_price === 401000 && m.tables.transactions[0].close_date === "2027-01-30", { a, b, d1 })
+    check(`…the closing-day milestone is set once, by the writer that claimed it (${shape})`, m.tables.transaction_milestones.filter((x: Row) => x.milestone_name === "closing_day").length === 1 && m.writes.filter((w) => w.table === "transaction_milestones").length === 1)
+    check(`…and the store carries a revision now: ${shape === "rev" ? "5 → 7 (two writes)" : "the legacy array upgraded to { rev, proposals } (two writes → rev 2)"}`,
+      !Array.isArray(storedOf(m)) && storedOf(m)?.rev === (shape === "rev" ? 7 : 2), storedOf(m)?.rev)
+  }
 
   // (2) the SAME field, read at the same moment.
-  m = seed(); db = barrierClient(m)
+  let m = seed("rev"); let db = barrierClient(m)
   const [c, d] = await Promise.all([apply(db, ["purchase_price"], [], AU), apply(db, ["purchase_price"], [], CO)])
   const appliedBy = [c, d].filter((r: any) => r.ok && r.applied.includes("purchase_price")).length
   const skippedBy = [c, d].filter((r: any) => r.ok && r.skipped.includes("purchase_price")).length
@@ -308,33 +349,46 @@ async function sectionC(store: any, gt: any) {
   check("…and the one recorded decision is the winner's (one author, not overwritten)", [AU, CO].includes(decisionsOf(m).purchase_price?.by) && decisionsOf(m).purchase_price?.decision === "accepted")
 
   // (3) accept vs dismiss of different fields.
-  m = seed(); db = barrierClient(m)
+  m = seed("legacy"); db = barrierClient(m)
   const [e, f] = await Promise.all([apply(db, ["purchase_price"], [], AU), apply(db, [], ["inspection_deadline"], CO)])
   check("an accept and a dismiss interleaved: both decisions are recorded; the dismissed term writes nothing",
     e.ok && f.ok && decisionsOf(m).purchase_price?.decision === "accepted" && decisionsOf(m).inspection_deadline?.decision === "dismissed" && m.tables.transaction_milestones.length === 0, { e, f, d: decisionsOf(m) })
 
   // (4) a store that changes under every write: one retry, then a plain refusal, deal unchanged.
-  m = seed()
-  const churn = churnClient(m)
-  const g = await apply(churn, ["purchase_price"], [], AU)
+  m = seed("rev")
+  const g = await apply(churnClient(m), ["purchase_price"], [], AU)
   check("a store that changes under every attempt: ONE retry, then a plain refusal — and the deal is unchanged",
     !g.ok && /same moment/.test(g.error ?? "") && m.tables.transactions[0].purchase_price === 400000 && Object.keys(decisionsOf(m)).length === 0, g)
 
-  // (5) THE DOOR: two confirmGoverningTermsAction calls in flight together (desk first, both seats on the deal).
+  // (5) THE FIRST PROPOSAL on a NULL column, and two first proposals (different sources) at the same moment.
+  m = world({ transactions: [{ id: TX, brokerage_id: B, agent_id: AG, offer_id: O, purchase_price: 400000, governing_terms_proposals: null }] }); db = barrierClient(m)
+  const rec = (docId: string, price: number) => quiet(() => store.recordGoverningTermsProposal(db, { transactionId: TX, brokerageId: B, proposedBy: AU, source: { kind: "client_document", document_id: docId }, extracted: { purchasePrice: price } }))
+  const [p1, p2] = await Promise.all([rec(u(81), 410000), rec(u(82), 420000)])
+  check("the FIRST proposal on a NULL column lands (IS NULL), and two first proposals at the same moment BOTH survive — rev 2, two proposals",
+    p1.ok && p2.ok && storedOf(m)?.rev === 2 && listOf(m).length === 2 && m.tables.transactions[0].purchase_price === 400000, { p1, p2, stored: storedOf(m) })
+
+  // (6) A LEGACY store is still READ.
+  const legacy = seed("legacy")
+  const rd = await quiet(() => store.readGoverningTermsProposals(legacy, TX, B))
+  check("a store written before the revision (bare array, no rev) is still read", rd.ok && rd.proposals.length === 1 && rd.proposals[0].id === PID, rd)
+
+  // (7) THE DOOR: two confirmGoverningTermsAction calls in flight together (desk first, both seats on the deal).
   if (!gt.__loadError) {
-    m = seed(); G.__R.mem = barrierClient(m)
+    m = seed("rev"); G.__R.mem = barrierClient(m)
     G.__R.seat = seatOf(AU, "agent", AG)
-    const p1 = quiet(() => gt.confirmGoverningTermsAction({ transactionId: TX, proposalId: PID, accept: ["purchase_price"] }))
+    const r1p = quiet(() => gt.confirmGoverningTermsAction({ transactionId: TX, proposalId: PID, accept: ["purchase_price"] }))
     G.__R.seat = seatOf(CO, "compliance_officer")
-    const p2 = quiet(() => gt.confirmGoverningTermsAction({ transactionId: TX, proposalId: PID, accept: ["purchase_price", "close_date"] }))
-    const [r1, r2] = await Promise.all([p1, p2])
+    const r2p = quiet(() => gt.confirmGoverningTermsAction({ transactionId: TX, proposalId: PID, accept: ["purchase_price", "close_date"] }))
+    const [r1, r2] = await Promise.all([r1p, r2p])
     check("THE DOOR: two confirms in flight together — each accepted field is applied once and both decisions stand",
       r1.success && r2.success && priceWrites(m) === 1 && decisionsOf(m).purchase_price?.decision === "accepted" && decisionsOf(m).close_date?.decision === "accepted", { r1, r2, w: priceWrites(m) })
     G.__R.seat = null
   }
   const src = code("lib/documents/governing-terms-proposal.ts")
   const outsideCas = src.replace(/async function casWriteProposals[\s\S]*?\n}\n/, "")
-  check("source: every write of the proposal store goes through the compare-and-set (no other .update( in the store module)", /async function casWriteProposals/.test(src) && /\.filter\("governing_terms_proposals",\s*"eq",\s*JSON\.stringify\(readValue\)\)/.test(src) && !/\.update\(/.test(outsideCas))
+  check("source: every write goes through the compare-and-set on `->>rev` (eq / is-null), never the whole value in the request, and no other .update( in the store module",
+    /async function casWriteProposals/.test(src) && /\.eq\("governing_terms_proposals->>rev",\s*String\(rev\)\)/.test(src) && /\.is\("governing_terms_proposals->>rev",\s*null\)/.test(src)
+      && !/JSON\.stringify\(readValue\)/.test(src) && !/\.update\(/.test(outsideCas))
 }
 
 // ═══ §D a solo principal reaches their own queue ═════════════════════════════════════════════════════════════════════════

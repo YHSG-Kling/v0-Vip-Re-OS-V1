@@ -124,13 +124,28 @@ export async function loadDealPacketReviewStatusAction(transactionId: string): P
   if (error) return { success: false, error: `The deal's offer couldn't be read: ${error.message}` }
   const offerId = (tx as { offer_id?: string | null } | null)?.offer_id ?? null
   if (!offerId) return { success: true, status: null }
+  // THE CONTRACT IS THE ACCEPTED SEQUENCE'S HEAD — resolved by the SAME rule lane 156B's creation gate uses (governingOfferPacket →
+  // acceptedOfferSequence). When the deal's offer is an earlier instrument that a later executed counter superseded, the rule refuses
+  // with `later_execution` and NAMES that one instrument: the packet is read from it (no second resolver).
   const { governingOfferPacket } = await import("@/lib/offers/governing-terms")
-  const gp = await governingOfferPacket(svc as never, desk.brokerageId, offerId)
+  let gp = await governingOfferPacket(svc as never, desk.brokerageId, offerId)
+  if (!gp.ok && gp.kind === "refused" && gp.code === "later_execution" && gp.offerIds.length === 1) gp = await governingOfferPacket(svc as never, desk.brokerageId, gp.offerIds[0])
   if (!gp.ok) return { success: false, error: `The offer packet couldn't be read: ${gp.reason}` }
+  const packet = gp.packet
   const { loadAndDecideOfferRepresentation } = await import("@/lib/kernel/compliance/representation-gate")
-  const d = await loadAndDecideOfferRepresentation(svc as never, { brokerageId: desk.brokerageId, offerId, packet: gp.packet, gate: { allowed: true, refusals: [] }, asReviewed: true })
-  if (!d.ok) return { success: false, error: `The packet review couldn't run: ${d.error}` }
-  const holdCount = d.decision.blockingReasons.filter((r) => r.severity !== "review").length
-  const state = holdCount > 0 ? "held" : d.decision.verdict === "allow" ? "approved" : "under_review"
-  return { success: true, status: { offerId, state, holdCount, href: `/dashboard/compliance/queue/review/purchase_offer/${offerId}` } }
+  // An approval is recorded under the offer id the reviewer opened (the evidence hash names it). Any id of the SAME accepted
+  // sequence may carry it, so each is asked — the head first; the head's decision is the one whose holds the line shows.
+  const subjects = [...new Set([packet.headOfferId, offerId, ...packet.sequence])]
+  let head: { blockingReasons: Array<{ severity: string }>; verdict: string } | null = null
+  let approved = false
+  for (const subject of subjects) {
+    const d = await loadAndDecideOfferRepresentation(svc as never, { brokerageId: desk.brokerageId, offerId: subject, packet, gate: { allowed: true, refusals: [] }, asReviewed: true })
+    if (!d.ok) return { success: false, error: `The packet review couldn't run: ${d.error}` }
+    if (subject === packet.headOfferId) head = d.decision
+    if (d.decision.verdict === "allow") approved = true
+  }
+  const holdCount = (head?.blockingReasons ?? []).filter((r) => r.severity !== "review").length
+  const state = holdCount > 0 ? "held" : approved ? "approved" : "under_review"
+  const reviewId = packet.headOfferId
+  return { success: true, status: { offerId: reviewId, state, holdCount, href: `/dashboard/compliance/queue/review/purchase_offer/${reviewId}` } }
 }

@@ -1171,6 +1171,8 @@ const CP = "app/actions/copilot.ts", CG = "app/actions/content-generation-engine
 const PM = "app/actions/portal-messages.ts", CHAT = "app/api/internal/ai-chat/route.ts", GT = "app/actions/governing-terms.ts"
 /** A proposal pre-seeded on TX1 for the confirm door's generic drive (§H round 2): purchase price and closing date from CD_TC. */
 const PROPOSAL_ID = u("c", 44)
+// wave 156 (156R round 2): the store is `{ rev, proposals }` once written (a legacy bare array is still read) — read both shapes.
+function storedProposals(v: any): any[] { return Array.isArray(v) ? v : v && Array.isArray(v.proposals) ? v.proposals : [] }
 const seedProposal = (m: MemClient) => { const t = T(m, "transactions").find((r) => r.id === TX1)!; t.governing_terms_proposals = [{ id: PROPOSAL_ID, source: { kind: "client_document", document_id: CD_TC, document_name: "Purchase agreement (signed).pdf" }, proposed_by: U_TC, proposed_at: "2026-11-25T00:00:00.000Z", fields: { purchase_price: 401000, close_date: "2027-01-30", inspection_deadline: "2026-12-05" }, decisions: {} }]; return m }
 const EXTRACTED = { purchasePrice: 401000, earnestMoneyAmount: null, inspectionDeadline: "2026-12-05", appraisalDeadline: null, financingDeadline: null, closingDate: "2027-01-30", buyerName: null, sellerName: null, propertyAddress: null }
 /**
@@ -1187,7 +1189,7 @@ const H_DOORS: Record<string, { file: string; call: (m: any) => Promise<any>; re
   // Round 2: a PROPOSAL door — it lands a proposal on the deal and changes none of the deal's terms. Its first deal read decides
   // the uploader route (the document's uploader may propose without the desk), so the deal read may precede the refusal.
   applyContractExtraction: { file: CR, call: (m) => m.applyContractExtraction({ transactionId: TX1, documentId: CD_TC, extracted: EXTRACTED }), resolvesDeal: true,
-    landed: (m) => { const t = T(m, "transactions").find((r) => r.id === TX1); return t?.purchase_price === 400000 && Array.isArray(t?.governing_terms_proposals) && t.governing_terms_proposals.length === 1 && T(m, "transaction_milestones").length === 0 } },
+    landed: (m) => { const t = T(m, "transactions").find((r) => r.id === TX1); return t?.purchase_price === 400000 && storedProposals(t?.governing_terms_proposals).length === 1 && T(m, "transaction_milestones").length === 0 } },
   confirmGoverningTermsAction: { file: GT, call: async (m) => { seedProposal(G.__DD.mem); return m.confirmGoverningTermsAction({ transactionId: TX1, proposalId: PROPOSAL_ID, accept: ["purchase_price"] }) },
     landed: (m) => T(m, "transactions").find((r) => r.id === TX1)?.purchase_price === 401000 },
   aiGenerateDocument: { file: DI, call: (m) => m.aiGenerateDocument({ transactionId: TX1, documentType: "cover_letter", context: {} }), reach: true },
@@ -1428,7 +1430,7 @@ async function sectionH() {
 
 /** The deal's governing terms as one comparable string: the three columns, every milestone, and the proposals' decisions. */
 const termsOf = (m: MemClient) => { const t = T(m, "transactions").find((r) => r.id === TX1) ?? {}; return JSON.stringify([t.purchase_price, t.close_date ?? null, t.property_address, T(m, "transaction_milestones").map((r) => `${r.milestone_name}:${r.due_date}`).sort()]) }
-const proposalsOf = (m: MemClient): any[] => { const v = T(m, "transactions").find((r) => r.id === TX1)?.governing_terms_proposals; return Array.isArray(v) ? v : [] }
+const proposalsOf = (m: MemClient): any[] => storedProposals(T(m, "transactions").find((r) => r.id === TX1)?.governing_terms_proposals)
 
 /** §H round 2 — A MODEL MUST NOT REWRITE A DEAL'S GOVERNING TERMS: extracted terms are a proposal; only the desk accepts them. */
 async function governingTermsScenario(cr: any) {

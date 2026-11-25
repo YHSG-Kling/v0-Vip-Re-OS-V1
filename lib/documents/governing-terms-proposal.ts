@@ -66,7 +66,20 @@ function proposalFieldsFrom(extracted: Record<string, unknown> | null | undefine
 }
 
 const sourceKey = (s: ProposalSource) => (s.kind === "client_document" ? `doc:${s.document_id}` : `text:${s.sha256}`)
-const asList = (v: unknown): GoverningTermsProposal[] => (Array.isArray(v) ? (v as GoverningTermsProposal[]) : [])
+/**
+ * wave 156 (lane 156R, round 2) — THE STORED SHAPE carries a REVISION: `{ rev: <integer>, proposals: [...] }`. Every write goes
+ * through casWriteProposals, which writes rev + 1 and matches the rev it read. A store written before this change is the bare
+ * array (no rev): it is still read here, and its next write upgrades it to the revisioned shape.
+ */
+const asList = (v: unknown): GoverningTermsProposal[] =>
+  Array.isArray(v) ? (v as GoverningTermsProposal[])
+  : v && typeof v === "object" && Array.isArray((v as { proposals?: unknown }).proposals) ? ((v as { proposals: GoverningTermsProposal[] }).proposals)
+  : []
+/** The revision a stored value carries — null for an empty column, a legacy bare array, or an object without an integer rev. */
+const revOf = (v: unknown): number | null => {
+  const r = v && typeof v === "object" && !Array.isArray(v) ? (v as { rev?: unknown }).rev : undefined
+  return typeof r === "number" && Number.isInteger(r) && r >= 0 ? r : null
+}
 
 /** The deal's proposals, read on the service client IN the tenant. A refused read is returned (CLAUDE.md §3). */
 export async function readGoverningTermsProposals(db: Db, transactionId: string, brokerageId: string): Promise<
@@ -108,7 +121,7 @@ export async function recordGoverningTermsProposal(db: Db, input: {
       created = true
       list.push({ id: proposalId, source: input.source, proposed_by: input.proposedBy, proposed_at: new Date().toISOString(), fields, decisions: {} })
     }
-    const w = await casWriteProposals(db, input, cur.deal.governing_terms_proposals, { governing_terms_proposals: list })
+    const w = await casWriteProposals(db, input, cur.deal.governing_terms_proposals, list)
     if (!w.ok) return { ok: false, error: `The proposed terms were not recorded: ${w.error}` }
     if (w.matched === 1) return { ok: true, proposalId, created, fields: keys }
   }
@@ -116,18 +129,29 @@ export async function recordGoverningTermsProposal(db: Db, input: {
 }
 
 /**
- * wave 156 (lane 156R) — THE COMPARE-AND-SET every write of the proposal store goes through. The proposal store is one jsonb value
- * on the deal, so a write is the read-modify-write of that value; two writers that read the same value must not both land. The
- * UPDATE is pinned to the deal and the tenant AND to the value that was read (`governing_terms_proposals = <read value>` — jsonb
- * equality, semantic; `IS NULL` when nothing was stored), and the rows are COUNTED: 1 = this writer won, 0 = someone else changed
- * the store first (or the deal is not in this tenant) and the caller re-reads. Never a blind overwrite.
+ * wave 156 (lane 156R) — THE COMPARE-AND-SET every write of the proposal store goes through. The store is one jsonb value on the
+ * deal, so a write is the read-modify-write of that value; two writers that read the same value must not both land. The UPDATE is
+ * pinned to the deal and the tenant AND to the REVISION that was read — one small key, matched with the data API's documented
+ * JSON-path filter (`governing_terms_proposals->>rev=eq.<n>`; docs.postgrest.org "Tables and Views" › JSON Columns: "This also
+ * works with filters"). The value written carries rev + 1. Which predicate:
+ *   · the column was NULL            → `governing_terms_proposals IS NULL` (the first proposal);
+ *   · a legacy store (no rev)        → `governing_terms_proposals->>rev IS NULL` (it upgrades to rev 1 on this write; a second
+ *                                      legacy-reader then matches nothing, because the rev now exists);
+ *   · a revisioned store             → `governing_terms_proposals->>rev = <rev read>`.
+ * The rows are COUNTED: 1 = this writer won; 0 = someone else wrote first (or the deal is not in this tenant) and the caller
+ * re-reads. Never a blind overwrite, and never the whole value in the request.
  */
-async function casWriteProposals(db: Db, at: { transactionId: string; brokerageId: string }, readValue: unknown, patch: Record<string, unknown>): Promise<{ ok: true; matched: number } | { ok: false; error: string }> {
-  let q = db.from("transactions").update(patch).eq("id", at.transactionId).eq("brokerage_id", at.brokerageId)
-  q = readValue === null || readValue === undefined ? q.is("governing_terms_proposals", null) : q.filter("governing_terms_proposals", "eq", JSON.stringify(readValue))
+async function casWriteProposals(db: Db, at: { transactionId: string; brokerageId: string }, readValue: unknown, list: GoverningTermsProposal[], extra: Record<string, unknown> = {}):
+  Promise<{ ok: true; matched: number; written: { rev: number; proposals: GoverningTermsProposal[] } } | { ok: false; error: string }> {
+  const rev = revOf(readValue)
+  const written = { rev: (rev ?? 0) + 1, proposals: list }
+  let q = db.from("transactions").update({ ...extra, governing_terms_proposals: written }).eq("id", at.transactionId).eq("brokerage_id", at.brokerageId)
+  q = readValue === null || readValue === undefined ? q.is("governing_terms_proposals", null)
+    : rev === null ? q.is("governing_terms_proposals->>rev", null)
+    : q.eq("governing_terms_proposals->>rev", String(rev))
   const { data, error } = await q.select("id")
   if (error) return { ok: false, error: error.message }
-  return { ok: true, matched: ((data ?? []) as unknown[]).length }
+  return { ok: true, matched: ((data ?? []) as unknown[]).length, written }
 }
 
 /**
@@ -176,7 +200,7 @@ export async function applyGoverningTermsDecisions(db: Db, input: {
     for (const f of accept) decisions[f] = { decision: "accepted", by: input.by, at: now }
     for (const f of dismiss) decisions[f] = { decision: "dismissed", by: input.by, at: now }
     list[at] = { ...p, decisions }
-    const w = await casWriteProposals(db, input, cur.deal.governing_terms_proposals, { ...patch, governing_terms_proposals: list })
+    const w = await casWriteProposals(db, input, cur.deal.governing_terms_proposals, list, patch)
     if (!w.ok) return { ok: false, error: `The deal was not updated: ${w.error}` }
     if (w.matched !== 1) continue
     for (const m of milestones) {
@@ -188,7 +212,7 @@ export async function applyGoverningTermsDecisions(db: Db, input: {
         const back = list.slice(); const rest = { ...decisions }
         for (const f of owed) delete rest[f]
         back[at] = { ...p, decisions: rest }
-        const r = await casWriteProposals(db, input, list, { governing_terms_proposals: back })
+        const r = await casWriteProposals(db, input, w.written, back)
         const released = r.ok && r.matched === 1
         return { ok: false, error: `The ${m.milestone_name.replace(/_/g, " ")} milestone was not set: ${error.message}. ${released ? `${owed.join(", ")} ${owed.length === 1 ? "is" : "are"} back to undecided — accept again.` : `The decision for ${owed.join(", ")} stays recorded although its milestone is not set — tell your coordinator.`}` }
       }

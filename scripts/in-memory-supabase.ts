@@ -240,10 +240,7 @@ export function memSupabase(seed: Record<string, Row[]>, opts: MemOptions = {}):
       // never silently match a filter this fake does not understand.
       filter(col: string, operator: string, v: unknown) {
         filterCols.push(col)
-        // Wave 156 (lane 156R): a jsonb column compared to JSON TEXT (`.filter("col", "eq", JSON.stringify(read))` — the
-        // compare-and-set lib/documents/governing-terms-proposal.ts writes with) is jsonb EQUALITY, as PostgREST does it:
-        // semantic, key order ignored. Any other comparison is the strict equality it always was.
-        if (operator === "eq") filters.push((r) => { const x = val(r, col); return x !== null && typeof x === "object" && typeof v === "string" ? jsonbText(x) === jsonbTextOf(v) : x === v })
+        if (operator === "eq") filters.push((r) => val(r, col) === v)
         else if (operator === "neq") filters.push((r) => val(r, col) !== v)
         else if (operator === "is") filters.push((r) => (v === null ? val(r, col) === null || val(r, col) === undefined : val(r, col) === v))
         else if (operator === "in") { const set = new Set(parseList(v as string)); filters.push((r) => set.has(String(val(r, col)))) }
@@ -285,11 +282,3 @@ export function memSupabase(seed: Record<string, Row[]>, opts: MemOptions = {}):
 
   return { from, tables, writes } as unknown as MemClient
 }
-
-/** Wave 156 (lane 156R): canonical text of a JSON value (keys sorted) — jsonb equality for the `filter(col, "eq", json)` arm. */
-function jsonbText(v: unknown): string {
-  if (Array.isArray(v)) return `[${v.map(jsonbText).join(",")}]`
-  if (v && typeof v === "object") return `{${Object.keys(v as Row).sort().filter((k) => (v as Row)[k] !== undefined).map((k) => `${JSON.stringify(k)}:${jsonbText((v as Row)[k])}`).join(",")}}`
-  return JSON.stringify(v ?? null)
-}
-function jsonbTextOf(s: string): string | null { try { return jsonbText(JSON.parse(s)) } catch { return null } }
