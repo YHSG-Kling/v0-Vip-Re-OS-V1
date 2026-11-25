@@ -878,6 +878,8 @@ export async function requestPropertyComparables(req: ComparablesRequest, deps: 
       : await (async () => {
           const { createServiceClient } = await import("@/lib/supabase/service")
           const { rentcastCapStatus } = await import("@/lib/property/rentcast-eligibility")
+          // The pre-read only NAMES the cutoff; the binding stop is the egress reservation inside rentcast.ts.
+          if (typeof rentcastCapStatus !== "function") return { allowed: true, reason: "ceiling pre-read unavailable — the egress reservation decides" }
           const s = await rentcastCapStatus(createServiceClient() as never)
           return { allowed: s.verdict.allowed, reason: s.verdict.reason }
         })()

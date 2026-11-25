@@ -671,13 +671,15 @@ function wave70Layer(): void {
   const GUARD = "if (closedComps.length < REQUIRED_SOLD_COMPS && rentcastEligibility.eligible)"
 
   // ── W1: the first RentCast pull precedes the supplement guard ──
-  const rentcastPullIdx = comps.indexOf("avmPull = await getRentcastAvmAndComps(")
+  // WAVE 156 (156I r3): the pull asks THE comparables capability (lib/avm/provider-chain.ts requestPropertyComparables, LAW 3);
+  // the rule — the first pull precedes the supplement guard — is unchanged, only the call it names moved.
+  const rentcastPullIdx = comps.indexOf('avmPull = (await (await import("@/lib/avm/provider-chain")).requestPropertyComparables(')
   const guardIdx = comps.indexOf(GUARD)
   check("W1 the first RentCast pull precedes the widened-supplement guard",
     rentcastPullIdx !== -1 && guardIdx !== -1 && rentcastPullIdx < guardIdx, `pull=${rentcastPullIdx} guard=${guardIdx}`)
   {
-    const reversed = `${GUARD} { }\navmPull = await getRentcastAvmAndComps(`
-    const a = reversed.indexOf("avmPull = await getRentcastAvmAndComps("), b = reversed.indexOf(GUARD)
+    const reversed = `${GUARD} { }\navmPull = (await (await import("@/lib/avm/provider-chain")).requestPropertyComparables(`
+    const a = reversed.indexOf('avmPull = (await (await import("@/lib/avm/provider-chain")).requestPropertyComparables('), b = reversed.indexOf(GUARD)
     check("W1-positive-control the ordering check correctly fails on a reversed-order fixture", !(a !== -1 && b !== -1 && a < b))
   }
 
@@ -771,7 +773,9 @@ function findingsLayer(): void {
 // NEGATIVE CONTROLS — defect written in, the whole behaviour layer re-run in a
 // CHILD process (fresh module graph), child required to exit non-zero.
 // ─────────────────────────────────────────────────────────────────────────────
-interface Control { file: string; find: string; replace: string }
+/** `also` (wave 156, 156I r3): a SECOND patch applied with the first — for a rule that is now held in two places (defence in
+ *  depth), where planting the defect in one place alone correctly stays green. Both are restored. */
+interface Control { file: string; find: string; replace: string; also?: { file: string; find: string; replace: string } }
 
 function controlled(label: string, c: Control): void {
   const before = raw(c.file)
@@ -782,7 +786,15 @@ function controlled(label: string, c: Control): void {
     failures.push(`negative control did not apply: ${label}`)
     return
   }
+  const alsoBefore = c.also ? raw(c.also.file) : null
+  const alsoAfter = c.also && alsoBefore !== null ? alsoBefore.replace(c.also.find, c.also.replace) : null
+  if (c.also && alsoAfter === alsoBefore) {
+    console.log(`  ✗ NEGATIVE CONTROL ${label} — SECOND PATCH DID NOT APPLY; proves nothing`)
+    failures.push(`negative control did not apply: ${label} (second patch)`)
+    return
+  }
   writeFileSync(join(ROOT, c.file), after)
+  if (c.also && alsoAfter !== null) writeFileSync(join(ROOT, c.also.file), alsoAfter)
   let wentRed = false
   try {
     const run = spawnSync("npx", ["tsx", "scripts/cma-provider-lane-simulator.ts", "--assert-only"], {
@@ -791,6 +803,7 @@ function controlled(label: string, c: Control): void {
     wentRed = run.status !== 0
   } finally {
     writeFileSync(join(ROOT, c.file), before)
+    if (c.also && alsoBefore !== null) writeFileSync(join(ROOT, c.also.file), alsoBefore)
     if (sha(c.file) !== beforeSha) {
       console.log(`  ✗ FAILED TO RESTORE ${c.file}`)
       failures.push(`FAILED TO RESTORE ${c.file}`)
@@ -849,9 +862,11 @@ async function main(): Promise<void> {
     controlled("the RentCast pull issued without asking the eligibility gate", {
       file: F.comps,
       find: `  if (rentcastEligibility.eligible) {
-    avmPull = await getRentcastAvmAndComps({`,
+    avmPull = (await (await import("@/lib/avm/provider-chain")).requestPropertyComparables({`,
       replace: `  if (true) {
-    avmPull = await getRentcastAvmAndComps({`,
+    avmPull = (await (await import("@/lib/avm/provider-chain")).requestPropertyComparables({`,
+      // wave 156 (156I r3): the comparables capability asks the SAME gate again — the defect is a pull with NEITHER asked.
+      also: { file: "lib/avm/provider-chain.ts", find: "    if (!eligibility.eligible) return await empty(", replace: "    if (false) return await empty(" },
     })
 
     // 6. The CMA's spend filed under a lane that did not spend.

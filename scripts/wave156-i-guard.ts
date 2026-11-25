@@ -496,7 +496,7 @@ async function sectionL() {
   const reg = await load("lib/kernel/signal-registry.ts")
   check("the signal is catalogued, handled by the Campaign Orchestrator", reg.SIGNAL_REGISTRY?.corridor_radar_brief?.disposition === "handled" && reg.SIGNAL_REGISTRY.corridor_radar_brief.consumers.includes("campaign_orchestrator"))
   check("its consumer is registered on the bus (SIGNAL_HANDLERS, source)", /SIGNAL_HANDLERS\["campaign_orchestrator:corridor_radar_brief"\]/.test(stripComments(raw("lib/kernel/manager-signals.ts"))))
-  const mc = await load("lib/acquisition-plays/moving-corridor.ts")
+  const mc = await load("lib/kernel/manager-signals.ts")
   const future = new Date(NOW.getTime() + 60 * 86_400_000).toISOString()
   const ms = (id: string, o: Record<string, unknown>) => ({ id, brokerage_id: B1, captured_by: "person", known_deadline_kind: "relocation_start", known_deadline_at: future, contact_id: null, lead_id: null, stated_destination_label: null, stated_destination_city: null, stated_destination_state: null, ...o })
   const consent = (contactId: string, brokerage = B1) => ({ id: `ce-${contactId}`, brokerage_id: brokerage, contact_id: contactId, consented: true, channels: ["email"], purposes: ["market_updates"], consent_type: "email", created_at: daysAgo(10).toISOString() })
