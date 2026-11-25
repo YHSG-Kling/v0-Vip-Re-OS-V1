@@ -460,7 +460,7 @@ const TENANT_COPY_RULES: ReadonlyArray<{ scope: TenantCopyRuleScope; re: RegExp;
   { scope: "authored", re: /\b(?:api[_ -]?key|secret|password|token|bearer)\b/i, why: "credential vocabulary" },
   { scope: "authored", re: /\$\s?\d[\d,]*(?:\.\d+)?/, why: "a price" },
   { scope: "authored", re: /platform[- ]?covered|\bplatform[- ]paid\b|\b(?:the )?platform (?:pays|is paying|will pay)\b|\bpaid by the platform\b/i, why: "the platform-pays phrase" },
-  { scope: "payer", re: /\b(?:brokerage (?:pays|will pay|is paying)|(?:billed|charged|invoiced) to (?:your |the |my )?brokerage|(?:your|the|my) brokerage(?:'s)? (?:is |will be )?(?:billed|charged|invoiced)\b|bills? (?:your|the|my) brokerage|payer:?\s*(?:your |the |my )?brokerage|paid by (?:your|the|my) brokerage|brokerage (?:covers|pays out)\b|brokerage's subscription\b|broker pays\b)/i, why: "a brokerage-payer claim" },
+  { scope: "payer", re: /\b(?:brokerage (?:pays|will pay|is paying)|(?:billed|charged|invoiced) to (?:your |the |my )?brokerage|(?:your|the|my) brokerage(?:'s)? (?:is |will be )?(?:billed|charged|invoiced)\b|bills? (?:your|the|my) brokerage|payer:?\s*(?:your |the |my )?brokerage|paid by (?:your|the|my) brokerage|brokerage (?:covers|pays out)\b|(?:the|your|my|this) brokerage's subscription\b|broker pays\b)/i, why: "a brokerage-payer claim" },
 ]
 
 /**

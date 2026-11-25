@@ -60,8 +60,11 @@ const realUrl = (p: string) => pathToFileURL(join(ROOT, p)).href
 const REPLACE: Record<string, string> = {
   "lib/supabase/service.ts": "export function createServiceClient(){ return globalThis.__Q.svc }",
   "lib/agreements/session-actor.ts": "export async function resolveSessionActor(){ const s = globalThis.__Q.seat; return s ? { ok: true, actor: { userId: s.userId, agentId: null, brokerageId: s.brokerageId, userType: s.userType, isTenantPrincipal: true } } : { ok: false, error: 'unauthenticated' } }",
-  "lib/platform/acting-context.ts": "const c = () => { const s = globalThis.__Q.seat; return s ? { ok: true, userId: s.userId, agentId: null, brokerageId: s.brokerageId, userType: s.userType, isImpersonating: false, impersonatorUserId: null, actorUserId: s.userId } : { ok: false, error: 'Not authenticated' } }; export async function resolveActingContext(){ return c() }; export async function resolveWriteContext(){ return c() }",
   "lib/ai/models.ts": "export async function generateObjectRouted(){ globalThis.__Q.model++; throw new Error('fixture: no model') }; export async function generateTextRouted(){ globalThis.__Q.model++; throw new Error('fixture: no model') }",
+}
+/** Re-export the real module, then override the named seams (a local export shadows the star re-export). */
+const OVERRIDE: Record<string, string> = {
+  "lib/platform/acting-context.ts": "const c = () => { const s = globalThis.__Q.seat; return s ? { ok: true, userId: s.userId, agentId: null, brokerageId: s.brokerageId, userType: s.userType, isImpersonating: false, impersonatorUserId: null, actorUserId: s.userId } : { ok: false, error: 'Not authenticated' } }; export async function resolveActingContext(){ return c() }; export async function resolveWriteContext(){ return c() }",
 }
 const BY_SPEC: Record<string, string> = {
   "server-only": "export {}",
@@ -85,6 +88,8 @@ registerHooks({
     const path = String(r.url ?? "").split("?")[0]
     const rep = Object.keys(REPLACE).find((k) => path === realUrl(k))
     if (rep) return { url: dataUrl(REPLACE[rep]), shortCircuit: true }
+    const ov = Object.keys(OVERRIDE).find((k) => path === realUrl(k))
+    if (ov) return { url: dataUrl(`export * from ${JSON.stringify(realUrl(ov))}; ${OVERRIDE[ov]}`), shortCircuit: true }
     return r
   },
 })
@@ -186,9 +191,10 @@ async function main() {
 
   // ═══ C — three real surfaces, every shape ═════════════════════════════════════════════════════════════════════════
   console.log("\nC — three real surfaces driven for every shape")
-  const CP = await load("app/actions/commission-policy/commission-policy.ts")
-  const RS = await load("app/actions/settings/revenue-share-setting.ts")
-  const LIVE = await load("lib/voice-admin/intent-interface-live.ts")
+  const CP: any = await quiet(() => load("app/actions/commission-policy/commission-policy.ts"))
+  const RS: any = await quiet(() => load("app/actions/settings/revenue-share-setting.ts"))
+  const LIVE: any = await quiet(() => load("lib/voice-admin/intent-interface-live.ts"))
+  check("the three surface modules load (a crash here is a failure, never a skip)", !CP?.threw && !RS?.threw && !LIVE?.threw, [CP?.threw, RS?.threw, LIVE?.threw].filter(Boolean).join(" | "))
   const SHAPES: Shape[] = ["solo", "team", "brokerage", "office", "multi_staff", "unknown"]
   const payerOf: Record<Shape, unknown> = { solo: { kind: "solo" }, team: { kind: "team" }, brokerage: { kind: "brokerage" }, office: { kind: "brokerage" }, multi_staff: { kind: "brokerage" }, unknown: { kind: "unknown" } }
   const isBrokerage = (s: Shape) => s === "brokerage" || s === "office" || s === "multi_staff"
@@ -234,7 +240,8 @@ async function main() {
   check("team: 'The team pays it' / 'the team pays its agents' / 'your team's approver' / 'Across your team's buyer contacts' / 'ask your team lead' / 'grant in this team'", texts.team[1] === "The team pays it" && /the team pays its agents/.test(texts.team[0]) && /your team's approver/i.test(texts.team[3]) && texts.team[4] === "Across your team's buyer contacts you can see." && /ask your team lead/.test(texts.team[5]) && /grant in this team covers it/.test(texts.team[6]), texts.team)
   check("office seat: acts for ITS OFFICE ('Across the Downtown office's buyer contacts you can see.') while the brokerage stays the payer and approver", texts.office[4] === "Across the Downtown office's buyer contacts you can see." && /your brokerage's approver/i.test(texts.office[3]) && /ask your broker\b/.test(texts.office[5]), texts.office)
   check("unpinned multi-location staff acts for the brokerage (no office invented)", texts.multi_staff[4] === "Across your brokerage's buyer contacts you can see." && !/office/i.test(texts.multi_staff[4]), texts.multi_staff[4])
-  check("unread tier: actor-neutral ('Your account pays it', 'Across your account's buyer contacts'), never brokerage", texts.unknown[1] === "Your account pays it" && texts.unknown[4] === "Across your account's buyer contacts you can see.", texts.unknown)
+  check("unread tier: actor-neutral ('Your account pays it', 'Across your buyer contacts', 'ask an admin on your account'), never brokerage", texts.unknown[1] === "Your account pays it" && texts.unknown[4] === "Across your buyer contacts you can see." && /ask an admin on your account/.test(texts.unknown[5]) && !/\bbrokerage\b/i.test(texts.unknown.join(" ")), texts.unknown)
+  check("positive control for the narrowed subscription phrase: a platform-staff lookup ('any brokerage's subscription tier') is not a payer claim; 'the brokerage's subscription' is", payerRuleOk("Look up any brokerage's subscription tier", { kind: "solo" }) && !payerRuleOk("the brokerage's subscription does not cover it", { kind: "solo" }))
 
   // ═══ D — the census ═══════════════════════════════════════════════════════════════════════════════════════════════
   console.log("\nD — the census of hard-coded payer wording (derived rule, stripped source)")
