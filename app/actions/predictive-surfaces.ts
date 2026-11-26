@@ -13,7 +13,8 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveActingContext } from "@/lib/platform/acting-context"
+import { WEALTH_ACTIVE_STATUSES } from "@/lib/wealth-advisor/recommendation-status"
 
 // ─── Sphere Resonance ────────────────────────────────────────────────────────
 
@@ -32,8 +33,8 @@ export interface SphereSurface {
 }
 
 export async function getSphereResonanceSurface(): Promise<SphereSurface> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.agentId) {
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.agentId) {
     return { candidates: [], totalAtRisk: 0, topRiskName: null }
   }
 
@@ -115,8 +116,8 @@ export interface WealthSurface {
 }
 
 export async function getWealthAdvisorSurface(): Promise<WealthSurface> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.agentId) {
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.agentId) {
     return { opportunities: [], totalOpen: 0, totalPotentialMonthlySavings: 0, topOpportunityType: null }
   }
 
@@ -129,7 +130,10 @@ export async function getWealthAdvisorSurface(): Promise<WealthSurface> {
       "id, contact_id, opportunity_type, estimated_equity, monthly_savings_estimate, one_time_proceeds_estimate, ai_narrative, status, expires_at"
     )
     .eq("agent_id", ctx.agentId)
-    .in("status", ["pending_review", "ready_to_push", "pushed"])
+    // open | presented | reviewed — the live CHECK vocabulary. This filter used
+    // to ask for pending_review/ready_to_push/pushed, none of which the column
+    // admits, so the surface was permanently empty.
+    .in("status", [...WEALTH_ACTIVE_STATUSES])
     .gte("expires_at", today)
     .order("monthly_savings_estimate", { ascending: false, nullsFirst: false })
     .limit(20)

@@ -1,12 +1,13 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { AlertTriangle, Sparkles, Loader2, Calendar, Copy, Check } from "lucide-react"
 import { generateSmartResponse } from "@/app/actions/ai-communication-hub"
+import { getTaxPlanAction } from "@/app/actions/tax-planning"
+import { computeNetSelfEmploymentIncome } from "@/lib/finance/tax-planning"
 
 interface TaxReadinessPanelProps {
   agentId: string
@@ -27,25 +28,25 @@ export function TaxReadinessPanel({
   const [generating, setGenerating] = useState(false)
   const [copied, setCopied] = useState(false)
 
-  // Conservative self-employment estimate
-  const estimatedTaxRate = 0.25
-  const grossTaxable = ytdGCI - ytdExpenses
-  const estimatedTaxLiability = Math.max(0, grossTaxable * estimatedTaxRate)
-  const quarterlyPayment = estimatedTaxLiability / 4
-
-  // Calculate next quarterly due date
-  const getNextQuarterDue = (q: number): string => {
-    const year = new Date().getFullYear()
-    const quarterDates: Record<number, string> = {
-      1: `Apr 15, ${year}`,
-      2: `Jun 15, ${year}`,
-      3: `Sep 15, ${year}`,
-      4: `Jan 15, ${year + 1}`,
-    }
-    return quarterDates[q] || quarterDates[1]
-  }
-
-  const nextQuarterDue = getNextQuarterDue(quarter)
+  // WAVE 153 (lane 153A) — NO SECOND TAX ENGINE. This panel used to compute its own "Est. Tax Due" at a hardcoded 25%
+  // and print evergreen due dates (Apr 15 / Jun 15 / Sep 15 / Jan 15, never moved for a weekend or holiday). Both now
+  // come from THE ONE estimator (lib/finance/tax-planning.ts via getTaxPlanAction): the suggested reserve exists only
+  // once the person has entered their rates (or their accountant's amounts), and the due date is the real one.
+  void quarter
+  const [plan, setPlan] = useState<Extract<Awaited<ReturnType<typeof getTaxPlanAction>>, { success: true }>["plan"] | null>(null)
+  useEffect(() => { getTaxPlanAction().then((r) => { if (r.success) setPlan(r.plan) }).catch(() => {}) }, [])
+  // WAVE 155 (lane 155R25): "Est. Taxable" was a second inline computation, ytdGCI − ytdExpenses: it subtracted EVERY recorded
+  // expense (deductibility is never assumed — lib/finance/tax-planning.ts) and could print a negative taxable figure. It is now
+  // THE ONE rule over the plan's own period: income recognized − CONFIRMED deductible expenses, never below 0. Unknown until
+  // the plan loads (never a number from the props in the meantime).
+  const estTaxable = plan ? computeNetSelfEmploymentIncome(plan.periodToDate.income, plan.periodToDate.confirmedDeductible) : null
+  const nextQuarter = plan?.quarterly.find((q) => q.status === "open" || q.status === "partly_recorded" || q.status === "needs_input") ?? null
+  const estimatedTaxLiability = plan && plan.inputs.status === "ready" ? plan.alreadySetAsideOrPaid + (plan.remainingSuggestedReserve ?? 0) : 0
+  const reserveKnown = !!plan && plan.inputs.status === "ready"
+  const quarterlyPayment = nextQuarter?.suggested ?? 0
+  const nextQuarterDue = nextQuarter
+    ? new Date(`${nextQuarter.dueDate}T00:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })
+    : "—"
   const expenseRatio = ytdGCI > 0 ? (ytdExpenses / ytdGCI) * 100 : 0
 
   const handleGenerateExplanation = async () => {
@@ -53,8 +54,8 @@ export function TaxReadinessPanel({
     try {
       const result = await (generateSmartResponse as any)({
         agentId,
-        context: `Tax situation analysis. Gross: $${ytdGCI.toLocaleString()}. Expenses: $${ytdExpenses.toLocaleString()}. Est tax: $${estimatedTaxLiability.toLocaleString()}.`,
-        prompt: `Explain this agent's tax situation in plain language. Gross: $${ytdGCI.toLocaleString()}. Expenses: $${ytdExpenses.toLocaleString()}. Est tax: $${estimatedTaxLiability.toLocaleString()}. What should they do this quarter? Be specific and practical.`,
+        context: `Tax planning situation. Gross: $${ytdGCI.toLocaleString()}. Expenses: $${ytdExpenses.toLocaleString()}. ${reserveKnown ? `Suggested planning reserve from the rates the agent entered: $${estimatedTaxLiability.toLocaleString()}.` : "The agent has not entered tax rates yet."}`,
+        prompt: `Explain this agent's estimated-tax planning in plain language. Gross: $${ytdGCI.toLocaleString()}. Expenses: $${ytdExpenses.toLocaleString()}. ${reserveKnown ? `Suggested planning reserve from the rates they entered: $${estimatedTaxLiability.toLocaleString()}.` : "They have not entered tax rates yet."} Next due date: ${nextQuarterDue}. Do NOT state or suggest a tax rate or say what they legally owe; say a tax professional confirms that. Be specific and practical about record-keeping and setting money aside.`,
         responseType: "advice",
       })
       if ((result as any).draft) {
@@ -84,7 +85,7 @@ export function TaxReadinessPanel({
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
-          <AlertTriangle className="h-5 w-5 text-amber-500" />
+          <AlertTriangle className="h-5 w-5 text-amber-600" />
           Tax Readiness
         </CardTitle>
       </CardHeader>
@@ -101,13 +102,15 @@ export function TaxReadinessPanel({
           </div>
           <div className="p-3 rounded-lg bg-muted/50">
             <p className="text-xs text-muted-foreground">Est. Taxable</p>
-            <p className="text-lg font-semibold">{formatCurrency(grossTaxable)}</p>
+            <p className="text-lg font-semibold">{estTaxable === null ? "—" : formatCurrency(estTaxable)}</p>
           </div>
           <div className={`p-3 rounded-lg ${estimatedTaxLiability > 0 ? "bg-red-50" : "bg-muted/50"}`}>
-            <p className="text-xs text-muted-foreground">Est. Tax Due</p>
-            <p className={`text-lg font-semibold ${estimatedTaxLiability > 0 ? "text-red-600" : ""}`}>
-              {formatCurrency(estimatedTaxLiability)}
-            </p>
+            <p className="text-xs text-muted-foreground">Suggested reserve (planning)</p>
+            {reserveKnown ? (
+              <p className={`text-lg font-semibold ${estimatedTaxLiability > 0 ? "text-red-600" : ""}`}>{formatCurrency(estimatedTaxLiability)}</p>
+            ) : (
+              <p className="text-xs text-muted-foreground mt-1">Enter your tax rates in the planner</p>
+            )}
           </div>
         </div>
 
@@ -127,11 +130,11 @@ export function TaxReadinessPanel({
         <div className="p-4 rounded-lg border bg-amber-50 border-amber-200">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium text-amber-900">Next Quarterly Payment</p>
-              <p className="text-2xl font-bold text-amber-700">{formatCurrency(quarterlyPayment)}</p>
+              <p className="text-sm font-medium text-amber-900">Next quarterly date</p>
+              <p className="text-2xl font-bold text-amber-700">{nextQuarter?.suggested != null ? formatCurrency(quarterlyPayment) : "Rates needed"}</p>
               <div className="flex items-center gap-1 mt-1">
                 <Calendar className="h-3 w-3 text-amber-600" />
-                <p className="text-xs text-amber-600">Due: {nextQuarterDue}</p>
+                <p className="text-xs text-amber-700">Due: {nextQuarterDue}</p>
               </div>
             </div>
             <Button

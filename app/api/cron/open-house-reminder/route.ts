@@ -15,21 +15,18 @@
  * Auth: CRON_SECRET.
  */
 import { NextResponse, type NextRequest } from "next/server"
+import { verifyCronAuth } from "@/lib/cron-auth"
+import { decideCronRun } from "@/lib/kernel/cron-logging"
 import { createServiceClient } from "@/lib/supabase/service"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
 
-function unauthorized() {
-  return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-}
-
 export async function GET(req: NextRequest) {
-  const auth     = req.headers.get("authorization")?.replace("Bearer ", "")
-  const qs       = new URL(req.url).searchParams.get("secret")
-  const expected = process.env.CRON_SECRET
-  if (!expected) return NextResponse.json({ skipped: "CRON_SECRET not configured" })
-  if (auth !== expected && qs !== expected) return unauthorized()
+  const denied = verifyCronAuth(req)
+  if (denied) return denied
+  const cronDoor = await decideCronRun({ cron_name: "open-house-reminder", cron_path: "/app/api/cron/open-house-reminder/route.ts" }) // cron decision door (155R1)
+  if (cronDoor.held) return NextResponse.json({ success: true, held: true, decision: cronDoor.decision })
 
   const svc = createServiceClient()
 
@@ -54,7 +51,8 @@ export async function GET(req: NextRequest) {
     .select("id, listing_id, brokerage_id, agent_id, event_date, start_time, status")
     .gte("event_date", dateCutoffStart)
     .lte("event_date", dateCutoffEnd)
-    .in("status", ["scheduled", "confirmed"])
+    // open_house_events has no 'confirmed'; these are the pre-completion states.
+    .in("status", ["scheduled", "marketing", "active"])
     .limit(200)
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 

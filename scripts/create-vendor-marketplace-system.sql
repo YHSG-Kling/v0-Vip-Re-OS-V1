@@ -209,55 +209,21 @@ BEGIN
   END IF;
 END $$;
 
--- RLS Policies for vendor_subscriptions
-DO $$ 
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies WHERE tablename = 'vendor_subscriptions' AND policyname = 'Brokerages can view their subscriptions'
-  ) THEN
-    CREATE POLICY "Brokerages can view their subscriptions"
-      ON public.vendor_subscriptions
-      FOR SELECT
-      USING (
-        EXISTS (
-          SELECT 1 FROM users WHERE id = auth.uid() AND user_type IN ('admin', 'broker')
-        )
-      );
-  END IF;
-END $$;
-
-DO $$ 
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies WHERE tablename = 'vendor_subscriptions' AND policyname = 'Admins can manage all subscriptions'
-  ) THEN
-    CREATE POLICY "Admins can manage all subscriptions"
-      ON public.vendor_subscriptions
-      FOR ALL
-      USING (
-        EXISTS (
-          SELECT 1 FROM users WHERE id = auth.uid() AND user_type IN ('admin', 'broker')
-        )
-      );
-  END IF;
-END $$;
-
--- RLS Policies for vendor_transactions
-DO $$ 
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies WHERE tablename = 'vendor_transactions' AND policyname = 'Brokerages can view their transactions'
-  ) THEN
-    CREATE POLICY "Brokerages can view their transactions"
-      ON public.vendor_transactions
-      FOR SELECT
-      USING (
-        EXISTS (
-          SELECT 1 FROM users WHERE id = auth.uid() AND user_type IN ('admin', 'broker')
-        )
-      );
-  END IF;
-END $$;
+-- RLS Policies for vendor_subscriptions / vendor_transactions —
+-- DELIBERATELY NOT CREATED HERE.
+--
+-- This file used to create "Brokerages can view their subscriptions" (SELECT),
+-- "Admins can manage all subscriptions" (FOR ALL) and "Brokerages can view their
+-- transactions" (SELECT). Every one of them tested only
+-- `user_type IN ('admin','broker')` — the policy NAMES say "their", the
+-- predicates never mention a brokerage, so they read every brokerage's vendor
+-- spend, and the FOR ALL one let any admin or broker on the platform rewrite and
+-- DELETE another tenant's vendor ledger. m438 drops them.
+--
+-- Not replaced here: the tenant-scoped vendor_subscriptions_tenant_* and
+-- vendor_transactions_tenant_* policies live in supabase/migrations/. A table
+-- left with RLS on and no policy is fail-CLOSED, which is the safe direction for
+-- a bootstrap that runs ahead of the migrations.
 
 -- RLS Policies for vendor_access_logs
 DO $$ 

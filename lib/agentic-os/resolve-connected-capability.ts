@@ -56,3 +56,27 @@ export async function resolveConnectedCapability(
   }
   return { capability, def, connected: false, provider: null, source: null, missing: def.connections }
 }
+
+/**
+ * THE STATED-ORIGIN PROBE (wave 155, lane 155R25 — the P0 credentials sink rule, directive D 152). When the request is an
+ * EXTERNAL AGENT's (an agentic bearer token, not the tenant's own code or a signed-in person), the credential store is read
+ * BECAUSE a model asked — so each provider's credential read goes through THE stated-origin door
+ * (lib/connections/resolve-scoped.ts resolveScopedConnectionForOrigin): the sink rule decides before a credential row is read
+ * and ONE access.credential.read decision row records who asked, for which provider and owner scope (never a value). A
+ * separate function on purpose (LESSON 5): the plain probe above stays read-only in the source for session callers. A hold at
+ * the sink stops the walk (the same origin would be held for every provider) and reads as not connected — fail closed.
+ */
+export async function resolveConnectedCapabilityForOrigin(
+  capability: ConnectedCapability,
+  ctx: { brokerageId: string },
+  origin: Parameters<typeof import("@/lib/connections/resolve-scoped").resolveScopedConnectionForOrigin>[2],
+): Promise<ConnectedCapabilityResolution> {
+  const def = CONNECTED_CAPABILITY_REGISTRY[capability]
+  const { resolveScopedConnectionForOrigin } = await import("@/lib/connections/resolve-scoped")
+  for (const provider of def.connections) {
+    const r = await resolveScopedConnectionForOrigin(provider, { brokerageId: ctx.brokerageId }, origin)
+    if (r.status === "connected") return { capability, def, connected: true, provider: r.connection.provider, source: r.connection.source, missing: [] }
+    if (r.status === "unreadable" && /^held at the credentials sink|no tenant/.test(r.detail)) break
+  }
+  return { capability, def, connected: false, provider: null, source: null, missing: def.connections }
+}

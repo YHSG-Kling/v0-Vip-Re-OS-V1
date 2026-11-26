@@ -1,10 +1,11 @@
 import {
   listWebhookSubscriptions,
   listWebhookDeliveries,
+  listInboundWorkflowEvents,
   getDeveloperTokenState,
   getDevelopersDocsData,
 } from "@/app/actions/tenant-webhooks"
-import { DevelopersClient } from "./developers-client"
+import { DevelopersClient } from "./developers-client"; import { resolveSessionSeatWords } from "@/lib/kernel/resolve-user-office"
 
 export const metadata = {
   title: "Developers | Settings",
@@ -22,11 +23,12 @@ export const metadata = {
  * just renders the honest result.
  */
 export default async function DevelopersPage() {
-  const [subs, deliveries, tokenState, docs] = await Promise.all([
+  const [subs, deliveries, inboundEvents, tokenState, docs, words] = await Promise.all([
     listWebhookSubscriptions(),
     listWebhookDeliveries(50),
+    listInboundWorkflowEvents(50),
     getDeveloperTokenState(),
-    getDevelopersDocsData(),
+    getDevelopersDocsData(), resolveSessionSeatWords(),
   ])
 
   // Not the tenancy principal (or unauthenticated): honest, no fake data.
@@ -35,7 +37,7 @@ export default async function DevelopersPage() {
       <div className="space-y-4">
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Developers</h1>
-          <p className="text-gray-600 mt-2">Outbound webhooks and API tokens for your brokerage</p>
+          <p className="text-gray-600 mt-2">Outbound webhooks and API tokens for {words.actingFor}</p>
         </div>
         <div className="bg-white border border-gray-200 rounded-lg p-6">
           <p className="text-gray-700 font-medium">Principal access required</p>
@@ -53,9 +55,11 @@ export default async function DevelopersPage() {
       initialSubscriptions={subs.rows}
       initialDeliveries={deliveries.ok ? deliveries.rows : []}
       deliveriesError={deliveries.ok ? null : deliveries.error}
+      initialInboundEvents={inboundEvents.ok ? inboundEvents.rows : []}
+      inboundEventsError={inboundEvents.ok ? null : inboundEvents.error}
       tokenState={tokenState.ok ? tokenState.state : null}
       tokenStateError={tokenState.ok ? null : tokenState.error}
-      docs={docs}
+      docs={docs} words={words}
     />
   )
 }

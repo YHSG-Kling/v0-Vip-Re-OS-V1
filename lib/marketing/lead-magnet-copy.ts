@@ -61,6 +61,8 @@ export interface CopyContext {
   brand?: string | null
   /** city/area for localization (never a protected-class signal). */
   area?: string | null
+  /** WAVE 151 (lane 151I): WHO IS WRITING — the copy engine compiles the sender's versioned voice brief from this before the first draft. */
+  sender?: import("@/lib/kernel/ai-copy").SenderRef | null
 }
 
 // ── Landing-page copy (deterministic, Fair-Housing-safe) ─────────────────────
@@ -197,7 +199,7 @@ export async function landingPageCopyFromTopics(
     const { generatePersonaCopy } = await import("@/lib/kernel/ai-copy")
     const facts = topics.slice(0, 6).map((t) => t.topic)
     const sub = await generatePersonaCopy(
-      { goal: `a landing-page subheadline for a ${magnetType.replace(/_/g, " ")} that speaks to what buyers/sellers are actually asking`, facts, channel: "landing_page", persona: { audience: "audience" }, words: 28 },
+      { goal: `a landing-page subheadline for a ${magnetType.replace(/_/g, " ")} that speaks to what buyers/sellers are actually asking`, facts, channel: "landing_page", persona: { audience: "audience" }, words: 28, sender: ctx?.sender ?? null },
       { body: fallback.subhead }, { generator: opts.copyGenerator },
     )
     // The value bullets become the top real questions, answered as benefits.
@@ -237,7 +239,7 @@ export async function prepareMagnetDeliverable(
       // answers genuine demand, not boilerplate; the deterministic copy seeds the safe baseline.
       const facts = (opts.topics?.length ? opts.topics.slice(0, 6).map((t) => t.topic) : []).concat(fallback.body)
       const draft = await generatePersonaCopy(
-        { goal: `the deliverable content for a ${magnetType.replace(/_/g, " ")} lead magnet that answers what buyers/sellers are actually asking`, facts, channel: "email", persona: { audience: "audience" }, words: 180 },
+        { goal: `the deliverable content for a ${magnetType.replace(/_/g, " ")} lead magnet that answers what buyers/sellers are actually asking`, facts, channel: "email", persona: { audience: "audience" }, words: 180, sender: ctx?.sender ?? null },
         { body: fallback.body }, { generator: opts.copyGenerator },
       )
       body = (draft.body || fallback.body).trim()

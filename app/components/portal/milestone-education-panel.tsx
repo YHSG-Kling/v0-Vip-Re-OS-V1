@@ -88,7 +88,7 @@ export async function MilestoneEducationPanel({ contactId, compact }: Props) {
             className="rounded-md border p-3 hover:bg-muted/40 transition-colors flex items-start gap-3"
           >
             {m.isCompleted
-              ? <CheckCircle2 className="h-4 w-4 text-emerald-500 mt-0.5 flex-shrink-0" />
+              ? <CheckCircle2 className="h-4 w-4 text-emerald-600 mt-0.5 flex-shrink-0" />
               : <GraduationCap className="h-4 w-4 text-blue-500 mt-0.5 flex-shrink-0" />}
             <div className="min-w-0 flex-1">
               <div className={`font-medium ${m.isCompleted ? "text-muted-foreground line-through" : ""}`}>

@@ -28,10 +28,18 @@
 // connection matching the typed email's domain. It never returns domain
 // lists, brokerage names, or error detail — no tenant enumeration surface.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { revalidatePath } from "next/cache"
 import { createServiceClient } from "@/lib/supabase/service"
-import { resolveWriteContext } from "@/lib/kernel/identity"
-import { isCanonicalTier, TIER_ORDER, TIER_LABELS } from "@/lib/kernel/tier-role-matrix"
+import { resolveActingContext, resolveWriteContextForTenant } from "@/lib/platform/acting-context"
+import { isCanonicalTier, TIER_LABELS } from "@/lib/kernel/tier-role-matrix"
+// THE tenant presenter (wave 152, lane 152A): a refused write is said without the database text (logged with a reference).
+import { presentTenantError } from "@/lib/errors"
+
+/** Module-private (a "use server" export would be a public endpoint): one refused single-statement write → the contract. */
+function ssoRefusal(what: string, raw: unknown, step: string): string {
+  return presentTenantError({ what, raw, work: { state: "unchanged" }, context: `tenant-sso.${step}` }).sentence
+}
 import {
   validateSsoEmailDomain,
   validateMetadataUrl,
@@ -46,20 +54,46 @@ import {
   SAML_NOT_ENABLED_DETAIL,
 } from "@/lib/platform/tenant-sso"
 
-const ADMIN_TYPES = new Set(["broker", "broker_admin", "admin", "superadmin"])
+// TENANT ADMIN GATE (kept inline, SSO/security config — deliberately no
+// team_lead): 'superadmin' removed — dead as users.user_type (0 live rows);
+// broker_owner added — storable seat that owns the brokerage.
+const ADMIN_TYPES = new Set(["broker", "broker_owner", "broker_admin", "admin"])
 
 // ── Gating helpers ───────────────────────────────────────────────────────────
 
-/** Brokerage tier and up. Unknown/legacy tiers fail OPEN (matrix rule) so an
- *  un-backfilled legacy tenant isn't bricked out of a surface it can see. */
+/**
+ * EVERY TIER. Not a stub — the ruling.
+ *
+ * OWNER, verbatim: "brokerages can have teams and agents but that is the
+ * brokerage tier. when we have the team and solo agent subscription tiers,
+ * those subscriptions get the same level of features as brokerages." Read with
+ * the seat ruling from the same thread ("these lower plans need to be treated
+ * like mini brokerages"), tiers differ by SEAT COUNT, not by feature set. A
+ * solo subscription is a brokerage of one and a team is a brokerage of five;
+ * both may point their own IdP at their own workspace.
+ *
+ * ── FLAGGED FOR PRICING, NOT WITHHELD ───────────────────────────────────────
+ *
+ * SSO is one of the three parity items that carry a REAL per-tenant operating
+ * cost rather than a code gate: each connection provisions a SAML provider in
+ * the Supabase project (which itself requires the Pro plan + SAML add-on — see
+ * the `error` lifecycle state above), and every tenant that turns it on is one
+ * more identity integration to support. The owner said "same level of
+ * features", so it ships open; the cost is reported so it can be PRICED rather
+ * than silently absorbed. Withholding it here would have been this lane
+ * quietly overruling the ruling.
+ *
+ * Kept as a named function rather than deleted so the shape of the decision
+ * stays visible — and so restoring a floor is a one-line change if the owner
+ * prices it that way.
+ */
 function tierAllowsSso(tier: string | null | undefined): boolean {
-  if (!isCanonicalTier(tier)) return true
-  return TIER_ORDER.indexOf(tier) >= TIER_ORDER.indexOf("brokerage")
+  void tier
+  return true
 }
 
 const TIER_GATE_ERROR =
-  `SSO / SAML is a ${TIER_LABELS.brokerage} / ${TIER_LABELS.multi_location} plan feature — ` +
-  "password and magic-link sign-in stay available on every plan."
+  "SSO / SAML is not available on your plan — password and magic-link sign-in stay available."
 
 interface AdminGate {
   ok: true
@@ -69,8 +103,8 @@ interface AdminGate {
 }
 
 async function requireBrokerageAdmin(): Promise<AdminGate | { ok: false; error: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok) return { ok: false, error: "Unauthorized" }
   if (!ADMIN_TYPES.has(ctx.userType ?? "")) return { ok: false, error: "Forbidden — brokerage admin only" }
   const svc = createServiceClient()
   const { data: brk } = await svc
@@ -86,14 +120,14 @@ async function requireBrokerageAdmin(): Promise<AdminGate | { ok: false; error: 
 
 async function audit(svc: any, userId: string, action: string, entityId: string, after: Record<string, unknown>) {
   try {
-    await svc.from("audit_log").insert({
+    await sentinelWrite(svc, svc.from("audit_log").insert({
       user_id: userId,
       action,
       entity_type: "tenant_sso_connection",
       entity_id: entityId,
       before: null,
       after,
-    })
+    }), { table: "audit_log", flow: "tenant_sso_audit", reason: "audit echo of an SSO action that already completed" })
   } catch {
     /* audit is best-effort — never fail the user action on a log write */
   }
@@ -152,8 +186,8 @@ function rowToView(row: any): SsoConnectionView {
 export async function getSsoPanel(): Promise<
   { ok: true; panel: SsoPanel } | { ok: false; error: string }
 > {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
+  const ctx = await resolveActingContext()
+  if (!ctx.ok) return { ok: false, error: "Unauthorized" }
   const svc = createServiceClient()
 
   const [{ data: brk }, { data: row }] = await Promise.all([
@@ -232,7 +266,7 @@ export async function configureSsoAction(rawEmailDomain: string, rawMetadataUrl:
       })
       .eq("id", (existing as any).id)
       .select(ROW_COLUMNS).single()
-    if (error) return { ok: false, error: error.message }
+    if (error) return { ok: false, error: ssoRefusal("Your single sign-on settings couldn't be saved", error, "configure.update") }
     row = data
   } else {
     const { data, error } = await svc.from("tenant_sso_connections")
@@ -249,7 +283,7 @@ export async function configureSsoAction(rawEmailDomain: string, rawMetadataUrl:
       if ((error as any).code === "23505") {
         return { ok: false, error: "That email domain is already connected to another workspace." }
       }
-      return { ok: false, error: error.message }
+      return { ok: false, error: ssoRefusal("Your single sign-on settings couldn't be saved", error, "configure.insert") }
     }
     row = data
   }
@@ -261,7 +295,7 @@ export async function configureSsoAction(rawEmailDomain: string, rawMetadataUrl:
   if (!result.configured) {
     // MOCK-SAFE: row stays 'pending'; the panel carries the unconfigured note.
   } else if (result.ok) {
-    const { data } = await svc.from("tenant_sso_connections")
+    const { data, error: activateErr } = await svc.from("tenant_sso_connections")
       .update({
         status: "active",
         supabase_sso_provider_id: result.providerId,
@@ -270,12 +304,16 @@ export async function configureSsoAction(rawEmailDomain: string, rawMetadataUrl:
         updated_at: nowIso,
       })
       .eq("id", row.id).select(ROW_COLUMNS).single()
+    // The provider IS registered; a refused stamp leaves the row 'pending' while
+    // the panel shows 'active' from the fallback below — say so in the log.
+    if (activateErr) console.error(`[tenant-sso] provider ${result.providerId} registered but the connection row was not activated: ${activateErr.message}`)
     row = data ?? { ...row, status: "active", supabase_sso_provider_id: result.providerId }
   } else {
     const detail = result.samlNotEnabled ? SAML_NOT_ENABLED_DETAIL : result.error
-    const { data } = await svc.from("tenant_sso_connections")
+    const { data, error: errStampErr } = await svc.from("tenant_sso_connections")
       .update({ status: "error", error_detail: detail, updated_at: nowIso })
       .eq("id", row.id).select(ROW_COLUMNS).single()
+    if (errStampErr) console.error(`[tenant-sso] registration failed (${detail}) and the error stamp was refused: ${errStampErr.message}`)
     row = data ?? { ...row, status: "error", error_detail: detail }
   }
 
@@ -336,7 +374,7 @@ export async function checkSsoStatusAction(): Promise<
 
   const { data: updated, error: upErr } = await svc.from("tenant_sso_connections")
     .update(patch).eq("id", (existing as any).id).select(ROW_COLUMNS).single()
-  if (upErr) return { ok: false, error: upErr.message }
+  if (upErr) return { ok: false, error: ssoRefusal("The single sign-on status couldn't be updated", upErr, "status.update") }
 
   if (patch.status !== (existing as any).status) {
     await audit(svc, gate.userId, "sso_connection_status_checked", String((existing as any).id), {
@@ -381,7 +419,7 @@ export async function disableSsoAction(): Promise<
     })
     .eq("id", (existing as any).id)
     .select(ROW_COLUMNS).single()
-  if (error) return { ok: false, error: error.message }
+  if (error) return { ok: false, error: ssoRefusal("Single sign-on couldn't be turned off", error, "disable") }
 
   await audit(svc, gate.userId, "sso_connection_disabled", String((existing as any).id), {
     brokerage_id: gate.brokerageId,

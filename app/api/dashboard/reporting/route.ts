@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
+import { loadRoiOutcomeLedger } from "@/lib/intelligence/roi-ledger"
 
 export async function GET(req: Request) {
   const supabase = await createClient()
@@ -156,7 +158,9 @@ export async function GET(req: Request) {
           .from("listings")
           .select("id, list_price, address", { count: "exact" })
           .eq("brokerage_id", brokerageId)
-          .eq("status", "closed")
+          // listings.status has no "closed" — the terminal status is "sold", so this
+          // "Closed listings in period" figure was permanently 0.
+          .eq("status", "sold")
           .gte("updated_at", startIso)
       : Promise.resolve({ data: [], count: 0 }),
 
@@ -171,13 +175,12 @@ export async function GET(req: Request) {
           .limit(10)
       : Promise.resolve({ data: [] }),
 
-    // Marketing spend and conversions
+    // Marketing spend and outcomes — wave 152 (lane 152B): THE authorized ROI reader, with the SESSION's own ids.
+    // This used to sum campaign_roi brokerage-wide for ANY signed-in agent: an unknown spend added as $0, the
+    // invented conversions × $7,500 revenue, and commission dollars on an agent's screen (CLAUDE.md §5).
     brokerageId
-      ? supabase
-          .from("campaign_roi")
-          .select("total_spend, total_leads, total_conversions, total_revenue, roi_percentage")
-          .eq("brokerage_id", brokerageId)
-      : Promise.resolve({ data: [] }),
+      ? loadRoiOutcomeLedger(createServiceClient(), { userId: user.id, brokerageId }, { sinceDay: startIso.slice(0, 10), untilDay: now.toISOString().slice(0, 10) })
+      : Promise.resolve(null),
 
     // Stuck transactions
     brokerageId
@@ -214,13 +217,18 @@ export async function GET(req: Request) {
       : Promise.resolve({ data: [] }),
   ])
 
-  // Aggregate campaign ROI totals
-  const campaignData = campaignResult.data ?? []
+  // Marketing outcomes from the authorized reader. Families stay apart: leads = contacts the campaigns reached,
+  // conversions = closed deals a campaign sourced, revenue = their earned commission (null when commission is off
+  // this viewer's display or not established), spend = recorded spend (null when nothing records it).
+  const ledger = campaignResult && campaignResult.ok ? campaignResult.ledger : null
   const marketingTotals = {
-    totalSpend: campaignData.reduce((s: number, r: any) => s + (r.total_spend ?? 0), 0),
-    totalLeads: campaignData.reduce((s: number, r: any) => s + (r.total_leads ?? 0), 0),
-    totalConversions: campaignData.reduce((s: number, r: any) => s + (r.total_conversions ?? 0), 0),
-    totalRevenue: campaignData.reduce((s: number, r: any) => s + (r.total_revenue ?? 0), 0),
+    totalSpend: ledger && ledger.costs.status !== "unknown" ? ledger.costs.knownCents / 100 : null,
+    totalLeads: ledger?.acquisition.contactsReached ?? 0,
+    totalConversions: ledger?.results.sourcedDealsClosed ?? 0,
+    totalRevenue: ledger?.attribution ? ledger.attribution.sourcedEarnedCents / 100 : null,
+    spendStatus: ledger?.costs.status ?? "unknown",
+    realizedReturn: ledger?.ratios.realizedReturnOnMarketingSpend.value ?? null,
+    note: !campaignResult ? null : !campaignResult.ok ? campaignResult.error : (ledger?.scope.moneyNote ?? ledger?.ratios.realizedReturnOnMarketingSpend.na ?? null),
   }
 
   // Source breakdown for leads

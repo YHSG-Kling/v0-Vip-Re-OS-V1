@@ -1,0 +1,1626 @@
+# Owner SQL — the statements only the owner runs (wave 143, lane 143H)
+
+Three migration files are held back from the integrator on purpose, and one more is waiting on an owner decision. This page is the exact script for each, **verbatim from the migration file** (the guard `scripts/operations-docs-guard.ts` fails if any statement here differs from its file), with the check to run *before*, the check to run *after*, and what to do in the repository afterwards.
+
+**Nothing on this page has been run.** Project `hrvaqgvukzxfskkcrwbt`. Where: Supabase dashboard → SQL Editor, signed in as the project owner.
+
+## Why these are yours
+
+The Supabase MCP the integrator works through **holds destructive DDL for the owner's confirmation** (`DROP INDEX`, `DROP COLUMN`; `docs/architecture/PRODUCTION-ARCHITECTURE.md` §9 "Migration application"). The integrator's session cannot give that confirmation — the m739 attempt timed out three times with no lock held (2026-10-07). Each statement below is idempotent (`IF EXISTS`), so a re-run is harmless.
+
+## Order and safety
+
+1. Run **A** and **B** in any order; they touch nothing else. **C** is a decision, not a chore (read its box first). **D** is already applied — it is here so the next person does not re-run it. **F** is RELEASE-BLOCKING (owner ruling 23, wave 145): m854 is already live, so you apply m855 and run its verification. **G** is RELEASE-BLOCKING too (owner ruling 20, wave 146 — the same exposure on the four sibling document buckets): the integrator applies m874 first, then you apply m875 and run its verification. F and G are independent of each other; run each in its own transaction.
+2. Run the *before* check first, read the number, then run the script, then the *after* check.
+3. Do not run anything on this page in parallel with the integrator applying migrations (CLAUDE.md §7: one statement per call, never in parallel).
+
+## A. m739 — retire the three superseded skill-listing indexes
+
+`supabase/migrations/m739-drop-retired-skill-listing-indexes.sql`. m738 (the one extension lifecycle) re-keyed these by `extension_kind` and its replacements are live (`uq_extension_listings_global_version`, `uq_extension_listings_tenant_version`, `idx_extension_listings_kind_status`). Until the old indexes are dropped, the retired global index is *stricter* than its replacement: a platform strategy and a platform skill cannot share a `skill_id` + `version` (an insert of the second is refused 23505 and surfaced as a refusal, never a silent loss). Live rows: 0.
+
+**Before** (expect the three old names AND the three new names):
+
+```sql
+select indexname from pg_indexes where schemaname = 'public' and (indexname like '%skill_marketplace_listings%' or indexname like '%extension_listings%') order by 1;
+```
+
+**Run:**
+
+```sql
+DROP INDEX IF EXISTS public.uq_skill_marketplace_listings_global_version;
+DROP INDEX IF EXISTS public.uq_skill_marketplace_listings_tenant_version;
+DROP INDEX IF EXISTS public.idx_skill_marketplace_listings_status;
+```
+
+**After** (expect only the `extension_listings` names):
+
+```sql
+select indexname from pg_indexes where schemaname = 'public' and (indexname like '%skill_marketplace_listings%' or indexname like '%extension_listings%') order by 1;
+```
+
+## B. m771 — drop the Airtable remnant column
+
+`supabase/migrations/m771-airtable-retired-drop-global-settings-airtable-api-key.sql`. Airtable is retired (owner, wave 141). `global_settings.airtable_api_key` has no reader and no writer (the row type no longer names it), 0 rows hold a value, and the SMTP columns and `ghl_api_key` are **deliberately not touched** (owner: both are configured paths). A retired vendor's API key is a credential, not history — so read the *before* number first.
+
+**Before — must print `0`.** If it prints anything else, stop: do not drop a column that holds a value; read the row, decide, then continue.
+
+```sql
+select count(*) as non_null_airtable_keys from public.global_settings where airtable_api_key is not null;
+```
+
+**Run:**
+
+```sql
+ALTER TABLE public.global_settings DROP COLUMN IF EXISTS airtable_api_key;
+
+COMMENT ON TABLE public.global_settings IS
+  'Per-brokerage app settings. airtable_api_key dropped by m771 (Airtable retired, wave 141); zapier_api_key dropped by m678. SMTP + ghl_api_key columns stay (configured paths).';
+```
+
+**After — must print no row:**
+
+```sql
+select column_name from information_schema.columns where table_schema = 'public' and table_name = 'global_settings' and column_name = 'airtable_api_key';
+```
+
+**Rollback:** `ALTER TABLE public.global_settings ADD COLUMN airtable_api_key text;` (the data was empty, so nothing is lost).
+
+## C. m795 — `tenant_safety_findings` becomes platform-staff only (DECISION-GATED)
+
+`supabase/migrations/m795-tenant-safety-findings-platform-only.sql`. This is **not** destructive DDL — an integrator can apply it through the MCP — but it is parked here because **it changes what tenant admins see**: `app/dashboard/admin/tenant-safety/page.tsx` and two sibling session-client readers would read `[]` after it, and their un-counted UPDATE would report success on 0 rows.
+
+**The decision (yours):** are tenant safety findings a *tenant* surface or a *platform* surface? If platform → apply this **together with** the app change that re-homes those three readers to the platform console. If tenant → do not apply; the file should instead be rewritten to keep a brokerage-confined policy. Until decided, the two policies keep their tenant roster arrays and the dead `'superadmin'` arm is unreachable on this database (0 rows can match).
+
+```sql
+ALTER POLICY tenant_safety_findings_admin_select ON public.tenant_safety_findings
+  USING (public.is_platform_staff());
+
+ALTER POLICY tenant_safety_findings_admin_update ON public.tenant_safety_findings
+  USING (public.is_platform_staff())
+  WITH CHECK (public.is_platform_staff());
+```
+
+**After:**
+
+```sql
+select policyname, qual, with_check from pg_policies where schemaname = 'public' and tablename = 'tenant_safety_findings' order by 1;
+```
+
+## D. Already applied — do not re-run
+
+- **m782** (`users_user_type_check` without `'superadmin'`) was **applied live on 2026-10-19** through the MCP (a `DROP CONSTRAINT` inside one `ALTER TABLE` is accepted; only standalone `DROP INDEX` / `DROP COLUMN` are held). Confirm any time with:
+
+```sql
+select pg_get_constraintdef(oid) from pg_constraint where conname = 'users_user_type_check';
+```
+
+## E. Written in wave 143, applied by the integrator (not owner SQL)
+
+| File | What | Why it is not yours | Coupled change |
+|---|---|---|---|
+| `m840-preliminary-statement-has-one-doc-type-spelling.sql` | One `UPDATE`: `transaction_documents.doc_type 'settlement_statement'` → `'preliminary_closing_disclosure'` (the title portal's spelling joins the survivor `cda-portal.ts` already writes). 0 rows today. | A guarded `UPDATE` — the MCP accepts it. Owner approval requested because it renames a vocabulary value. | Four code sites in lanes B/C/G (file:line in the lane notes) ship in the same release. Safe before or after the code: the family reader accepts both spellings. |
+| `m841-global-settings-timezone-null-means-derive-from-state.sql` | `ALTER COLUMN timezone DROP NOT NULL` + `DROP DEFAULT` on `global_settings`: NULL = "the tenant has not chosen", so the CDA deadline can use the tenant's zone *when chosen* and the brokerage's state otherwise. 0 rows today. | `ALTER COLUMN` — the MCP accepts it. | The reaper, the milestone bridge and the settings form (file:line in the lane notes). Useless but harmless without them. |
+
+## F. m854 + m855 — the `brokerage-forms` storage policies (RELEASE-BLOCKING P1; wave 145, lane 145A — supersedes wave 144's m853 block)
+
+**Status (re-measured 2026-10-29 by lane 146A, project `hrvaqgvukzxfskkcrwbt`, read-only): STILL OPEN.** m854 is live — `to_regprocedure` finds all four `brokerage_forms_*` functions and `brokerage_forms_path_readable` calls `brokerage_forms_seat_active()` — but m855 is not: `pg_policies` still lists the four bucket-wide names below and none of the `brokerage-forms owner *` names, and `public.storage_bucket_policy_readiness()` (m874's live read, run inline) reports `brokerage-forms` as `open`. The MCP session is still `postgres` with `pg_has_role(current_user, 'supabase_storage_admin', 'member') = false`. (First measured 2026-10-27:) The four live policies on `storage.objects` for this bucket are `"auth read / upload / update / delete brokerage-forms"`, each `bucket_id = 'brokerage-forms'` and nothing else, `TO authenticated`: every signed-in user — a portal **contact** or a **vendor** seat of any tenant included — can read, overwrite and delete every object (every tenant's licensed packet masters and every filled offer: a buyer's name, price and terms). The bucket is private and holds 0 objects today, which is the only reason nothing has leaked.
+
+**Wave 144's block (m853) must NOT be run as it was written.** Its path functions admit every `users` row of the brokerage, and contacts and vendors carry `brokerage_id` (4 + 4 live). Measured with a contact's JWT claims: the live `public.brokerage_forms_path_readable('brokerage/<their brokerage>/x.pdf')` returns **true**. m854 replaces those functions; m855 is the policy block below.
+
+**Why this is yours.** `storage.objects` is owned by `supabase_storage_admin`. The integration session runs as `postgres`, which is neither that owner, nor a member of it, nor a superuser (measured), so `CREATE / DROP POLICY ON storage.objects` is refused `42501: must be owner of table objects`. The dashboard SQL editor runs as `postgres` by default, so it may be refused the same way. Use route A, and fall back to route B if A is refused.
+
+### Order
+
+1. The **integrator** applies `supabase/migrations/m854-brokerage-forms-seat-scoped-path-rules.sql` through the MCP. It is public schema only: four functions, the library `SELECT` policy, and a `pdf_url` clean-up of 0 rows. **Done** — its line 1 reads applied, and the database agrees (measured 2026-10-29).
+2. **You** apply m855 (route A or B).
+3. Run the verification below and read every expected value. Once m874 (§G) is applied, `SELECT * FROM public.storage_bucket_policy_readiness() WHERE bucket_id = 'brokerage-forms';` must read `owner_scoped` with empty `missing_policies` and `unscoped_policies` — that is the live answer; a migration header is only a claim.
+
+### Before — every line must hold
+
+```sql
+-- m854 is applied: all four must be non-null
+SELECT to_regprocedure('public.brokerage_forms_seat_active()') AS seat, to_regprocedure('public.brokerage_forms_registered_packet_readable(text)') AS packet, to_regprocedure('public.brokerage_forms_path_readable(text)') AS readable, to_regprocedure('public.brokerage_forms_path_writable(text)') AS writable;
+-- what is live now (expect the four "auth … brokerage-forms" names)
+SELECT policyname, cmd, qual, with_check FROM pg_policies WHERE schemaname = 'storage' AND tablename = 'objects' AND (policyname ILIKE '%brokerage-forms%' OR qual ILIKE '%brokerage-forms%' OR with_check ILIKE '%brokerage-forms%') ORDER BY policyname;
+-- can THIS session run route A? (true = yes; false = expect 42501, use route B)
+SELECT current_user, pg_has_role(current_user, 'supabase_storage_admin', 'member') AS can_alter_storage_objects;
+```
+
+### Route A — SQL editor (only if `can_alter_storage_objects` is true)
+
+Run the file as it is. It is one transaction: it refuses to start without m854, and if any statement is refused nothing changes. It can be re-run safely, because every `DROP` is `IF EXISTS`, including the m853 names.
+
+```sql
+BEGIN;
+
+DO $$
+BEGIN
+  IF to_regprocedure('public.brokerage_forms_seat_active()') IS NULL
+     OR to_regprocedure('public.brokerage_forms_registered_packet_readable(text)') IS NULL
+     OR to_regprocedure('public.brokerage_forms_path_readable(text)') IS NULL
+     OR to_regprocedure('public.brokerage_forms_path_writable(text)') IS NULL THEN
+    RAISE EXCEPTION 'm855 needs m854 first: the brokerage_forms_* path functions are missing — apply supabase/migrations/m854-brokerage-forms-seat-scoped-path-rules.sql';
+  END IF;
+END $$;
+
+DROP POLICY IF EXISTS "auth read brokerage-forms"   ON storage.objects;
+DROP POLICY IF EXISTS "auth upload brokerage-forms" ON storage.objects;
+DROP POLICY IF EXISTS "auth update brokerage-forms" ON storage.objects;
+DROP POLICY IF EXISTS "auth delete brokerage-forms" ON storage.objects;
+
+DROP POLICY IF EXISTS "brokerage-forms owner read"   ON storage.objects;
+DROP POLICY IF EXISTS "brokerage-forms owner upload" ON storage.objects;
+DROP POLICY IF EXISTS "brokerage-forms owner update" ON storage.objects;
+DROP POLICY IF EXISTS "brokerage-forms owner delete" ON storage.objects;
+
+CREATE POLICY "brokerage-forms owner read" ON storage.objects
+  FOR SELECT TO authenticated
+  USING (bucket_id = 'brokerage-forms' AND public.brokerage_forms_path_readable(name));
+
+CREATE POLICY "brokerage-forms owner upload" ON storage.objects
+  FOR INSERT TO authenticated
+  WITH CHECK (bucket_id = 'brokerage-forms' AND public.brokerage_forms_path_writable(name));
+
+CREATE POLICY "brokerage-forms owner update" ON storage.objects
+  FOR UPDATE TO authenticated
+  USING (bucket_id = 'brokerage-forms' AND public.brokerage_forms_path_writable(name))
+  WITH CHECK (bucket_id = 'brokerage-forms' AND public.brokerage_forms_path_writable(name));
+
+CREATE POLICY "brokerage-forms owner delete" ON storage.objects
+  FOR DELETE TO authenticated
+  USING (bucket_id = 'brokerage-forms' AND public.brokerage_forms_path_writable(name));
+
+COMMIT;
+```
+
+### Route B — Dashboard → Storage → Policies (when route A is refused 42501)
+
+Go to **Storage → Policies**, find the bucket `brokerage-forms`, and follow the steps in this order:
+
+1. **Delete** the four policies `auth read brokerage-forms`, `auth upload brokerage-forms`, `auth update brokerage-forms` and `auth delete brokerage-forms`. Deleting first is safe: a bucket with no policy refuses every session (fail closed). The server's own reads and writes use the service role, which bypasses RLS, so they keep working.
+2. **New policy → "For full customization"**, four times. For each one, set the target role to `authenticated` and use exactly the name, operation and definition below:
+
+| Name | Operation | USING | WITH CHECK |
+|---|---|---|---|
+| `brokerage-forms owner read` | SELECT | `bucket_id = 'brokerage-forms' AND public.brokerage_forms_path_readable(name)` | — |
+| `brokerage-forms owner upload` | INSERT | — | `bucket_id = 'brokerage-forms' AND public.brokerage_forms_path_writable(name)` |
+| `brokerage-forms owner update` | UPDATE | `bucket_id = 'brokerage-forms' AND public.brokerage_forms_path_writable(name)` | `bucket_id = 'brokerage-forms' AND public.brokerage_forms_path_writable(name)` |
+| `brokerage-forms owner delete` | DELETE | `bucket_id = 'brokerage-forms' AND public.brokerage_forms_path_writable(name)` | — |
+
+### What the policies admit
+
+- **Who.** An **active tenant staff seat**: users.user_type in admin · broker · broker_admin · broker_owner · team_lead · compliance_officer · agent · tc. The account must be not removed, with status active, and not an agent deactivated in that brokerage. A platform **superadmin** may also read. Contacts, vendors, system rows and support rows are never admitted.
+  - Measured with this predicate: 13 of 13 staff seats admitted; 0 of 4 contacts, 0 of 4 vendors and 0 of 2 system rows admitted.
+- **Read.**
+  - Your own `agents/{you}/…`.
+  - Your brokerage's loose files in `brokerage/{yours}/…`.
+  - A **registered packet** at `…/packets/{row}/…`, but only through its library row, and only when you either:
+    - manage it (the oversight class, or that team's lead); or
+    - may use it (it is active, its license has not expired, and it is brokerage-wide or your own live team's).
+  - A team's loose files, if you are a member of that live team or in the brokerage's oversight class.
+  - `filled/{you or an offer of your brokerage}/…`.
+- **Write, update and delete.** Only your own `agents/{you}/…` folder. Every other root is written by the server after its own gate. The only browser writer in the code is the FormWizard upload into `agents/{id}/uploads/`; `scripts/transfer-classification-guard.ts` holds that census.
+
+### Verify afterwards — every expected value must match
+
+```sql
+-- exactly four, these names and commands
+SELECT policyname, cmd FROM pg_policies WHERE schemaname='storage' AND tablename='objects' AND policyname ILIKE '%brokerage-forms%' ORDER BY policyname;
+-- expect: "brokerage-forms owner delete" DELETE · "brokerage-forms owner read" SELECT · "brokerage-forms owner update" UPDATE · "brokerage-forms owner upload" INSERT
+-- no bucket-wide rule is left (expect 0 rows)
+SELECT policyname FROM pg_policies WHERE schemaname='storage' AND tablename='objects' AND (qual = '(bucket_id = ''brokerage-forms''::text)' OR with_check = '(bucket_id = ''brokerage-forms''::text)');
+-- a CONTACT of a brokerage is refused its brokerage's forms (expect false, false)
+BEGIN;
+SELECT set_config('request.jwt.claims', json_build_object('sub', (SELECT id FROM public.users WHERE user_type = 'contact' AND brokerage_id IS NOT NULL ORDER BY id LIMIT 1), 'role', 'authenticated')::text, true);
+SELECT public.brokerage_forms_seat_active() AS contact_is_seat, public.brokerage_forms_path_readable('brokerage/' || public.current_user_brokerage_id()::text || '/x.pdf') AS contact_reads_brokerage_forms;
+ROLLBACK;
+-- an AGENT reads their brokerage's loose files and own folder, writes only their own folder (expect true, true, true, false)
+BEGIN;
+SELECT set_config('request.jwt.claims', json_build_object('sub', (SELECT id FROM public.users WHERE user_type = 'agent' AND brokerage_id IS NOT NULL ORDER BY id LIMIT 1), 'role', 'authenticated')::text, true);
+SELECT public.brokerage_forms_path_readable('brokerage/' || public.current_user_brokerage_id()::text || '/x.pdf') AS agent_reads_brokerage, public.brokerage_forms_path_readable('agents/' || auth.uid()::text || '/uploads/x.pdf') AS agent_reads_own, public.brokerage_forms_path_writable('agents/' || auth.uid()::text || '/uploads/x.pdf') AS agent_writes_own, public.brokerage_forms_path_writable('brokerage/' || public.current_user_brokerage_id()::text || '/x.pdf') AS agent_writes_brokerage;
+ROLLBACK;
+```
+
+Then, in the repository (or ask the integrator):
+- flip line 1 of m854 and m855 to `-- ── APPLIED LIVE <date> …`;
+- lower `NOT_APPLIED_BASELINE` in `scripts/migration-claim-guard.ts`;
+- regenerate the caches with `npm run schema:regen`.
+
+`scripts/transfer-classification-guard.ts` accepts either status line on both files, and holds this section's statements verbatim to m855.
+
+## G. m874 + m875 — the four private document buckets and the offer row (RELEASE-BLOCKING; wave 146, lane 146A — owner ruling 20, priority 1)
+
+**Status (measured 2026-10-29, project `hrvaqgvukzxfskkcrwbt`, read-only): OPEN.** `storage.objects` carries **15 bucket-wide policies** on the four sibling buckets — `auth read / upload / update / delete` on `client-documents`, `offer-documents` and `transaction-documents`, and `auth read / upload / update` on `agent-documents` — each `bucket_id = '<bucket>'` and nothing else, `TO authenticated`. Every signed-in user of any tenant (a portal **contact** and a **vendor** seat included) can list, read, overwrite and delete every client's bank statement, W-9 and pre-approval, every offer PDF, every deal file (wire instructions included) and every agent's license. All four buckets are private (`public = false`) and the storage schema holds **0 objects**, the only reason nothing has leaked. m874's readiness read, run inline, reports all four as `open`.
+
+The **offer row** has the same shape in the public schema: `offers_tenant_select / _update / _delete` are `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()`, so a portal contact or a vendor seat reads (and may change) every offer of their brokerage, and every user of every tenant reads an offer whose `brokerage_id` is NULL. Measured with a contact's JWT claims: their `current_user_brokerage_id()` is set, so the live rule admits them. Live offers: 0.
+
+**Why the storage half is yours** — the same reason as §F: the MCP session is `postgres`, not a member of `supabase_storage_admin` (`pg_has_role` = false, re-measured 2026-10-29), so `CREATE / DROP POLICY ON storage.objects` is refused `42501`.
+
+### Order
+
+1. The **integrator** applies `supabase/migrations/m874-document-bucket-path-rules-and-offer-party-reads.sql` through the MCP. Public schema only: the path-rule functions, the two offer visibility functions and the three `ALTER POLICY` statements on `public.offers`, and the readiness read `public.storage_bucket_policy_readiness()` (service role only). It adds no table, column, CHECK or FK.
+2. **You** apply m875 (route A or B).
+3. Run the verification below and read every expected value.
+
+### Before — every line must hold
+
+```sql
+-- m874 is applied: all four must be non-null
+SELECT to_regprocedure('public.document_bucket_path_access(text, text, text)') AS access, to_regprocedure('public.document_bucket_path_readable(text, text)') AS readable, to_regprocedure('public.document_bucket_path_writable(text, text)') AS writable, to_regprocedure('public.document_bucket_object_deletable(text, text, text, timestamp with time zone)') AS deletable;
+-- what is live now (expect the 15 "auth … <bucket>" names)
+SELECT policyname, cmd, qual, with_check FROM pg_policies WHERE schemaname = 'storage' AND tablename = 'objects' AND (qual ~ '(client|offer|transaction|agent)-documents' OR with_check ~ '(client|offer|transaction|agent)-documents') ORDER BY policyname;
+-- the live verdict per bucket (expect 'open' for the four before m875; 'documents' already reads service_only)
+SELECT bucket_id, verdict, missing_policies, unscoped_policies FROM public.storage_bucket_policy_readiness();
+-- can THIS session run route A? (true = yes; false = expect 42501, use route B)
+SELECT current_user, pg_has_role(current_user, 'supabase_storage_admin', 'member') AS can_alter_storage_objects;
+```
+
+### Route A — SQL editor (only if `can_alter_storage_objects` is true)
+
+Run the file as it is. It is one transaction: it refuses to start without m874, and if any statement is refused nothing changes. It can be re-run safely, because every `DROP` is `IF EXISTS`, including the new names.
+
+```sql
+BEGIN;
+
+DO $$
+BEGIN
+  IF to_regprocedure('public.document_bucket_path_access(text, text, text)') IS NULL
+     OR to_regprocedure('public.document_bucket_path_readable(text, text)') IS NULL
+     OR to_regprocedure('public.document_bucket_path_writable(text, text)') IS NULL
+     OR to_regprocedure('public.document_bucket_object_deletable(text, text, text, timestamp with time zone)') IS NULL THEN
+    RAISE EXCEPTION 'm875 needs m874 first: the document_bucket_* path functions are missing — apply supabase/migrations/m874-document-bucket-path-rules-and-offer-party-reads.sql';
+  END IF;
+END $$;
+
+DROP POLICY IF EXISTS "auth read client-documents"   ON storage.objects;
+DROP POLICY IF EXISTS "auth upload client-documents" ON storage.objects;
+DROP POLICY IF EXISTS "auth update client-documents" ON storage.objects;
+DROP POLICY IF EXISTS "auth delete client-documents" ON storage.objects;
+
+DROP POLICY IF EXISTS "auth read offer-documents"   ON storage.objects;
+DROP POLICY IF EXISTS "auth upload offer-documents" ON storage.objects;
+DROP POLICY IF EXISTS "auth update offer-documents" ON storage.objects;
+DROP POLICY IF EXISTS "auth delete offer-documents" ON storage.objects;
+
+DROP POLICY IF EXISTS "auth read transaction-documents"   ON storage.objects;
+DROP POLICY IF EXISTS "auth upload transaction-documents" ON storage.objects;
+DROP POLICY IF EXISTS "auth update transaction-documents" ON storage.objects;
+DROP POLICY IF EXISTS "auth delete transaction-documents" ON storage.objects;
+
+DROP POLICY IF EXISTS "auth read agent-documents"   ON storage.objects;
+DROP POLICY IF EXISTS "auth upload agent-documents" ON storage.objects;
+DROP POLICY IF EXISTS "auth update agent-documents" ON storage.objects;
+DROP POLICY IF EXISTS "auth delete agent-documents" ON storage.objects;
+
+DROP POLICY IF EXISTS "client-documents owner read"        ON storage.objects;
+DROP POLICY IF EXISTS "client-documents owner upload"      ON storage.objects;
+DROP POLICY IF EXISTS "transaction-documents owner read"   ON storage.objects;
+DROP POLICY IF EXISTS "transaction-documents owner upload" ON storage.objects;
+DROP POLICY IF EXISTS "transaction-documents owner delete" ON storage.objects;
+DROP POLICY IF EXISTS "agent-documents owner read"         ON storage.objects;
+DROP POLICY IF EXISTS "agent-documents owner upload"       ON storage.objects;
+
+CREATE POLICY "client-documents owner read" ON storage.objects
+  FOR SELECT TO authenticated
+  USING (bucket_id = 'client-documents' AND public.document_bucket_path_readable('client-documents', name));
+
+CREATE POLICY "client-documents owner upload" ON storage.objects
+  FOR INSERT TO authenticated
+  WITH CHECK (bucket_id = 'client-documents' AND public.document_bucket_path_writable('client-documents', name));
+
+CREATE POLICY "transaction-documents owner read" ON storage.objects
+  FOR SELECT TO authenticated
+  USING (bucket_id = 'transaction-documents' AND public.document_bucket_path_readable('transaction-documents', name));
+
+CREATE POLICY "transaction-documents owner upload" ON storage.objects
+  FOR INSERT TO authenticated
+  WITH CHECK (bucket_id = 'transaction-documents' AND public.document_bucket_path_writable('transaction-documents', name));
+
+CREATE POLICY "transaction-documents owner delete" ON storage.objects
+  FOR DELETE TO authenticated
+  USING (bucket_id = 'transaction-documents' AND public.document_bucket_object_deletable('transaction-documents', name, owner_id, created_at));
+
+CREATE POLICY "agent-documents owner read" ON storage.objects
+  FOR SELECT TO authenticated
+  USING (bucket_id = 'agent-documents' AND public.document_bucket_path_readable('agent-documents', name));
+
+CREATE POLICY "agent-documents owner upload" ON storage.objects
+  FOR INSERT TO authenticated
+  WITH CHECK (bucket_id = 'agent-documents' AND public.document_bucket_path_writable('agent-documents', name));
+
+COMMIT;
+```
+
+### Route B — Dashboard → Storage → Policies (when route A is refused 42501)
+
+1. For each of the buckets `client-documents`, `offer-documents`, `transaction-documents` and `agent-documents`, **delete** every `auth read / upload / update / delete <bucket>` policy (15 in all — `agent-documents` has no delete policy today). Deleting first is safe: a private bucket with no policy refuses every session (fail closed), and the server's reads and writes use the service role, which bypasses RLS.
+2. **New policy → "For full customization"**, seven times, target role `authenticated`, exactly:
+
+| Name | Operation | USING | WITH CHECK |
+|---|---|---|---|
+| `client-documents owner read` | SELECT | `bucket_id = 'client-documents' AND public.document_bucket_path_readable('client-documents', name)` | — |
+| `client-documents owner upload` | INSERT | — | `bucket_id = 'client-documents' AND public.document_bucket_path_writable('client-documents', name)` |
+| `transaction-documents owner read` | SELECT | `bucket_id = 'transaction-documents' AND public.document_bucket_path_readable('transaction-documents', name)` | — |
+| `transaction-documents owner upload` | INSERT | — | `bucket_id = 'transaction-documents' AND public.document_bucket_path_writable('transaction-documents', name)` |
+| `transaction-documents owner delete` | DELETE | `bucket_id = 'transaction-documents' AND public.document_bucket_object_deletable('transaction-documents', name, owner_id, created_at)` | — |
+| `agent-documents owner read` | SELECT | `bucket_id = 'agent-documents' AND public.document_bucket_path_readable('agent-documents', name)` | — |
+| `agent-documents owner upload` | INSERT | — | `bucket_id = 'agent-documents' AND public.document_bucket_path_writable('agent-documents', name)` |
+
+`offer-documents` gets **no** policy: every reader and writer of that bucket is the server.
+
+### What the policies admit (the audit behind them is m874's header and `scripts/transfer-classification-guard.ts` section C)
+
+| Bucket · path | Read | Write | Delete |
+|---|---|---|---|
+| transaction-documents · `transactions/{tx}/{folder}/…` | the deal team: an active staff seat of the deal's brokerage who is its oversight (admin roster minus team_lead), its TC, one of its agents, or the lead of one of those agents' team; **plus** the title party in `title/` and the lender party in `lender/` only | same | the deal team; a title / lender party only its own upload within 15 minutes (the compensating delete) |
+| transaction-documents · `vendor-jobs/{brokerage}/{tx}/…` | the deal team; a vendor assigned to the deal (assignment not cancelled, vendor not archived / inactive); the path's brokerage must be the deal's | same | the deal team; the vendor only its own upload within 15 minutes |
+| client-documents · `contacts/{contact}/…` | staff on that contact (oversight, TC, its agent, its agent's team lead); the contact themselves | same | — (server only) |
+| client-documents · `transactions/{tx}/…` | the deal team; a contact who is a party to the deal | same | — |
+| client-documents · `avatars/{contact}-…` | staff on that contact; the contact themselves | same | — |
+| client-documents · `vendors/{vendor}/…` | the vendor's own seat; the vendor's brokerage books readers | the vendor's own seat | — |
+| client-documents · `{brokerage}/…`, `buyer-intake/…` | server only | server only | server only |
+| agent-documents · `{user}/license|eo-insurance/…` | the agent themselves; the oversight class of their **current** brokerage | the agent themselves | — (license evidence is kept) |
+| offer-documents · everything | server only | server only | server only |
+
+A transferred deal's file is **held**: while any `transaction_documents` row of the deal sits in a brokerage other than the transaction's (the adoption rail keeps those rows — `explicit_transfer` — in the archived source), no session reads, writes or deletes that deal's objects. Every rule reads current membership, so suspension, removal, agent deactivation, leaving a team or a cancelled vendor assignment revokes at once. A **signed URL already minted stays valid until it expires** — RLS cannot revoke a bearer token.
+
+### Verify afterwards — every expected value must match
+
+```sql
+-- exactly seven, these names and commands
+SELECT policyname, cmd FROM pg_policies WHERE schemaname='storage' AND tablename='objects' AND policyname ~ '^(client|transaction|agent)-documents owner ' ORDER BY policyname;
+-- expect: agent-documents owner read SELECT · agent-documents owner upload INSERT · client-documents owner read SELECT · client-documents owner upload INSERT · transaction-documents owner delete DELETE · transaction-documents owner read SELECT · transaction-documents owner upload INSERT
+-- no bucket-wide rule is left on the four buckets (expect 0 rows)
+SELECT policyname FROM pg_policies WHERE schemaname='storage' AND tablename='objects' AND (qual ~ '^\(bucket_id = ''(client|offer|transaction|agent)-documents''::text\)$' OR with_check ~ '^\(bucket_id = ''(client|offer|transaction|agent)-documents''::text\)$');
+-- the live verdict (expect agent-documents, client-documents, transaction-documents = owner_scoped; offer-documents and documents = service_only; brokerage-forms = owner_scoped once §F is done; every missing_policies / unscoped_policies empty)
+SELECT bucket_id, verdict, missing_policies, unscoped_policies FROM public.storage_bucket_policy_readiness();
+-- a CONTACT is refused a deal file and another contact's folder (expect false, false)
+BEGIN;
+SELECT set_config('request.jwt.claims', json_build_object('sub', (SELECT id FROM public.users WHERE user_type = 'contact' AND brokerage_id IS NOT NULL ORDER BY id LIMIT 1), 'role', 'authenticated')::text, true);
+SELECT public.document_bucket_path_writable('transaction-documents', 'transactions/' || (SELECT id FROM public.transactions WHERE brokerage_id = public.current_user_brokerage_id() ORDER BY id LIMIT 1)::text || '/documents/x.pdf') AS contact_writes_deal_file, public.document_bucket_path_readable('client-documents', 'contacts/' || (SELECT id FROM public.contacts WHERE brokerage_id = public.current_user_brokerage_id() AND contact_user_id IS DISTINCT FROM auth.uid() ORDER BY id LIMIT 1)::text || '/x.pdf') AS contact_reads_other_contact;
+ROLLBACK;
+-- a VENDOR seat is refused the client's paperwork and an unassigned deal (expect false, false)
+BEGIN;
+SELECT set_config('request.jwt.claims', json_build_object('sub', (SELECT id FROM public.users WHERE user_type = 'vendor' AND brokerage_id IS NOT NULL ORDER BY id LIMIT 1), 'role', 'authenticated')::text, true);
+SELECT public.document_bucket_path_readable('client-documents', 'contacts/' || (SELECT id FROM public.contacts WHERE brokerage_id = public.current_user_brokerage_id() ORDER BY id LIMIT 1)::text || '/x.pdf') AS vendor_reads_client_docs, public.document_bucket_path_readable('transaction-documents', 'transactions/' || (SELECT id FROM public.transactions WHERE brokerage_id = public.current_user_brokerage_id() ORDER BY id LIMIT 1)::text || '/lender/x.pdf') AS vendor_reads_unassigned_deal;
+ROLLBACK;
+-- the deal's own AGENT reads and writes the deal file; the TC reads it (expect true, true, true)
+BEGIN;
+SELECT set_config('request.jwt.claims', json_build_object('sub', (SELECT a.user_id FROM public.transactions t JOIN public.agents a ON a.id = t.agent_id ORDER BY t.id LIMIT 1), 'role', 'authenticated')::text, true);
+SELECT public.document_bucket_path_readable('transaction-documents', 'transactions/' || (SELECT t.id FROM public.transactions t ORDER BY t.id LIMIT 1)::text || '/documents/x.pdf') AS agent_reads, public.document_bucket_path_writable('transaction-documents', 'transactions/' || (SELECT t.id FROM public.transactions t ORDER BY t.id LIMIT 1)::text || '/documents/x.pdf') AS agent_writes;
+ROLLBACK;
+BEGIN;
+SELECT set_config('request.jwt.claims', json_build_object('sub', (SELECT u.id FROM public.users u JOIN public.transactions t ON t.brokerage_id = u.brokerage_id WHERE u.user_type = 'tc' ORDER BY t.id, u.id LIMIT 1), 'role', 'authenticated')::text, true);
+SELECT public.document_bucket_path_readable('transaction-documents', 'transactions/' || (SELECT t.id FROM public.transactions t WHERE t.brokerage_id = public.current_user_brokerage_id() ORDER BY t.id LIMIT 1)::text || '/documents/x.pdf') AS tc_reads;
+ROLLBACK;
+-- the OFFER row: a contact sees only offers they are a party to (expect the count of their own offers — 0 today), through real RLS
+BEGIN;
+SET LOCAL ROLE authenticated;
+SELECT set_config('request.jwt.claims', json_build_object('sub', (SELECT id FROM public.users WHERE user_type = 'contact' AND brokerage_id IS NOT NULL ORDER BY id LIMIT 1), 'role', 'authenticated')::text, true);
+SELECT count(*) AS offers_visible_to_contact FROM public.offers;
+ROLLBACK;
+```
+
+(Measured before m874/m875 with these predicates inlined, 2026-10-29, deal `f0000000-…0001`: the deal's agent, the broker and the TC are admitted to the deal file; another agent of the same brokerage, a contact, a vendor seat and another tenant's admin are refused; the broker reads an agent's license folder, the TC and another agent do not; a `..` segment is refused while a file named `Smith..v2.pdf` is admitted.)
+
+### Rollback (re-opens the exposure — only to undo a broken apply, and say so)
+
+```sql
+-- storage (owner): restore the 15 bucket-wide policies exactly as they were measured live on 2026-10-29
+BEGIN;
+DROP POLICY IF EXISTS "client-documents owner read" ON storage.objects;  DROP POLICY IF EXISTS "client-documents owner upload" ON storage.objects;
+DROP POLICY IF EXISTS "transaction-documents owner read" ON storage.objects;  DROP POLICY IF EXISTS "transaction-documents owner upload" ON storage.objects;  DROP POLICY IF EXISTS "transaction-documents owner delete" ON storage.objects;
+DROP POLICY IF EXISTS "agent-documents owner read" ON storage.objects;  DROP POLICY IF EXISTS "agent-documents owner upload" ON storage.objects;
+CREATE POLICY "auth read client-documents" ON storage.objects FOR SELECT TO authenticated USING (bucket_id = 'client-documents');
+CREATE POLICY "auth upload client-documents" ON storage.objects FOR INSERT TO authenticated WITH CHECK (bucket_id = 'client-documents');
+CREATE POLICY "auth update client-documents" ON storage.objects FOR UPDATE TO authenticated USING (bucket_id = 'client-documents');
+CREATE POLICY "auth delete client-documents" ON storage.objects FOR DELETE TO authenticated USING (bucket_id = 'client-documents');
+CREATE POLICY "auth read offer-documents" ON storage.objects FOR SELECT TO authenticated USING (bucket_id = 'offer-documents');
+CREATE POLICY "auth upload offer-documents" ON storage.objects FOR INSERT TO authenticated WITH CHECK (bucket_id = 'offer-documents');
+CREATE POLICY "auth update offer-documents" ON storage.objects FOR UPDATE TO authenticated USING (bucket_id = 'offer-documents');
+CREATE POLICY "auth delete offer-documents" ON storage.objects FOR DELETE TO authenticated USING (bucket_id = 'offer-documents');
+CREATE POLICY "auth read transaction-documents" ON storage.objects FOR SELECT TO authenticated USING (bucket_id = 'transaction-documents');
+CREATE POLICY "auth upload transaction-documents" ON storage.objects FOR INSERT TO authenticated WITH CHECK (bucket_id = 'transaction-documents');
+CREATE POLICY "auth update transaction-documents" ON storage.objects FOR UPDATE TO authenticated USING (bucket_id = 'transaction-documents');
+CREATE POLICY "auth delete transaction-documents" ON storage.objects FOR DELETE TO authenticated USING (bucket_id = 'transaction-documents');
+CREATE POLICY "auth read agent-documents" ON storage.objects FOR SELECT TO authenticated USING (bucket_id = 'agent-documents');
+CREATE POLICY "auth upload agent-documents" ON storage.objects FOR INSERT TO authenticated WITH CHECK (bucket_id = 'agent-documents');
+CREATE POLICY "auth update agent-documents" ON storage.objects FOR UPDATE TO authenticated USING (bucket_id = 'agent-documents');
+COMMIT;
+-- the offer row (integrator, MCP): restore the three policies as measured
+ALTER POLICY offers_tenant_select ON public.offers USING ((brokerage_id IS NULL) OR (brokerage_id = public.current_user_brokerage_id()));
+ALTER POLICY offers_tenant_update ON public.offers USING ((brokerage_id IS NULL) OR (brokerage_id = public.current_user_brokerage_id())) WITH CHECK ((brokerage_id IS NULL) OR (brokerage_id = public.current_user_brokerage_id()));
+ALTER POLICY offers_tenant_delete ON public.offers USING ((brokerage_id IS NULL) OR (brokerage_id = public.current_user_brokerage_id()));
+```
+
+The m874 functions can stay after a rollback (nothing calls them once the policies are gone).
+
+Then, in the repository (or ask the integrator): flip line 1 of m874 and m875 to `-- ── APPLIED LIVE <date> …`; lower `NOT_APPLIED_BASELINE` in `scripts/migration-claim-guard.ts`. m874 / m875 add no table, column, CHECK or FK, so no cache regeneration is needed. `scripts/transfer-classification-guard.ts` (section C) holds this section verbatim to m875 and accepts either status line.
+
+## H. `personal-videos` — the private bucket for videos addressed to one contact (wave 146, lane 146Z — owner ruling 6; NOT applied)
+
+**Status (measured 2026-10-29, project `hrvaqgvukzxfskkcrwbt`, read-only): the bucket does not exist yet.** Lane 146C found that the agent's personal welcome video was hosted in the PUBLIC `video-assets` bucket, so its URL played for anyone who held it — against ruling 6 ("the asset is visible only to that contact and the relevant agent/tenant"). Since wave 146 every render addressed to one contact (`ai_video_projects.contact_id` set) is hosted in the PRIVATE `personal-videos` bucket (`lib/remotion/media-host.ts` `renderHostBucketFor`; the D-ID poller, the composition coordinator, the card pass and the D-ID re-host sweep), and the contact's portal receives a **one-hour signed URL minted on every read after its session gate** (`lib/portal/welcome-video.ts` `servePortalVideoUrl`). Live at measurement: 0 contact-addressed video projects, 0 welcome renders, 0 objects in `video-assets` — nothing to move.
+
+The bucket is **SERVICE-ONLY**: no `storage.objects` policy may admit `authenticated` or `anon` on it. The server reads and signs with the service role; a signed URL needs no policy. So there is **no policy to create** — this section exists so the bucket is born private on purpose and stays that way.
+
+The first personal render creates it private through the one helper (`lib/storage/buckets.ts` `ensureBucket`, `public: false`). Run step 1 yourself if you would rather it exist before the first render (it is a `storage.buckets` write, so it is owner SQL like §F/§G):
+
+```sql
+-- 1. (optional — the first render does the same) create the bucket PRIVATE; re-runnable
+INSERT INTO storage.buckets (id, name, public, file_size_limit)
+VALUES ('personal-videos', 'personal-videos', false, 52428800)
+ON CONFLICT (id) DO UPDATE SET public = false;
+```
+
+### Verify afterwards — every expected value must match
+
+```sql
+-- the bucket is private (expect exactly one row, public = false)
+SELECT id, public, file_size_limit FROM storage.buckets WHERE id = 'personal-videos';
+-- NO policy names it (expect 0 rows) — a bucket-wide "auth read personal-videos" would re-open what this section closes
+SELECT policyname, cmd, roles FROM pg_policies WHERE schemaname = 'storage' AND tablename = 'objects' AND (coalesce(qual, '') ~ 'personal-videos' OR coalesce(with_check, '') ~ 'personal-videos');
+-- and no policy is bucket-agnostic for authenticated (expect 0 rows: a policy with no bucket_id predicate admits every bucket, this one included)
+SELECT policyname, cmd FROM pg_policies WHERE schemaname = 'storage' AND tablename = 'objects' AND 'authenticated' = ANY (roles) AND coalesce(qual, '') !~ 'bucket_id' AND coalesce(with_check, '') !~ 'bucket_id';
+```
+
+### After it exists live
+
+1. Regenerate `lib/storage/bucket-limits.ts` from `storage.buckets` (the generator header carries the SQL) — it will gain `"personal-videos": { isPublic: false, … }`.
+2. Then `scripts/transfer-classification-guard.ts` section C3 will demand that `public.storage_bucket_policy_readiness()` (m874) covers it, because the read must cover EVERY live, private, document-class bucket: the integrator adds `('personal-videos'::text, NULL::text, ARRAY[]::text[])` to the function's expected list (service-only, like `documents` and `offer-documents`) in a public-schema migration it can apply.
+
+### Rollback
+
+None needed: deleting the bucket is the only undo, and it would delete every personal video in it. A wrong policy is undone with `DROP POLICY IF EXISTS "<name>" ON storage.objects;`.
+
+## I. The four unlinked portal-contact seed accounts (RELEASE-BLOCKING owner data step; wave 146 §19.2, carried by wave 147, lane 147H)
+
+**Status (measured 2026-10-31, project `hrvaqgvukzxfskkcrwbt`, read-only):** `public.users` holds **4** rows with `user_type = 'contact'` and **all 4** have no `public.contacts` row pointing at them by `contact_user_id`. They are seed rows. Under the m874 / m875 per-party storage rules a portal contact is admitted to a document only through `contacts.contact_user_id = auth.uid()`, so after §G these four accounts can sign in and see **nothing** — and a real client invited later must not inherit a seed identity. This is a data decision only you can make: link each account to the real contact it belongs to, or delete the seed account.
+
+```sql
+-- 1. the census (expect 0 rows when this section is done)
+SELECT u.id, u.email, u.brokerage_id, u.created_at
+FROM public.users u
+WHERE u.user_type = 'contact'
+  AND NOT EXISTS (SELECT 1 FROM public.contacts c WHERE c.contact_user_id = u.id);
+
+-- 2a. LINK — one statement per account, the contact chosen by you (same brokerage; check the email matches)
+-- UPDATE public.contacts SET contact_user_id = '<users.id>' WHERE id = '<contacts.id>' AND brokerage_id = '<users.brokerage_id>' AND contact_user_id IS NULL RETURNING id;
+
+-- 2b. or REMOVE — a seed account with no real client behind it (delete the auth user in Authentication → Users; the
+--     public.users row follows its FK). Never delete a contacts row to make the census read zero.
+```
+
+### Verify afterwards
+
+```sql
+SELECT count(*) AS unlinked_contact_users FROM public.users u
+WHERE u.user_type = 'contact' AND NOT EXISTS (SELECT 1 FROM public.contacts c WHERE c.contact_user_id = u.id);  -- expect 0
+```
+
+When the census reads 0, record it on the line below (the readiness guard reads it — `scripts/production-readiness-guard.ts` owner obligation O2 stays RELEASE-BLOCKING until this line says RESOLVED with the date and the zero):
+
+- Status: OPEN — 4 unlinked (re-measured 2026-11-01 by lane 148A; each pairs with exactly one same-email contact in its own tenant — the scoped LINK script below is ready)
+
+### Inventory (wave 148, lane 148A — measured 2026-11-01, project `hrvaqgvukzxfskkcrwbt`, READ-ONLY)
+
+All four are rows of the seeded showcase tenant **VIP Premier Realty** (`b0000000-0000-0000-0000-000000000001`, slug `vip-premier-realty-b000`), created together on 2026-03-31 with `@vip.demo` addresses, `status = 'active'`, each with its `auth.users` row (one has signed in once, 2026-04-02). No `user_invitations` row names any of them. For each, exactly **one** `public.contacts` row in the SAME tenant carries the SAME email (case-insensitive) and the SAME name, with `contact_user_id` NULL — and no contact in any other tenant carries those emails. Emails are masked here on purpose.
+
+| users.id (seed account) | who | contacts.id (the pairing) | contact_type | agent |
+|---|---|---|---|---|
+| `a0000000-0000-0000-0000-000000000013` | Sarah M · `bu***@vip.demo` | `50000000-0000-0000-0000-000000000001` | buyer | `c0000000-0000-0000-0000-000000000005` |
+| `a0000000-0000-0000-0000-000000000014` | Robert C · `se***@vip.demo` | `50000000-0000-0000-0000-000000000002` | seller | `c0000000-0000-0000-0000-000000000005` |
+| `a0000000-0000-0000-0000-000000000015` | Maria G · `un***@vip.demo` | `50000000-0000-0000-0000-000000000003` | buyer | `c0000000-0000-0000-0000-000000000005` |
+| `a0000000-0000-0000-0000-000000000016` | James R · `pa***@vip.demo` | `50000000-0000-0000-0000-000000000004` | lifetime_customer | `c0000000-0000-0000-0000-000000000005` |
+
+What a link changes and does not: `contacts.contact_user_id` only (FK → `auth.users`, ON DELETE SET NULL; plain index, no unique constraint). The one trigger on `contacts` (`trg_contacts_emit_agent_assigned`) fires only when `agent_id` changes, so a link emits nothing. No row is deleted, no account is disabled.
+
+### Remediation A — LINK (recommended: every pairing above is exact). One transaction; scoped to the four ids; refuses to change anything if any pairing has drifted since the inventory; reversible below.
+
+```sql
+-- §I REMEDIATION A — LINK THE FOUR SEED ACCOUNTS TO THEIR OWN CONTACT (owner SQL editor or the integrator's MCP, after the owner says "link")
+BEGIN;
+CREATE TEMP TABLE seed_link (user_id uuid PRIMARY KEY, contact_id uuid NOT NULL UNIQUE) ON COMMIT DROP;
+INSERT INTO seed_link (user_id, contact_id) VALUES
+  ('a0000000-0000-0000-0000-000000000013', '50000000-0000-0000-0000-000000000001'),
+  ('a0000000-0000-0000-0000-000000000014', '50000000-0000-0000-0000-000000000002'),
+  ('a0000000-0000-0000-0000-000000000015', '50000000-0000-0000-0000-000000000003'),
+  ('a0000000-0000-0000-0000-000000000016', '50000000-0000-0000-0000-000000000004');
+DO $$
+DECLARE ok_pairs int;
+BEGIN
+  SELECT count(*) INTO ok_pairs
+  FROM seed_link l
+  JOIN public.users u    ON u.id = l.user_id AND u.user_type = 'contact'
+  JOIN public.contacts c ON c.id = l.contact_id AND c.brokerage_id = u.brokerage_id
+                        AND lower(c.email) = lower(u.email) AND c.contact_user_id IS NULL
+  WHERE NOT EXISTS (SELECT 1 FROM public.contacts x WHERE x.contact_user_id = u.id);
+  IF ok_pairs <> 4 THEN
+    RAISE EXCEPTION 'seed link refused: % of 4 pairings still match the 2026-11-01 inventory — re-run the census and re-decide', ok_pairs;
+  END IF;
+END $$;
+UPDATE public.contacts c
+   SET contact_user_id = l.user_id, updated_at = now()
+  FROM seed_link l
+ WHERE c.id = l.contact_id AND c.contact_user_id IS NULL
+RETURNING c.id AS contact_id, c.contact_user_id;   -- expect exactly 4 rows
+COMMIT;
+```
+
+**Rollback of A** (restores exactly what A changed — only where the link is still the seed account):
+
+```sql
+-- §I ROLLBACK A
+UPDATE public.contacts
+   SET contact_user_id = NULL, updated_at = now()
+ WHERE (id, contact_user_id) IN (
+   ('50000000-0000-0000-0000-000000000001'::uuid, 'a0000000-0000-0000-0000-000000000013'::uuid),
+   ('50000000-0000-0000-0000-000000000002'::uuid, 'a0000000-0000-0000-0000-000000000014'::uuid),
+   ('50000000-0000-0000-0000-000000000003'::uuid, 'a0000000-0000-0000-0000-000000000015'::uuid),
+   ('50000000-0000-0000-0000-000000000004'::uuid, 'a0000000-0000-0000-0000-000000000016'::uuid))
+RETURNING id;   -- expect the rows A linked
+```
+
+### Remediation B — ARCHIVE (only if you decide these seed identities must never sign in). Same four ids, no deletion: `users.status = 'inactive'` (the deactivation spelling `app/actions/superadmin/platform-staff.ts` already writes). Then, in **Authentication → Users**, ban each of the four auth users so a live session cannot be minted. B removes the exposure but does NOT make the census read zero (the census counts contact users with no contact link), so O2 stays RELEASE-BLOCKING after B by design — prefer A.
+
+```sql
+-- §I REMEDIATION B — ARCHIVE (reversible: set status back to 'active' and lift the ban)
+UPDATE public.users SET status = 'inactive', updated_at = now()
+ WHERE id IN ('a0000000-0000-0000-0000-000000000013','a0000000-0000-0000-0000-000000000014','a0000000-0000-0000-0000-000000000015','a0000000-0000-0000-0000-000000000016')
+   AND user_type = 'contact' AND status = 'active'
+RETURNING id;   -- expect 4 rows
+-- ROLLBACK B: UPDATE public.users SET status = 'active', updated_at = now() WHERE id IN (<the same four ids>) AND status = 'inactive' RETURNING id;
+```
+
+Neither remediation deletes anything. Deleting a seed account (Authentication → Users → delete; the `public.users` row follows, `contacts.contact_user_id` would go NULL by its FK) needs your explicit authorization and is not scripted here.
+
+## J. Release-blocker close-out — run in this order once §F, §G and §I are done (wave 148, lane 148A)
+
+Nothing is LIVE or production-safe until every step below reads its expected value. Each one is a READ — run them after the policies are applied (§F route A/B, §G route A/B) and the seed accounts are remediated (§I).
+
+1. **The live storage verdict** (the one answer; a migration header is only a claim):
+   ```sql
+   SELECT bucket_id, verdict, missing_policies, unscoped_policies FROM public.storage_bucket_policy_readiness() ORDER BY bucket_id;
+   -- expect: agent-documents owner_scoped · brokerage-forms owner_scoped · client-documents owner_scoped · documents service_only · offer-documents service_only · transaction-documents owner_scoped — every missing_policies and unscoped_policies EMPTY
+   ```
+2. **No bucket-wide rule left anywhere on the five buckets** (expect 0 rows):
+   ```sql
+   SELECT policyname, cmd FROM pg_policies WHERE schemaname = 'storage' AND tablename = 'objects'
+     AND (qual ~ '^\(bucket_id = ''(brokerage-forms|client-documents|offer-documents|transaction-documents|agent-documents)''::text\)$'
+       OR with_check ~ '^\(bucket_id = ''(brokerage-forms|client-documents|offer-documents|transaction-documents|agent-documents)''::text\)$');
+   ```
+3. **Exactly eleven owner policies** — the four of §F and the seven of §G (expect 11):
+   ```sql
+   SELECT count(*) AS owner_policies FROM pg_policies WHERE schemaname = 'storage' AND tablename = 'objects'
+     AND policyname ~ '^(brokerage-forms|client-documents|transaction-documents|agent-documents) owner ';
+   ```
+4. **The impersonation checks** in §F "Verify afterwards" and §G "Verify afterwards" — every expected `true` / `false` exactly as written there (a contact and a vendor seat refused; the deal's agent and TC admitted).
+5. **The seed census** (expect 0 after §I remediation A):
+   ```sql
+   SELECT count(*) AS unlinked_contact_users FROM public.users u
+   WHERE u.user_type = 'contact' AND NOT EXISTS (SELECT 1 FROM public.contacts c WHERE c.contact_user_id = u.id);
+   ```
+6. **In the repository** (or ask the integrator), in one commit: flip line 1 of `supabase/migrations/m854-…`, `m855-…`, `m874-…` and `m875-…` to `-- ── APPLIED LIVE <date> …`; lower `NOT_APPLIED_BASELINE` in `scripts/migration-claim-guard.ts` by one per file flipped; flip §I's status line to `- Status: RESOLVED <date> — census 0`.
+7. **The proofs that read those stamps go green on the rule, not on a waypoint:** `npm run test:release-blockers` (prints `RELEASE BLOCKERS: 0 owner obligation(s) open` for the storage and seed items), `npm run test:production-readiness` (O1 and O2 `discharged`), `npm run test:transfer-classification`, `npm run test:migration-claim`.
+
+## K. O1 / O2 — your order of work, and the integrator's read-only re-measurement (wave 150, lane 150AAF)
+
+**Nothing on this page has been run by a lane.** As of 2026-11-06 O1 and O2 are OPEN in the tree: `m855` and `m875` carry the lane stamp (not applied) and §I's status line reads OPEN; the last live reads were 2026-11-03 (five private buckets `open`, 19 bucket-wide rules, 0 owner policies, 0 objects in any bucket) and 2026-11-01 (four unlinked seed accounts, `ok_pairs = 4`). `npm run test:release-blockers` derives both from the stamps and the status line — never from this paragraph.
+
+### Your order (owner)
+
+1. **Before anything:** ask the integrator to run Q1–Q9 below and paste the results into the release report; if Q5 reads `bucket_wide_on_five` below 19 while Q3 still says `open`, stop — the finder is blind (positive control below).
+2. **O1, brokerage-forms:** run §F "Before", then §F route A if Q1 says `can_alter_storage_objects = true`, otherwise §F route B (Dashboard → Storage → Policies). Then §F "Verify afterwards" — every expected value.
+3. **O1, the four document buckets + offer row:** the same for §G (Before → route A or B → Verify afterwards).
+4. **O2, the four seed accounts:** decide LINK (recommended — every pairing is exact) or ARCHIVE. For LINK, run Q8 alone first: it must read `ok_pairs = 4`, otherwise re-decide. Then run §I REMEDIATION A as one block; it returns exactly 4 rows or refuses. Keep §I ROLLBACK A beside it.
+5. **Close out:** run §J top to bottom. Then copy §J step 1's six verdicts, step 2's row count and step 3's count into the evidence ledger row R9 (`docs/operations/ACTIVATION-CHECKLIST.md` §6.7 — as `storage_bucket_policy_readiness(): agent-documents owner_scoped · … ; 0 bucket-wide; 11 owner policies`, dated), and flip §I's status line to `- Status: RESOLVED <date> — census 0`.
+6. **The integrator** flips line 1 of m854 / m855 / m874 / m875 to `-- ── APPLIED LIVE <date> …`, lowers `NOT_APPLIED_BASELINE` by one per file, and re-runs `npm run test:release-blockers` until it prints O1 and O2 `discharged` and R9 `OBSERVED` (F6 refuses R9 observed while a stamp still says not applied — fix the stamp, never the ledger).
+
+### Integrator re-measurement — READ-ONLY (Supabase MCP `execute_sql`, project `hrvaqgvukzxfskkcrwbt`)
+
+```sql
+-- §K Q1 (O1) can the MCP session alter storage.objects? (expect false → the owner's route B)
+SELECT current_user, pg_has_role(current_user, 'supabase_storage_admin', 'member') AS can_alter_storage_objects;
+
+-- §K Q2 (O1) the m854/m874 prerequisite functions exist (expect all non-null)
+SELECT to_regprocedure('public.brokerage_forms_path_readable(text)') AS bf_readable,
+       to_regprocedure('public.brokerage_forms_path_writable(text)') AS bf_writable,
+       to_regprocedure('public.document_bucket_path_readable(text, text)') AS doc_readable,
+       to_regprocedure('public.document_bucket_path_writable(text, text)') AS doc_writable,
+       to_regprocedure('public.document_bucket_object_deletable(text, text, text, timestamp with time zone)') AS doc_deletable,
+       to_regprocedure('public.storage_bucket_policy_readiness()') AS readiness;
+
+-- §K Q3 (O1) the live verdict per bucket (cleared: agent/brokerage-forms/client/transaction owner_scoped; documents + offer-documents service_only; empty arrays)
+SELECT bucket_id, verdict, missing_policies, unscoped_policies FROM public.storage_bucket_policy_readiness() ORDER BY bucket_id;
+
+-- §K Q4 (O1) every policy on storage.objects, classified (bucket-wide = the predicate is only bucket_id = '<b>')
+SELECT policyname, cmd, roles,
+       CASE WHEN coalesce(qual,'') ~ '^\(bucket_id = ''[a-z-]+''::text\)$' OR coalesce(with_check,'') ~ '^\(bucket_id = ''[a-z-]+''::text\)$' THEN 'BUCKET-WIDE'
+            WHEN policyname ~ ' owner (read|upload|update|delete)$' THEN 'owner'
+            ELSE 'other' END AS class
+FROM pg_policies WHERE schemaname = 'storage' AND tablename = 'objects' ORDER BY class, policyname;
+
+-- §K Q5 (O1) the counts §J expects (cleared: bucket_wide_on_five 0, owner_policies 11, agnostic_authenticated 0)
+SELECT
+  count(*) FILTER (WHERE qual ~ '^\(bucket_id = ''(brokerage-forms|client-documents|offer-documents|transaction-documents|agent-documents)''::text\)$'
+                      OR with_check ~ '^\(bucket_id = ''(brokerage-forms|client-documents|offer-documents|transaction-documents|agent-documents)''::text\)$') AS bucket_wide_on_five,
+  count(*) FILTER (WHERE policyname ~ '^(brokerage-forms|client-documents|transaction-documents|agent-documents) owner ') AS owner_policies,
+  count(*) FILTER (WHERE 'authenticated' = ANY (roles) AND coalesce(qual,'') !~ 'bucket_id' AND coalesce(with_check,'') !~ 'bucket_id') AS agnostic_authenticated
+FROM pg_policies WHERE schemaname = 'storage' AND tablename = 'objects';
+
+-- §K Q6 (O1) exposure today: bucket privacy and object counts (0 objects = nothing has leaked yet)
+SELECT b.id, b.public, (SELECT count(*) FROM storage.objects o WHERE o.bucket_id = b.id) AS objects
+FROM storage.buckets b ORDER BY b.public, b.id;
+
+-- §K Q7 (O2) the census (4 today; 0 after remediation A) — no email selected
+SELECT u.id, u.brokerage_id, u.status, u.created_at
+FROM public.users u
+WHERE u.user_type = 'contact' AND NOT EXISTS (SELECT 1 FROM public.contacts c WHERE c.contact_user_id = u.id)
+ORDER BY u.id;
+
+-- §K Q8 (O2) remediation A's drift guard, run alone (expect ok_pairs = 4; anything else → re-decide before LINK)
+WITH seed_link(user_id, contact_id) AS (VALUES
+  ('a0000000-0000-0000-0000-000000000013'::uuid, '50000000-0000-0000-0000-000000000001'::uuid),
+  ('a0000000-0000-0000-0000-000000000014'::uuid, '50000000-0000-0000-0000-000000000002'::uuid),
+  ('a0000000-0000-0000-0000-000000000015'::uuid, '50000000-0000-0000-0000-000000000003'::uuid),
+  ('a0000000-0000-0000-0000-000000000016'::uuid, '50000000-0000-0000-0000-000000000004'::uuid))
+SELECT count(*) AS ok_pairs
+FROM seed_link l
+JOIN public.users u    ON u.id = l.user_id AND u.user_type = 'contact'
+JOIN public.contacts c ON c.id = l.contact_id AND c.brokerage_id = u.brokerage_id
+                      AND lower(c.email) = lower(u.email) AND c.contact_user_id IS NULL
+WHERE NOT EXISTS (SELECT 1 FROM public.contacts x WHERE x.contact_user_id = u.id);
+
+-- §K Q9 (O2) has any of the four signed in, or been invited, since the 2026-11-01 inventory? (no email selected)
+SELECT a.id, a.last_sign_in_at, a.banned_until,
+       (SELECT count(*) FROM public.user_invitations i WHERE lower(i.email) = lower(a.email)) AS invitations
+FROM auth.users a
+WHERE a.id IN ('a0000000-0000-0000-0000-000000000013','a0000000-0000-0000-0000-000000000014','a0000000-0000-0000-0000-000000000015','a0000000-0000-0000-0000-000000000016')
+ORDER BY a.id;
+```
+
+**Positive control for Q4/Q5:** before §F/§G are run, Q5 must read `bucket_wide_on_five ≥ 19` (the 2026-11-03 live count). Zero while Q3 still says `open` means the regex is blind — re-read Q4 raw before believing any count.
+
+## L. Wave 150 — owner SQL and owner decisions carried by the convergence lane (150Z, 2026-11-07)
+
+Nothing in this section has been run. Project `hrvaqgvukzxfskkcrwbt`. Each item names the lane that found it, the exact step, and the
+read-only check that says it is done. None of them blocks the code that already shipped — each says what stays narrowed until it is done.
+
+### L1. O-150C-1 — the legacy one-membership-per-tenant UNIQUE (lane 150C; SQL editor, a constraint drop)
+
+**APPLIED 2026-11-09** by the integrator on the owner's wave-151 ruling ("L1 drop"), via Supabase MCP as
+`supabase/migrations/m955-owner-sql-l1-drop-legacy-one-membership-per-tenant-unique.sql`. Pre-check: the scoped unique
+`organization_members_active_scope_key` (m958) was present and the table held 0 rows. Read-back: the constraint query below
+returned 0 rows; the surviving uniques are `organization_members_active_scope_key` and the primary key. The text below is history.
+
+Until this ran, a person holds ONE `organization_members` row per tenant: an office member who is also on a team keeps only the first
+grant, and the second is refused 23505 and reported by name ("O-150C-1 pending"). 0 live rows at the time of writing, so the drop is safe.
+```sql
+ALTER TABLE public.organization_members DROP CONSTRAINT organization_members_brokerage_id_user_id_key;
+-- done when this returns 0 rows:
+SELECT conname FROM pg_constraint WHERE conname = 'organization_members_brokerage_id_user_id_key';
+```
+
+### L2. The global cross-tenant UNIQUE on raw observations (lane 150EFG; SQL editor, an index drop — m961 is applied)
+
+**APPLIED 2026-11-09** by the integrator on the owner's wave-151 ruling ("L2 drop"), via Supabase MCP as
+`supabase/migrations/m956-owner-sql-l2-drop-global-cross-tenant-raw-observation-unique.sql`. The object was a CONSTRAINT, not a
+bare index: the `DROP INDEX` below was refused 2BP01 ("cannot drop index … because constraint … requires it"), so the applied
+statement is `ALTER TABLE public.raw_scraped_leads DROP CONSTRAINT IF EXISTS raw_scraped_leads_source_record_id_key`. Pre-check:
+the scoped unique `raw_scraped_leads_idempotency_key_uniq` (m961) was present and the table held 0 rows. Read-back: constraint 0,
+index 0; the surviving uniques are `raw_scraped_leads_idempotency_key_uniq` and the primary key. The text below is history.
+
+The C35 producer keys every observation by a tenant-scoped `idempotency_key`; the old GLOBAL `(source_record_id)` UNIQUE lets one
+tenant's observation refuse another's. 0 live rows depended on it.
+```sql
+DROP INDEX IF EXISTS public.raw_scraped_leads_source_record_id_key;
+-- done when this returns 0 rows:
+SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'raw_scraped_leads_source_record_id_key';
+```
+
+### L3. `listing-media` storage policies for owner-uploaded listing photos (lane 150XY; Dashboard → Storage → Policies, or SQL editor as `supabase_storage_admin` — `postgres` is refused 42501, as in §F)
+
+RESTRICTIVE policies narrow only paths whose first folder is a UUID (`<brokerageId>/<listingId>/<file>`); other prefixes and the
+existing permissive policies are untouched; reads stay public (marketing media).
+```sql
+BEGIN;
+DROP POLICY IF EXISTS "listing-media tenant listing folder insert" ON storage.objects;
+DROP POLICY IF EXISTS "listing-media tenant listing folder update" ON storage.objects;
+DROP POLICY IF EXISTS "listing-media tenant listing folder delete" ON storage.objects;
+CREATE POLICY "listing-media tenant listing folder insert" ON storage.objects
+  AS RESTRICTIVE FOR INSERT TO authenticated
+  WITH CHECK (
+    bucket_id <> 'listing-media'
+    OR (storage.foldername(name))[1] !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    OR ((storage.foldername(name))[1] = public.current_user_brokerage_id()::text
+        AND EXISTS (SELECT 1 FROM public.listings l
+                     WHERE l.id::text = (storage.foldername(name))[2]
+                       AND l.brokerage_id = public.current_user_brokerage_id()))
+  );
+CREATE POLICY "listing-media tenant listing folder update" ON storage.objects
+  AS RESTRICTIVE FOR UPDATE TO authenticated
+  USING (
+    bucket_id <> 'listing-media'
+    OR (storage.foldername(name))[1] !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    OR (storage.foldername(name))[1] = public.current_user_brokerage_id()::text
+  )
+  WITH CHECK (
+    bucket_id <> 'listing-media'
+    OR (storage.foldername(name))[1] !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    OR (storage.foldername(name))[1] = public.current_user_brokerage_id()::text
+  );
+CREATE POLICY "listing-media tenant listing folder delete" ON storage.objects
+  AS RESTRICTIVE FOR DELETE TO authenticated
+  USING (
+    bucket_id <> 'listing-media'
+    OR (storage.foldername(name))[1] !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    OR (storage.foldername(name))[1] = public.current_user_brokerage_id()::text
+  );
+COMMIT;
+-- done when this lists the three RESTRICTIVE rows (plus the pre-existing permissive ones):
+SELECT policyname, permissive, cmd FROM pg_policies
+ WHERE schemaname = 'storage' AND tablename = 'objects'
+   AND (coalesce(qual,'') ILIKE '%listing-media%' OR coalesce(with_check,'') ILIKE '%listing-media%')
+ ORDER BY policyname;
+```
+
+### L4. S3 — a team lead's contacts read is brokerage-wide at the database (lane 150BAA; owner decision, then SQL editor)
+
+CLAUDE.md §4 says teams see only their own board; `contacts.team_lead_read_team_contacts` admits the whole tenant. Verify the bodies of
+`current_user_led_team_id()` and `is_tenant_principal_team_lead()` first, then:
+```sql
+ALTER POLICY team_lead_read_team_contacts ON public.contacts
+  USING ((brokerage_id = public.current_user_brokerage_id())
+    AND EXISTS (SELECT 1 FROM public.users WHERE users.id = auth.uid() AND users.user_type = ANY (ARRAY['team_lead'::text, 'team_leader'::text]))
+    AND (public.is_tenant_principal_team_lead()
+         OR team_id = public.current_user_led_team_id()
+         OR agent_id IN (SELECT tm.agent_id FROM public.team_members tm WHERE tm.team_id = public.current_user_led_team_id())));
+-- done when, as a seeded non-principal team lead (set_config request.jwt.claims), SELECT count(*) FROM contacts falls from tenant-wide to team-only.
+```
+
+### L5. S4 — `users_same_brokerage_select` shows every tenant `users` row to contact and vendor seats (lane 150BAA; owner decision)
+
+Decide first whether any portal page reads another `users` row through the session client (lane 150W added none). If none:
+```sql
+ALTER POLICY users_same_brokerage_select ON public.users
+  USING (public.is_platform_staff() OR (id = auth.uid()) OR ((brokerage_id = public.current_user_brokerage_id()) AND public.is_tenant_staff_seat()));
+```
+
+### L6. Owner decisions (no SQL until ruled — nothing is built on a guess)
+
+| # | Decision | Found by | Options / what the code does today |
+|---|---|---|---|
+| L6.1 | Office isolation at the DATABASE (cross-office RLS) | 150BAA / 150C | Today office scope is code-side (resolveViewerHierarchy → resolveEgressScopeForViewer; the exception center, workflow reports and office CRUD now read it). DB-enforced isolation needs an office column (or a join through the creator's `users.location_id`) on media / QR / mail / events. Rule: DB-narrowed, or code-scoped? |
+| L6.2 | Closing attestation for a brokerage WITHOUT a CDA | 150XY (wave-149 §4) | (a) none (today); (b) ask `closing_verification.unrecorded_changes` of the deal agent / TC at the gated close, informational; (c) blocking for brokerages that opt in by setting. |
+| L6.3 | A commissioned photographer's delivery — an "owned" upload or a third photo source? | 150XY | `app/actions/photo-management.ts processVendorPhotos` writes `listing_media` rows with `photo_source` NULL (not recorded) until ruled. |
+| L6.4 | The AI split coach: may the agent see their own split on the CDA they fill? | 150XY | The coach (explains the waterfall, never proposes a number) is not built (PARTIAL); CLAUDE.md §5 keeps commission off agent-facing display — the CDA flow already shows the agent their own figures. |
+| L6.5 | Do BatchData's / PeopleData's existing live doors close under R9? | 150HIAB | Yes → `PROVIDER_ACTIVATION.survivorDoors = "closed"` (lib/providers/provider-scorecard.ts). Today they stay open as dormant survivors. |
+| L6.6 | A no-cost sandbox run / a bounded paid pilot (Tracerfy vs DataZapp) | 150HIAB | Not approved; the $1,000 cap is NOT approved; the 2,400-candidate pilot runs only as an offline simulation. |
+| L6.7 | **Per-territory paid scraping now needs an approved acquisition plan** | 150Z (150EFG Outside-lane 2) | `app/api/cron/lead-scraping/route.ts` refuses every per-territory PAID source (Apify / Exa / ZenRows / Tavily / Zyte / non-pooled BatchData) without the tenant's approved, unexpired `acquisition_plans` line, and says so in the run's errors. Each tenant's commerce admin approves lines in Settings → Territories → Acquisition plan. Until then those lanes do not spend. Platform-pool territories (no tenant) cannot be approved by rule — decide whether a platform pull may run under a platform approval. |
+| L6.8 | The 5 % movement-outreach holdout default | 150JNAD | On wherever a tenant's experiments policy is readable; per-tenant kill switch `brokerage_settings.settings.experiments.disabled ⊇ ["movement_outreach_holdout"]`. |
+| L6.9 | `contacts.created_by_user_id` vs `contacts.source_agent_id` (one concept, one column exists) | 150PU | Rename / alias is the owner's call; no second column is written. |
+| L6.10 | Alerts on a saved RentCast-listing or pasted-link home (price / status change) | 150W | Approval door BUILT (wave 151, lane 151J; m983 applied 2026-11-09): the saved-home watch diffs each home against its last verified state; a metered RentCast re-read runs only under a tenant-approved acquisition-plan line naming `rentcast_saved_home_recheck` and the platform caps; until a tenant has one, every re-read is HELD and recorded (`saved_home_recheck.decision.do_nothing`, `saved_properties.verification_hold`) — never a silent poll. Owner decision still open: a platform-paid door (needs RentCast in `VENDOR_RIGHTS`, lib/lead-pipeline/source-intent-map.ts). |
+| L6.11 | PostcardMania / PCM quotes | 150R | Getting a quote is outreach — the owner's call. |
+| L6.12 | The Meta lead-form `legal_content` verification | 150PU | The verifying UPDATE is in m978's header; it runs only after a live Lead Ads Testing Tool check confirms `custom_disclaimer.body.text`. |
+
+## M. Wave 151 — owner decisions applied to §L, and the one piece of owner SQL that remains (lane 151B, 2026-11-09)
+
+The owner ruled on §L items L1–L6 in the wave-151 directive (§151B). What each became:
+
+| §L item | Owner decision | Where it went |
+|---|---|---|
+| L1 (`organization_members_brokerage_id_user_id_key` drop) | DROP — the integrator applies it live | **APPLIED 2026-11-09** (m955; read-back in §L L1). |
+| L2 (`raw_scraped_leads_source_record_id_key` drop) | DROP — the integrator applies it live | **APPLIED 2026-11-09** (m956 — a constraint drop, the `DROP INDEX` was refused 2BP01; read-back in §L L2). |
+| L3 (`listing-media` storage policies) | KEEP **only if they match the code's ownership / access contracts** | Verified below: **AMEND** — corrected SQL in M.1. Still owner SQL (storage.objects). |
+| L4 (S3, team lead contacts) | Team leaders see the Contacts of the teams they lead, never brokerage-wide | A MIGRATION now, not owner SQL: `supabase/migrations/m963-team-lead-reads-contacts-of-the-teams-they-lead.sql` (the integrator applies via MCP). The §L L4 draft is superseded: it used `current_user_led_team_id()`, which is `LIMIT 1` — one team, not "the teams they lead". |
+| L5 (S4, `users_same_brokerage_select`) | Contacts see only their own; vendors only their assigned work | A MIGRATION: `supabase/migrations/m964-users-rows-stay-with-staff-seats-own-row-and-the-assigned-agent.sql` — the §L L5 draft plus the lawful narrow read the portal needs (the assigned agent's row for a contact; the booking / assigning agent's row for a vendor), measured from every `.from("users")` under app/portal, app/vendor, lib/portal, lib/vendors. The vendor-side tenant-wide reads S4 also names are `m965-vendor-seats-read-only-their-assigned-work.sql`. |
+| L6.3 (photographer deliveries) | An assigned photographer uploads for exactly its booked listing; review, never auto-publish | A MIGRATION: `supabase/migrations/m966-photographer-delivery-is-a-third-photo-source.sql` + code (`lib/listings/owner-photo-upload.ts recordPhotographerDelivery`, `app/actions/photo-management.ts submitPhotographerDelivery`, the vendor jobs page). |
+
+#### L6.2 / L6.4 — closing without a CDA (lane 151K, 2026-11-09; owner: "if the brokerage doesn't use CDAs (their settings), then it can close without a CDA")
+
+- **L6.2 — BUILT as option (b):** at the gated close of a brokerage whose settings say it does NOT use a CDA, the closing question is asked of the deal's agent / TC as an INFORMATIONAL compliance row (`is_blocking false`; the close is never held; a "yes" tells the admins exactly as today) — `lib/commission/closing-verification.ts ensureClosingAttestationAsked({ informational })`, hooked at `lib/transactions/stage-progression.ts`'s close step. The deal closes on the smallest honest proof (`lib/transactions/cda-closing-policy.ts noCdaClosingProof`: final settlement record + recorded receipt who/when + compliance status + the payout holds; funds are never asserted from a date; `CLOSED / PAYOUT PENDING`, `payoutFundsGate` and the once-only payment stay intact).
+- **L6.2 option (c) — YOUR decision, not chosen:** *"Should a brokerage that does not use a CDA be able to OPT IN (a brokerage setting) to a BLOCKING closing question — the gated close refused until the agent attests that no executed change is unrecorded?"* It changes who may hold a closing (legal/financial approval authority). Code ready to take it: `ensureClosingAttestationAsked({ informational: false })` at the same hook, behind a `brokerage_settings` key.
+- **L6.4 — the AI split coach and the agent's own split:** the coach (`lib/commission/cda-coach-rule.ts`, `app/actions/transactions/cda-coach.ts`) explains the waterfall and never states a figure beyond the agent's own entered CDA figures and the contract's stated terms (both already on the agent's CDA page); engine amounts never reach the model and it never writes the CDA. *"Do you accept that the coach may repeat the agent's own entered CDA figures and the contract's price / commission percentage (and nothing computed by the engine)?"* If not, the allowed set collapses to the contract terms alone (`allowedFigureSet`).
+- **Addendum evidence — refuse or flag (your call later):** the recorder refuses only a verified / high-confidence extraction that contradicts the typed term; a term with no extraction and no stated page / field is recorded and flagged `person_reading_unlocated`, because the addendum door collects page / field only as of wave 151 (the integrator added the fields). *"Now that the door collects page / field, should the recorder refuse an executed addendum term with no located evidence?"*
+
+### M.1. L3 verdict — AMEND the `listing-media` `storage.objects` policies (owner SQL; Dashboard → Storage → Policies, or SQL editor as `supabase_storage_admin` — `postgres` is refused 42501, as in §F)
+
+- Status: OPEN — measured 2026-11-09 (lane 151B, `pg_policies` on `storage.objects`): four PERMISSIVE listing-media rows and no RESTRICTIVE `listing-media tenant listing folder *` row. After you run the block below, run §N.1c and change this line to `- Status: RESOLVED <YYYY-MM-DD> — N.1c shows the 3 RESTRICTIVE rows` (wave 152, lane 152L: `test:release-blockers` B′ and `test:production-readiness` O1-LM derive the listing-media half of O1 from this line only — no migration file carries this policy).
+
+**What is live today (measured 2026-11-09, `pg_policies` on `storage.objects`):** four PERMISSIVE policies — `Agents can upload listing media` (INSERT, `authenticated`, `bucket_id = 'listing-media'`), `Agents can update listing media` (UPDATE), `Agents can delete listing media` (DELETE), `Public can read listing media` (SELECT, `public`). Any signed-in seat of ANY tenant — a contact, a vendor, a stranger with an account — may PUT, overwrite or delete any object in the bucket. The bucket is `public`, 50 MB, image + video mime list.
+
+**The code's contracts, censused (every path that writes or reads the bucket):**
+
+1. `app/dashboard/listings/[id]/media/components/media-grid.tsx uploadFile` → a TENANT STAFF seat PUTs `<brokerageId>/<listingId>/<file>` with the browser session, then `app/actions/listing-media.ts uploadListingMedia` → `lib/listings/owner-photo-upload.ts recordOwnerUploadedListingPhoto` records the row (refuses a URL outside `listing-media/<tenant>/<listing>/`; m993 attestation). `listing_media_tenant_insert` admits `is_tenant_staff_seat()` only, so a contact or vendor seat can never RECORD such a file — but the storage policy still lets them WRITE it.
+2. **NEW (wave 151, L6.3):** `app/vendor/jobs/jobs-client.tsx` → the ASSIGNED PHOTOGRAPHER (a `vendor` seat whose `vendors.category = 'photographer'` holds a `vendor_bookings` row for the listing, status `confirmed` / `completed`, approval not pending / declined) PUTs into exactly `<brokerageId>/<listingId>/` of its booking, then `app/actions/photo-management.ts submitPhotographerDelivery` records it for review.
+3. Deletes / overwrites: `app/actions/listing-media.ts deleteListingMedia` and the Media Manager act on ROWS through the staff seat; no vendor or contact path overwrites or deletes an object.
+4. Reads: public (the listing page, portals, producers read public URLs) — unchanged.
+5. Other prefixes (`stock-clips/…`, `video-backgrounds/…`, rendered videos) are written by server routes with the service role; untouched.
+
+**Why §L L3 as written does NOT match:** its RESTRICTIVE INSERT admits `(storage.foldername(name))[1] = current_user_brokerage_id()::text` for EVERY authenticated seat of the tenant — a contact seat and ANY vendor seat (the stager, a vendor assigned to a different listing) may write into ANY listing folder of the tenant, which is wider than contract 1 (staff) and contract 2 (the photographer's ONE booked listing). Its UPDATE / DELETE arms admit every tenant seat to overwrite or delete any listing object (no code path needs that for a non-staff seat). So: AMEND. The corrected policies below keep §L's shape (RESTRICTIVE, UUID-first-folder paths only, other prefixes untouched, reads public) and add the seat rule.
+
+```sql
+BEGIN;
+DROP POLICY IF EXISTS "listing-media tenant listing folder insert" ON storage.objects;
+DROP POLICY IF EXISTS "listing-media tenant listing folder update" ON storage.objects;
+DROP POLICY IF EXISTS "listing-media tenant listing folder delete" ON storage.objects;
+
+-- INSERT: a tenant STAFF seat into any listing folder of its tenant; an ASSIGNED PHOTOGRAPHER vendor seat into exactly the
+-- folder of the listing its deliverable booking names (the same rule lib/listings/owner-photo-upload.ts recordPhotographerDelivery
+-- applies to the row). Paths whose first folder is not a UUID (stock-clips, video-backgrounds, renders) are not touched.
+CREATE POLICY "listing-media tenant listing folder insert" ON storage.objects
+  AS RESTRICTIVE FOR INSERT TO authenticated
+  WITH CHECK (
+    bucket_id <> 'listing-media'
+    OR (storage.foldername(name))[1] !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    OR (
+      (storage.foldername(name))[1] = public.current_user_brokerage_id()::text
+      AND EXISTS (SELECT 1 FROM public.listings l
+                   WHERE l.id::text = (storage.foldername(name))[2]
+                     AND l.brokerage_id = public.current_user_brokerage_id())
+      AND (
+        public.is_tenant_staff_seat()
+        OR EXISTS (
+          SELECT 1
+            FROM public.vendor_bookings vb
+            JOIN public.vendors v ON v.id = vb.vendor_id
+            JOIN public.user_role_assignments ura ON ura.vendor_id = vb.vendor_id
+           WHERE ura.user_id = auth.uid()
+             AND vb.brokerage_id = public.current_user_brokerage_id()
+             AND vb.listing_id::text = (storage.foldername(name))[2]
+             AND vb.status IN ('confirmed', 'completed')
+             AND (vb.approval_status IS NULL OR vb.approval_status IN ('approved', 'auto_approved'))
+             AND v.category = 'photographer'
+        )
+      )
+    )
+  );
+
+-- UPDATE / DELETE: tenant STAFF seats, inside their own tenant's listing folders. No non-staff path overwrites or deletes.
+CREATE POLICY "listing-media tenant listing folder update" ON storage.objects
+  AS RESTRICTIVE FOR UPDATE TO authenticated
+  USING (
+    bucket_id <> 'listing-media'
+    OR (storage.foldername(name))[1] !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    OR ((storage.foldername(name))[1] = public.current_user_brokerage_id()::text AND public.is_tenant_staff_seat())
+  )
+  WITH CHECK (
+    bucket_id <> 'listing-media'
+    OR (storage.foldername(name))[1] !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    OR ((storage.foldername(name))[1] = public.current_user_brokerage_id()::text AND public.is_tenant_staff_seat())
+  );
+
+CREATE POLICY "listing-media tenant listing folder delete" ON storage.objects
+  AS RESTRICTIVE FOR DELETE TO authenticated
+  USING (
+    bucket_id <> 'listing-media'
+    OR (storage.foldername(name))[1] !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    OR ((storage.foldername(name))[1] = public.current_user_brokerage_id()::text AND public.is_tenant_staff_seat())
+  );
+COMMIT;
+```
+
+Pre-check and verification (read-only) — §L L3's queries still apply; add:
+```sql
+-- the helpers the policy names exist
+SELECT proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+ WHERE n.nspname = 'public' AND proname IN ('current_user_brokerage_id', 'is_tenant_staff_seat');
+-- done when this lists the three RESTRICTIVE rows (plus the four pre-existing permissive ones):
+SELECT policyname, permissive, cmd FROM pg_policies
+ WHERE schemaname = 'storage' AND tablename = 'objects'
+   AND (coalesce(qual,'') ILIKE '%listing-media%' OR coalesce(with_check,'') ILIKE '%listing-media%')
+ ORDER BY policyname;
+```
+Negative tests (owner, in a browser session): a tenant-A agent → `listing-media/<tenant-B id>/<tenant-B listing>/x.jpg` → 403; the same agent → its own listing folder → 200; a tenant-A CONTACT seat → any listing folder → 403; a tenant-A photographer vendor with a `confirmed` booking for listing L → `listing-media/<A>/<L>/x.jpg` → 200, and → another listing's folder → 403; the same vendor with only a `booked` (unaccepted) booking → 403; a stager vendor → 403.
+
+**Ordering:** apply m963–m966 (integrator, MCP) in any order; this owner SQL is independent of them. Until it is applied, the photographer's upload still SUCCEEDS at storage under the live permissive policy (as does anyone's), and only the RECORD is gated — the release-gate reading "overbroad storage access BLOCKED" stays true until the three RESTRICTIVE rows exist.
+
+## N. Wave 152 — owner SQL still unresolved, the owner's rulings recorded, and the decisions still open (lane 152K, 2026-11-12)
+
+**Nothing in this section has been run by a lane.** Project `hrvaqgvukzxfskkcrwbt`. The executable statements for O1 are NOT
+restated here: they live once, verbatim from their migrations, in §F (m854 + m855, `brokerage-forms`), §G (m874 + m875, the four
+document buckets + the offer row) and §M.1 (the `listing-media` AMEND) — guards hold those sections to the migration text, and a
+second copy here could drift from them. This section gives the order, the read-backs with expected values, and the decisions.
+
+### N.1 O1 — the five private document buckets (§F / §G) and `listing-media` (§M.1)
+
+Order: §K Q1–Q6 (read-only) → §F Before → §F route A or B → §F Verify → §G Before → §G route A or B → §G Verify → §M.1 →
+§J close-out. Expected read-backs (run with Supabase MCP `execute_sql` or the SQL editor; all SELECTs):
+
+```sql
+-- N.1a — before vs after the policies (the readiness function m854 / m874 installed)
+SELECT bucket_id, verdict, missing_policies, unscoped_policies FROM public.storage_bucket_policy_readiness() ORDER BY bucket_id;
+-- BEFORE (wave 151 live reading, unchanged in wave 152): agent-documents, brokerage-forms, client-documents, offer-documents,
+--   transaction-documents = open.   AFTER: agent-documents / brokerage-forms / client-documents / transaction-documents
+--   owner_scoped; documents / offer-documents service_only; both arrays empty.
+
+-- N.1b — the bucket-wide census (positive control: BEFORE it must read >= 19 while N.1a says open; 0 then means the regex is blind)
+SELECT count(*) FILTER (WHERE qual ~ '^\(bucket_id = ''(brokerage-forms|client-documents|offer-documents|transaction-documents|agent-documents)''::text\)$'
+                           OR with_check ~ '^\(bucket_id = ''(brokerage-forms|client-documents|offer-documents|transaction-documents|agent-documents)''::text\)$') AS bucket_wide_on_five,
+       count(*) FILTER (WHERE policyname ~ '^(brokerage-forms|client-documents|transaction-documents|agent-documents) owner ') AS owner_policies
+  FROM pg_policies WHERE schemaname = 'storage' AND tablename = 'objects';
+-- BEFORE: bucket_wide_on_five >= 19, owner_policies 0.   AFTER: bucket_wide_on_five 0, owner_policies 11.
+
+-- N.1c — listing-media (§M.1): BEFORE four PERMISSIVE rows and no "listing-media tenant listing folder *" row;
+--   AFTER the three RESTRICTIVE rows exist beside the four permissive ones.
+SELECT policyname, permissive, cmd FROM pg_policies
+ WHERE schemaname = 'storage' AND tablename = 'objects'
+   AND (coalesce(qual,'') ILIKE '%listing-media%' OR coalesce(with_check,'') ILIKE '%listing-media%' OR policyname LIKE 'listing-media%')
+ ORDER BY policyname;
+
+-- N.1d — the private `receipts` bucket (wave 152, lane 152D: created on first write by ensureBucket; the app uploads and reads
+--   receipts through the SERVICE client only). Expected: the bucket is private and NO storage.objects policy names it
+--   (storage.objects is default-deny for browser sessions) — so it needs no owner policy. A row here means a session door exists.
+SELECT id, public FROM storage.buckets WHERE id = 'receipts';            -- expect public = false (or no row before the first receipt)
+SELECT policyname FROM pg_policies WHERE schemaname = 'storage' AND tablename = 'objects'
+   AND (coalesce(qual,'') LIKE '%receipts%' OR coalesce(with_check,'') LIKE '%receipts%');   -- expect 0 rows
+```
+
+Who acts: the owner (route B when Q1 reads `can_alter_storage_objects = false`). Then the integrator flips the four migration
+stamps exactly as §J step 6 says. `npm run test:release-blockers` keeps O1 open until those stamps say so — never this paragraph.
+
+### N.2 O2 — the four unlinked portal-contact seed accounts (§I)
+
+Run §K Q7, then Q8 ALONE, then Q9 (all read-only, no email selected). Expected today: Q7 = 4 rows (`a0…13` … `a0…16`); Q8
+`ok_pairs = 4`; Q9 `…14` last signed in 2026-04-02, the other three never, 0 invitations. If Q8 reads 4: run §I REMEDIATION A as
+one block (it returns exactly 4 rows or raises), keep §I ROLLBACK A beside it; afterwards Q7 must read 0 rows. If Q8 reads
+anything else: stop and re-decide (A or B) — never merge a live identity on a drifted pairing. Then flip §I's status line exactly
+as §J step 5 says (with the date and the census count) — `test:release-blockers` and `test:production-readiness` derive O2 from
+that line only.
+
+### N.3 The owner's wave-152 ruling on L6.2 — recorded (the decision row is retired)
+
+Owner, verbatim (2026-11-11): *"anytime there is a change at closing to transaction, the final closing desclosure has to be correct.
+evn though the brokerage doesnt support a cda, compliance still needs to accurate along with the closing disclosure. that is not
+informational."* This supersedes L6.2 option (b) (built wave 151: `lib/commission/closing-verification.ts:195`
+`ensureClosingAttestationAsked({ informational })`, hooked `informational: true` at `lib/transactions/stage-progression.ts:468`) and
+makes option (c) moot — not an opt-in setting any more, the rule for every brokerage that closes without a CDA:
+
+| Brokerage policy at the gated close | Governing terms vs the latest settlement statement / CD | Unrecorded-change attestation | Gated close |
+|---|---|---|---|
+| uses a CDA | the CDA path (agent fills, brokerage approves + signs, title delivery) plus every 152E compliance hold | asked | per the CDA flow — the holds still apply |
+| no CDA | reconciled, or every discrepancy resolved by authoritative evidence | answered: nothing unrecorded | proceeds to `CLOSED / PAYOUT PENDING`; the payout holds stay intact |
+| no CDA | a discrepancy open / awaiting the issuer's revised statement | any | **HOLD** |
+| no CDA | reconciled | not answered | **HOLD** |
+| no CDA | reconciled | "an executed change is not recorded" | **HOLD** + a task to record the change |
+
+Never cleared by a date, by "approve all", or by an agent editing an official disclosure (the issuer — lender / title / closing
+attorney — corrects it; the platform monitors, compares, requests and verifies). Implemented by lane 152G (batch 2, in parallel
+with this lane); the integrator verifies the blocking hook at integration with 152G's proof. No owner SQL.
+
+### N.4 Decisions still open — each with what the code does today (the safe default) and the exact question
+
+**L6.4 — what the AI split coach may repeat to the agent filling a CDA** (`lib/commission/cda-coach-rule.ts:63` `allowedFigureSet`):
+
+| Figure | The coach may say it (built default) |
+|---|---|
+| the contract's stated price and commission percentage | yes — already on the agent's CDA page |
+| the agent's OWN entered CDA figures | yes — the default awaiting your confirmation |
+| any engine-computed amount (a split, a net, a fee) | never — engine amounts never reach the model |
+| another agent's figures | never |
+
+*"Do you accept that the coach may repeat the agent's own entered CDA figures and the contract's price / commission percentage
+(and nothing computed by the engine)?"* If not, `allowedFigureSet` collapses to the contract terms alone. The coach never fills a
+CDA either way (`CDA_FILL_RULE`).
+
+**Addendum evidence — refuse or flag** (lane 152E built the safe default: record + HOLD; `lib/transactions/closing-compliance.ts:943`
+`evidenceHoldSpecs`, the source vocabulary at `lib/offers/governing-terms-rule.ts:109`):
+
+| Executed addendum / amendment term | Recorder | Closing | Clears by |
+|---|---|---|---|
+| a verified / high-confidence reading of the signed document agrees | records | no hold | — |
+| a verified / high-confidence reading disagrees at record time | REFUSES (wave 151) | — | record the correct term |
+| the person states page / field / quote | records | no hold | — |
+| no reading and no stated location (`person_reading_unlocated`) | records + flags | **HOLD** (blocking `closing_terms.evidence.<term>` + a corrective task) | a verified agreeing reading (next run) or an authorized override with a written reason |
+| a low / medium reading disagrees | records | **HOLD** (same row) | same |
+| a confident reading arrives LATER and disagrees | — | **FAIL** (blocking contradiction) | record the corrected instrument, or override |
+
+*"Should the recorder REFUSE an executed addendum term with no located evidence (the door collecting page / field before it saves)
+instead of recording it and holding the closing?"* Safe default kept: record + hold — history is never refused; the closing cannot
+pass while the term is unconfirmed. The code is ready to take "refuse" (the `person_reading_unlocated` branch of `termEvidenceFor`).
+
+Also from lane 152E: **D2** — a settlement closing date LATER than the contractual date with no recorded executed extension: today a
+non-blocking `fail` + a corrective task. *"Should it HOLD the closing?"* **D3** — *"May a team lead override a closing hold on their
+own team's deal?"* Default: no (the override roster is the tenant-admin roster minus team_lead).
+
+**L6.5–L6.12 — carried truthfully (no code was changed on a guess):**
+
+| # | Decision | State in the tree at wave 152 |
+|---|---|---|
+| L6.1 | Office isolation enforced at the database | open — office scope is code-side (`resolveViewerHierarchy` → `resolveEgressScopeForViewer`) |
+| L6.5 | Do BatchData's / PeopleData's existing live doors close under R9? | open — `PROVIDER_ACTIVATION.survivorDoors` waits on you (`lib/providers/provider-scorecard.ts`) |
+| L6.6 | A no-cost sandbox run / a bounded paid pilot | NOT approved — the $1,000 cap is not approved; nothing activated, nothing bought (`PROVIDER_SELECTION_STATUS.selected = null`) |
+| L6.7 | A platform-pool (no-tenant) paid pull under a platform approval? | open — per-territory paid pulls already refuse without a tenant's approved plan line |
+| L6.8 | The 5 % movement-outreach holdout default | open |
+| L6.9 | `contacts.created_by_user_id` vs `contacts.source_agent_id` | open — no second column is written |
+| L6.10 | A platform-paid RentCast re-read door for saved homes | open — the tenant-approved door is built and re-reads stay HELD until a tenant line approves |
+| L6.11 | PostcardMania / PCM quotes | open — asking for a quote is outreach |
+| L6.12 | Meta lead-form `legal_content` as TCPA-grade consent | open — the verifying UPDATE in m978's header waits on a live Lead Ads Testing Tool check |
+
+**Decisions raised by wave-152 lanes (each built on the safe default shown; nothing waits on code):**
+
+| From | Question | Built default |
+|---|---|---|
+| 152A | What makes a tenant's payer wording "brokerage"? | its own `brokerages.plan_tier` is brokerage / multi-location (else actor-neutral); stronger option: an accepted agreement naming the brokerage |
+| 152A | How long a provider-side connection failure stays with the automatic re-check before a person is told | 6 hours |
+| 152B | Does a team lead on a brokerage-tier tenant see their own team's commission dollars in ROI? | yes, own team only (m473 team books) |
+| 152B | May an unfinalized agent-typed commission count as "earned"? | no — earned = the commission ledger or a finalized amount |
+| 152C | The external QR destination allow-list; who may retire a code; the repeat window; a bare 10-digit query value | keep the six hosts; any board seat; 30 minutes / one UTC day; refused as a phone number |
+| 152D | May a clean, high-confidence, unduplicated receipt under a ceiling post without review? | no auto-post; if approved, the exact grant shape `receipt_autopost:receipt:max_usd=75` |
+| 152D | Narrow receipt documents under RLS to the uploader or a finance admin? | not written — a policy change on a hot table; proposal in the 152D lane notes, applied only on your ruling with a read-back |
+| 152F | Which money terms need the broker before an addendum goes out for signature? / a brokerage setting for request expiry? | commission terms only / 14 days |
+| 152K | Row 23 — may a proposal spend one billed BatchData record per territory to read a FRESH count (BatchData documents the count only on a billed search)? | no — the proposal reads the count BatchData already returned on the territory's own paid pulls (`batchdata_incremental_search_state.results_found`), never a new call |
+| 152K | Row 91 — persist listing coordinates? | not built — the free canonical geocoder (`lib/external/nominatim-geocode.ts geocodeOne`) already resolves tour stops at read time; persisting them in `listings.metadata` needs no migration but adds a third-party call to every listing write (Nominatim's policy: 1 request / second) — your call |
+
+### N.5 Integrator read-only re-measurements written by this lane
+
+```sql
+-- N.5a — convergence row 85: the executed-contract reader's population (no content selected). Measured 2026-11-12:
+--   signed_contracts 0, with_readable_text 0, transactions_total 2 → the hit rate is 0/0 (undefined) until real executed
+--   contracts are on file; re-run after the first live closes.
+SELECT count(*) AS signed_contracts,
+       count(*) FILTER (WHERE length(coalesce(content,'')) >= 20) AS with_readable_text,
+       count(*) FILTER (WHERE content ~* '(on or before|no later than|not later than|on or prior to|prior to or on)\s+(the\s+)?(date\s+of\s+)?[0-9]{1,2}/[0-9]{1,2}/[0-9]{2,4}'
+                           OR content ~* '(shall|will|must)\s+(close|occur|take place|be held|be completed)\s+(on\s+)?(the\s+)?[0-9]{1,2}/[0-9]{1,2}/[0-9]{2,4}') AS approx_reader_hits
+  FROM public.documents WHERE classification = 'signed_contract';
+
+-- N.5b — convergence row 89: the C19 verification log (measured 2026-11-12: 0 rows — the ACRIS / Cambridge registry seeds of
+--   lib/external/socrata-market-registry.ts MARKET_DATASET_CANDIDATES were verified by id on 2026-11-01 in code, but no live row
+--   records them, and no reader adapter consumes them yet).
+SELECT count(*) AS rows FROM public.market_dataset_verifications;
+```
+
+## O. Wave 153 — owner SQL (2026-11-14)
+
+### O.J Lane 153J — the render-claim stamp (m933)
+
+**Nothing here is needed to APPLY m933.** `supabase/migrations/m933-render-claim-stamp-so-a-killed-render-is-found.sql` adds a
+nullable column, a trigger function, a trigger and a partial index — the integrator applies it through the Supabase MCP. The code
+only READS `claimed_at`; before m933 is applied the composition-render-queue's dead-claim sweep reports a refused read and moves
+nothing (the queue drain is unaffected). Live on 2026-11-14 the table held 0 rows, so there is no backfill.
+
+Read-back after the integrator applies it (expected: 1 · 1 · 1):
+
+```sql
+SELECT
+  (SELECT count(*) FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = 'remotion_composition_renders' AND column_name = 'claimed_at') AS claimed_at_column,
+  (SELECT count(*) FROM pg_trigger
+     WHERE tgrelid = 'public.remotion_composition_renders'::regclass AND tgname = 'trg_stamp_render_claimed_at') AS stamp_trigger,
+  (SELECT count(*) FROM pg_indexes
+     WHERE schemaname = 'public' AND indexname = 'idx_remotion_renders_rendering_claimed') AS rendering_claim_index;
+```
+
+**Owner SQL only if m933 must be rolled back** (after the integrator has dropped the trigger and the function, which are not
+owner-only):
+
+```sql
+DROP INDEX IF EXISTS public.idx_remotion_renders_rendering_claimed;
+ALTER TABLE public.remotion_composition_renders DROP COLUMN IF EXISTS claimed_at;
+
+### O.153I — campaign-bundle follow-ons (lane 153I, convergence row 71)
+
+Nothing to run now. m931 (`supabase/migrations/m931-bundle-follow-ons-ride-the-orchestrator-queue-once.sql`) only CREATES a
+partial unique index, which the integrator applies. Its rollback is a DROP INDEX, which is yours — run it only if the bundle
+follow-on design is ever withdrawn (the writer keeps its pre-read either way; only the race guard goes):
+
+```sql
+-- O.153I-rollback — only to withdraw m931
+DROP INDEX IF EXISTS public.orchestrator_tasks_bundle_follow_on_key;
+-- verify: 0 rows
+SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'orchestrator_tasks_bundle_follow_on_key';
+```
+
+### O.K Lane 153K — live read-backs and owner decisions carried by the convergence lane (2026-11-14)
+
+Nothing in this section was applied or run with write access. Every measurement below is a READ-ONLY `SELECT` through Supabase
+MCP `execute_sql` on project `hrvaqgvukzxfskkcrwbt`, quoted with its time. No migration is owed by lane 153K (m939 / m940 unused).
+
+### O.1 Convergence row 9 — anonymous reads of public views (m999): the live catalog holds; the SESSION probe is yours
+
+**Measured 2026-11-14 06:49 UTC (catalog only, no role switch):** 11 public views; **0** without `security_invoker`; **1** view
+anon-selectable by GRANT — `contact_lead_history`, which §K / lane 150BAA Q2 excludes by name — and it runs as INVOKER over
+`contacts` and `leads`, both RLS-on, where every policy admitting role `public` keys on `auth.uid()` or a session function
+(`current_user_brokerage_id()`, `is_platform_admin()`, `is_lead_visible_role()`). POSITIVE CONTROL: the same query reads
+**9** authenticated-selectable views, so the privilege finder is not blind. This is catalog evidence, NOT an anonymous read.
+
+**The remaining step (privileged — run as the integrator or in the SQL editor; it executes RLS as `anon`, read-only, rolled back):**
+```sql
+-- O.1 Q3 — an anon session reads nothing through a public view. Expected: a permission error ("permission denied for …")
+--   or 0 on every column. Measured 2026-11-06 BEFORE m999: margin 2, onboarding 2, quota 2, brokerages_via_rls 0.
+begin; set local role anon;
+select (select count(*) from public.v_platform_margin) margin,
+       (select count(*) from public.v_brokerage_onboarding_progress) onboarding,
+       (select count(*) from public.v_brokerage_ai_quota) quota,
+       (select count(*) from public.contact_lead_history) contact_lead_history,
+       (select count(*) from public.brokerages) brokerages_via_rls;
+rollback;
+-- O.1 catalog re-check (no role switch) — every number 0 except the named contact_lead_history grant:
+select (select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace and n.nspname='public'
+          where c.relkind='v' and not coalesce(array_to_string(c.reloptions,',') ~ 'security_invoker=(true|on)', false)) as views_without_invoker,
+       (select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace and n.nspname='public'
+          where c.relkind in ('v','m') and has_table_privilege('anon', c.oid, 'SELECT') and c.relname <> 'contact_lead_history') as views_anon_selectable;
+```
+Read-back to paste into the release report: the Q3 row (or its error text). Row 9 closes only on that session read.
+
+### O.2 Convergence row 85 — the executed-contract reader's hit rate stays 0/0 until real contracts exist
+
+Re-measured **2026-11-14 07:07 UTC**: `signed_contracts 0, with_readable_text 0, transactions_total 2` (§N.5a, unchanged). The
+rate is now READ IN PRODUCT: Platform → Data health → "Executed-contract reader — closing wording" (`lib/platform/self-audit-rollup.ts`
+→ `lib/transactions/contract-terms.ts measureClosingWordingReader`), which reports "not measurable yet" on 0/0, never 100 %, and runs
+four synthetic controls through the same reader every time (a misread control withholds the rate). **Owner step:** none to run — open
+that card after the first real executed contracts are filed; the first real rate is the read-back.
+
+### O.3 Convergence row 89 — public-record property facts: the first production run is the live validation
+
+Built (lane 153K): `lib/intent/public-record-facts.ts`, called by the daily public-record sweep (`/api/cron/permit-signal-scan`),
+reads the VERIFIED NYC ACRIS deed (master + legals) and Cambridge MA street-use datasets for any market a tenant territory names,
+files a property fact only at an address the tenant's own lead / contact carries (never a person, never a party name), and hands each
+read to the C19 observation writer. Measured 2026-11-14: `market_dataset_verifications` **0 rows** (no run has read them yet).
+```sql
+-- O.3a after the first daily run: one sweep_observation row per dataset read (0 rows is CORRECT when no tenant territory names
+--   NY / New York boroughs or MA / Cambridge — the sweep reads nothing it has no market for).
+select dataset_key, status, observed_at, (freshness->>'rows')::int as rows, evidence->>'error' as error
+  from public.market_dataset_verifications
+ where dataset_key in ('data.cityofnewyork.us/bnx9-e6tj','data.cityofnewyork.us/8h5j-fqxa','data.cambridgema.gov/8xmj-thsm')
+ order by observed_at desc limit 20;
+-- O.3b the facts filed, per tenant and type (expected: only tenants whose territories name those markets; never a person's name in signal_details)
+select brokerage_id, signal_type, count(*) from public.motivated_seller_signals
+ where signal_type in ('deed_recorded','street_use_permit') group by 1, 2 order by 1, 2;
+```
+**Decision (safe default built):** the reads are free, keyless public open data on the same client the permit sweep already uses;
+NYC Open Data terms govern ACRIS reuse (the platform keeps a derived fact, never republishes rows); Cambridge is PDDL. *"Keep the
+ACRIS / Cambridge reads on in the daily sweep?"* Default: on, for tenants whose territories name those markets only.
+
+### O.4 Convergence row 91 — persisting listing coordinates (your spend / usage-policy call; nothing built on a guess)
+
+Today (the safe default, verified): the buyer search page NEVER geocodes (`lib/buyer-search/location-evidence.ts geocodeCached`,
+`allowNetwork: false` → cache only); the per-home "why this home?" door geocodes once, cache-first, through the canonical free
+geocoder within Nominatim's 1 request/second policy; tour stops resolve at read time. Internal listings therefore show commute
+evidence only on demand. *"Persist listing coordinates?"* Options: **(a)** keep read-time, cache-first (default); **(b)** a capped
+nightly batch through Nominatim (≤ 1 req/s, ≤ a few hundred listings a night, cache-first) writing `listings.metadata.geo` — no
+migration, a third-party call per NEW listing; **(c)** a licensed geocoder whose terms permit storing results (a paid plan — needs
+your provider approval; storing a free-tier or Mapbox temporary-geocoding result is not permitted by those terms).
+
+### O.5 Convergence rows 84 / 78 — IDX photos
+
+Row 84 is CLOSED on built code: the buyer search shows the tenant's IDX feed photo at DISPLAY time only
+(`lib/buyer-search/explanation-evidence.ts licensedResultPhotoUrl` admits only an `idx` source URL, labelled `idx_mls`), and nothing
+stores it (`lib/buyer-search/external-match.ts primary_photo_url: null`; no `listing_media` writer uses `idx_mls`). Row 78 stays
+yours: a photo for a SAVED IDX home that has left the account's featured / sold-pending sets needs a listing-by-id read IDX Broker
+does not document for a client key — an IDX BulkData / MLS media agreement. *"Obtain an IDX BulkData (or MLS media) license?"*
+Default: no — the saved home is held by name (`idx_by_id_unavailable`), never a guessed or stored photo.
+
+### O.6 Owner decisions carried from wave-153 batch 1 (each built on its safe default; NOT built further here)
+
+| From | Question | Built default |
+|---|---|---|
+| 153A D1 | Should the planner estimate a BROKERAGE ENTITY's quarterly taxes (not only an agent's)? | no — agent / solo self-employment estimates only; the entity's taxes stay with its accountant |
+| 153A D3 | Per-campaign expense attribution (`business_expenses.marketing_campaign_id` + a receipt-flow field + dedupe against `ad_performance`)? | not built — campaign cost stays `ad_performance` spend + direct-mail piece cost; expenses roll up by office only |
+| 153D D5 | A "commission statement" document class on the required-documents packet? | not added — the packet uses the existing document classes |
+| 153D | Checklist rules that depend on the lender / title company (e.g. a lender-required document only when that lender is on the deal)? | not built — packets vary by tenant settings, not by vendor |
+
+### O.7 Not owner SQL — for the integrator (lane 153K notes, Outside-lane requests)
+
+Row 5 (CI peak RSS on a green build half) is a `.github/` change: the exact diff is in the lane-153K notes; the row closes only on a
+real CI run's printed "Maximum resident set size".
+
+## P. Wave 154 — owner SQL (lane 154L, 2026-11-18)
+
+None of these is release-blocking (the release blockers stay §F, §G, §I, §M.1). No lane and no integrator has run any of them.
+Every name below was checked against the migration headers that measured it live (m987, m988, m974) or against
+`scripts/schema-snapshot.ts` / `scripts/live-tables.ts`; where a fact was not measured it says **unresolved**.
+
+### P.1 REQUIRED before two tenants can each store the same competitor ad — drop the old global index
+
+**Why.** m987 (APPLIED LIVE 2026-11-18) added `uq_competitor_ads_tenant_source_provider` on
+`(brokerage_id, source_platform, provider_ad_id)`, which leads with the tenant. The old index `uq_competitor_ads_source_provider_id`
+on `(source_platform, provider_ad_id) WHERE provider_ad_id IS NOT NULL` is GLOBAL. Until it is dropped, a second tenant's insert of
+an ad another tenant already stores is refused (23505) and reported by the writer — never an overwrite of the first tenant's row.
+`public.competitor_ads` held 0 rows when m987 was measured.
+
+```sql
+DROP INDEX public.uq_competitor_ads_source_provider_id;
+```
+
+Read-back (expected: 0 · 1):
+
+```sql
+SELECT
+  (SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'uq_competitor_ads_source_provider_id') AS old_global_index,
+  (SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'uq_competitor_ads_tenant_source_provider') AS tenant_index;
+```
+
+**No code change is waiting on the drop.** Both writers already work per tenant: the Meta Ad Library mirror in
+`app/api/cron/content-intel-apify/route.ts` reads and updates only this tenant's own row for an ad, and
+`app/api/cron/competitor-ads-exa/route.ts` upserts on the tenant key. Until the drop, a second tenant storing the same ad is
+refused by the old index and the run reports "held — another tenant already stores this ad"; after the drop that tenant's row
+is simply stored on its next run.
+
+### P.2 Optional cleanup — four partial unique indexes made redundant by m988
+
+**Why.** m988 (APPLIED LIVE 2026-11-18) added a non-partial unique index on the same columns for each of these, so the upsert
+conflict targets are inferable. The partial ones admit nothing the new ones do not; dropping them only removes duplicate upkeep.
+Leaving them is safe.
+
+```sql
+DROP INDEX public.idx_ai_daily_briefings_agent_date;
+DROP INDEX public.outcome_reconciliations_ref_key;
+DROP INDEX public.idx_showings_showingtime_id;
+DROP INDEX public.uq_transaction_documents_provider_external_id;
+```
+
+Before dropping, confirm each replacement exists (expected: 4):
+
+```sql
+SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND indexname IN (
+  'uq_ai_daily_briefings_agent_date_inferable', 'uq_outcome_reconciliations_channel_ref_inferable',
+  'uq_showings_showingtime_id_inferable', 'uq_transaction_documents_txn_provider_external_inferable');
+```
+
+Read-back after dropping (expected: 0): the same query over the four old names.
+
+### P.3 Optional — `contacts.ai_predicted_close_date` has no writer and no reader
+
+**Why.** Lane 154I stopped storing a model-guessed close date as a Contact fact (`app/actions/ai-lead-nurturing.ts` now records a
+timeline bucket or "unknown", labeled a model estimate). Lane 154L measured 0 code tokens for the column across 5,351 files in
+`app/`, `lib/`, `components/`, `hooks/` (comments stripped, string literals kept so a `.select("…")` would count; positive control
+passed). `test:contact-persona-service` holds "no writer remains". The column is still in `scripts/schema-snapshot.ts`.
+
+```sql
+ALTER TABLE public.contacts DROP COLUMN ai_predicted_close_date;
+```
+
+Read-back (expected: 0): `SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'contacts' AND column_name = 'ai_predicted_close_date';`
+Then `npm run schema:regen` (the snapshot must lose the column).
+
+### P.4 Optional and NOT recommended yet — the three legacy Google tables
+
+The Google search intelligence and lead property search **capabilities stay**, as you ruled; they now run on truthful writers
+(lane 154B: `lib/content-intel/search-demand.ts` for keyword / topic demand, `property_search_log` for lead property searches,
+statement-keyed public-need discovery for people who publicly state a need). The three older tables
+`google_search_activity`, `google_search_intelligence`, `lead_property_searches` are in `scripts/live-tables.ts`; no product code
+reads or writes them (the only code tokens are `lib/kernel/brokerage-transfer.ts` and `lib/kernel/manager-registry.ts`).
+**Live row counts: unresolved** (not read in wave 154). Do not drop them until you have confirmed the replacements serve you and the
+counts read 0 or the rows are archived. If you do:
+
+```sql
+SELECT 'google_search_activity' AS t, count(*) FROM public.google_search_activity
+UNION ALL SELECT 'google_search_intelligence', count(*) FROM public.google_search_intelligence
+UNION ALL SELECT 'lead_property_searches', count(*) FROM public.lead_property_searches;
+-- only when all three read 0 (or are archived):
+DROP TABLE public.google_search_activity;
+DROP TABLE public.google_search_intelligence;
+DROP TABLE public.lead_property_searches;
+```
+
+Afterwards the integrator removes them from `lib/kernel/brokerage-transfer.ts`, the registry's table-owner rows, and regenerates
+`scripts/live-tables.ts`.
+
+### P.5 Rollback only — the m974 follow-on index (lane 154H)
+
+Only to undo m974 (the unique partial index that makes a next-action follow-on persist once). Not a to-do.
+
+```sql
+DROP INDEX IF EXISTS public.orchestrator_tasks_next_action_follow_on_key;
+```
+
+### P.6 Decisions that would become SQL only after you rule (nothing written)
+- `engagement_score` NOT NULL DEFAULT 0 on `content_topic_bank` (m128): making it nullable is `ALTER … DROP NOT NULL`, and every
+  reader that sorts on it must be checked first — not proposed.
+- A distinct `source_type` for community-post sources would be a CHECK migration (m952 was not written; the live CHECK covers today's use).
+- A reason code for brokerage fee charges (today `UNSPECIFIED`) would be a CHECK migration — your call (lane 154A3).
+- A per-visitor anonymous-use flag on `chat_sessions` would be a column migration (lane 154I) — your call.
+
+## After you run anything on this page
+
+1. In the repository (or ask the integrator): flip the file's first-line status from `WRITTEN, NOT APPLIED` to `APPLIED <date>` and lower `NOT_APPLIED_BASELINE` in `scripts/migration-claim-guard.ts` by one per file applied.
+2. Regenerate the schema caches — never hand-edit them: `npm run schema:regen` (snapshot, FK map, agent FK, vocabularies). After a dropped column the cached `global_settings` column list must lose `airtable_api_key`.
+3. `NODE_OPTIONS=--max-old-space-size=6000 npm run test:schema-cache-drift` must be green before anything else is pushed.
+
+## Q. Wave 155 — live baseline, corrections, and two missing blocks (lane 155A, 2026-11-19)
+
+**Nothing in this section has been run.** The owner's ordered P0 work, with before / after values, JWT tests and rollback,
+is `docs/operations/WAVE155-P0-OWNER-ACTION-PACKET.md`. It points into §F / §G / §I / §M.1 / §P by line range, and this
+page stays the one place the executable statements live.
+
+**Live baseline (LIVE-VERIFIED 2026-11-19 21:38 UTC, read-only SQL via Supabase MCP; it supersedes the "last live reads"
+dates in §K and §N):** §K Q1 `postgres`, `can_alter_storage_objects = false` (route B). Q2 all prerequisite functions present.
+Q3 five `open` + `documents service_only`. Q5 `bucket_wide_on_five = 19`, `owner_policies = 0`, `agnostic_authenticated = 0`.
+Q6 0 objects in all 12 buckets. N.1c 4 PERMISSIVE listing-media rows, 0 RESTRICTIVE. Q7 4 unlinked. Q8 `ok_pairs = 4`.
+Q9 0 sign-ins since 2026-11-01, 0 bans, 0 invitations. §P.1 read-back `1 · 1`. Unchanged: §F, §G, §I and §M.1 are all still open.
+
+### Q.1 Corrections to this page and the wave-154 action sheet
+
+1. §I l.489-490 offers "2b REMOVE — delete the auth user". l.574 says neither remediation deletes anything and a deletion
+   needs your explicit authorization. **l.574 governs:** the scripted routes are A (link) and B (archive); deletion is not one.
+2. §G "What the policies admit" lets a title / lender party read every object in its `title/` / `lender/` folder. The ROW
+   rule a party passes in the app (m888 `transaction_documents_party_select`, live) is narrower: own upload, or the CDA
+   delivered to that title user. Since wave 155 the app's document door (`lib/storage/signed-doc-url.ts`) applies the row
+   rule. The storage rule only bounds a direct storage call.
+3. `WAVE154-OWNER-ACTION-SHEET.md` item 16 ("10-year persisted signed URLs remain") was already false at `9d9626b9`: lane
+   154M removed the ten-year lifetime (tombstone `lib/storage/signed-doc-url.ts:25`; ceiling one hour, view link 5 minutes).
+4. §F has no rollback block (§G has one). Q.2 is that block, measured from the live policy text on 2026-11-19.
+
+### Q.2 §F rollback — restores the four measured `brokerage-forms` policies (re-opens the exposure; only to undo a broken apply)
+
+```sql
+BEGIN;
+DROP POLICY IF EXISTS "brokerage-forms owner read" ON storage.objects;  DROP POLICY IF EXISTS "brokerage-forms owner upload" ON storage.objects;
+DROP POLICY IF EXISTS "brokerage-forms owner update" ON storage.objects;  DROP POLICY IF EXISTS "brokerage-forms owner delete" ON storage.objects;
+CREATE POLICY "auth read brokerage-forms" ON storage.objects FOR SELECT TO authenticated USING (bucket_id = 'brokerage-forms');
+CREATE POLICY "auth upload brokerage-forms" ON storage.objects FOR INSERT TO authenticated WITH CHECK (bucket_id = 'brokerage-forms');
+CREATE POLICY "auth update brokerage-forms" ON storage.objects FOR UPDATE TO authenticated USING (bucket_id = 'brokerage-forms');
+CREATE POLICY "auth delete brokerage-forms" ON storage.objects FOR DELETE TO authenticated USING (bucket_id = 'brokerage-forms');
+COMMIT;
+```
+
+### Q.3 §P.1 — the two-tenant verification after the drop (writes nothing: it ends in ROLLBACK), and the undo
+
+```sql
+-- expect: 2 rows returned, then the ROLLBACK leaves competitor_ads exactly as it was. Before the §P.1 drop the second row raises 23505.
+BEGIN;
+INSERT INTO public.competitor_ads (brokerage_id, source_platform, competitor_name, provider_ad_id)
+SELECT b.id, 'facebook', 'wave-155 two-tenant probe', 'wave155-probe-ad'
+  FROM (SELECT id FROM public.brokerages ORDER BY id LIMIT 2) b
+RETURNING brokerage_id, source_platform, provider_ad_id;
+ROLLBACK;
+-- undo of §P.1 only if you want the global rule back (the live definition, measured 2026-11-19):
+-- CREATE UNIQUE INDEX uq_competitor_ads_source_provider_id ON public.competitor_ads USING btree (source_platform, provider_ad_id) WHERE (provider_ad_id IS NOT NULL);
+```
+
+### Q.4 Lane 155K — no new owner SQL; one read-only check after the integrator applies m984
+
+Lane 155K wrote no DROP INDEX / DROP COLUMN / storage policy. `m984` (office circles for shared methods) is integrator-applied (it
+widens the `circle_tactic_shares.circle_kind` CHECK and adds a nullable `location_id`). If you want to see it yourself, this
+reads and writes nothing:
+
+```sql
+-- expect 6 rows: circle_kind CHECK incl. 'office', status, evidence_quality, team_iff, mentorship_iff, office_iff
+select conname, pg_get_constraintdef(oid) from pg_constraint where conrelid = 'public.circle_tactic_shares'::regclass and contype = 'c' order by 1;
+```
+
+## R. Wave 155 — owner SQL named by the final lanes (lane 155L, 2026-11-20)
+
+Written, never run by a lane. None of these blocks release; each closes a one-vocabulary residue (CLAUDE.md §6) a lane could
+not close in code. Run the **Before** read first; stop if it does not read as stated. After R.2, regenerate the CHECK
+vocabulary cache (`scripts/generate-check-vocabularies.ts`, SQL in its header) so `test:check-vocabulary` holds code and
+database together. Packet: `docs/operations/WAVE155-P0-OWNER-ACTION-PACKET.md` §11.
+
+### R.1 `campaign_sequence_steps.channel` holds STEP KINDS, not channels (lanes 155D request 4, 155J) — HELD, needs code first
+
+- Why: the column's CHECK admits `wait`, `condition`, `assign_task`, `video` … beside real channels; video is an artifact, not a
+  channel (owner R9). A rename alone BREAKS the 28 runtime files that read `campaign_sequence_steps.channel` (measured
+  2026-11-20 by grep over app/ and lib/). Order: the integrator lands the code that reads `step_kind`, then you run this in the
+  same deployment window. Until then, do nothing.
+- Status: HELD — waiting for the code change (no lane may rename a live column)
+
+```sql
+-- Before: the column and its CHECK (expect channel present, step_kind absent; one CHECK naming 'wait' and 'video')
+select column_name from information_schema.columns where table_schema = 'public' and table_name = 'campaign_sequence_steps' and column_name in ('channel', 'step_kind');
+select conname, pg_get_constraintdef(oid) from pg_constraint where conrelid = 'public.campaign_sequence_steps'::regclass and contype = 'c' and pg_get_constraintdef(oid) ilike '%channel%';
+-- Do (one statement; the CHECK follows the column automatically):
+ALTER TABLE public.campaign_sequence_steps RENAME COLUMN channel TO step_kind;
+-- After: the first query lists step_kind only; the CHECK definition now names step_kind.
+-- Rollback: ALTER TABLE public.campaign_sequence_steps RENAME COLUMN step_kind TO channel;
+```
+
+### R.2 `notification_rules.trigger_event` CHECK still admits three events nothing emits (lane 155R6)
+
+- Why: `enrichment_failed`, `raw_lead_viability_passed`, `raw_lead_viability_failed` were retired from the kernel with
+  tombstones (lib/kernel/events.ts, "RETIRED (wave 155, lane 155R6"); a rule saved on one can never fire. The live CHECK
+  (scripts/check-vocabularies.ts `notification_rules.trigger_event`, 73 values) is restated with the other 70.
+- Status: OPEN — not run
+
+```sql
+-- Before (1): rules that name a retired event (expect 0 rows; if any, decide per row: repoint or delete — never silently)
+select id, brokerage_id, trigger_event from public.notification_rules where trigger_event in ('enrichment_failed', 'raw_lead_viability_passed', 'raw_lead_viability_failed');
+-- Before (2): the constraint's name (expect ONE row whose definition names trigger_event)
+select conname from pg_constraint where conrelid = 'public.notification_rules'::regclass and contype = 'c' and pg_get_constraintdef(oid) ilike '%trigger_event%';
+-- Do (replace <conname> with the name read above; one transaction):
+BEGIN;
+ALTER TABLE public.notification_rules DROP CONSTRAINT <conname>;
+ALTER TABLE public.notification_rules ADD CONSTRAINT <conname> CHECK (trigger_event IN ('appraisal_due', 'authority_blocked', 'business_card_approved', 'business_card_uploaded', 'buyer_disengaged', 'buyer_verified', 'cd_due', 'cd_received', 'closing_scheduled', 'compliance_violation', 'consent_received', 'contact_captured', 'contact_created', 'contact_dedup_merged', 'contact_enrichment_completed', 'contact_enrichment_failed', 'contact_enrichment_queued', 'contact_scored', 'contract_signed', 'deal_closed', 'deal_on_hold', 'decision_pending', 'document_received', 'document_requested', 'enrichment_completed', 'financing_due', 'form_submission_received', 'ghost_lead_detected', 'inspection_due', 'isa_appointment_scheduled', 'isa_max_touches_reached', 'isa_outreach_paused', 'isa_outreach_sent', 'isa_qualification_started', 'isa_qualified_lead', 'isa_reply_received', 'lead_assigned', 'lead_assignment_failed', 'lead_captured', 'lead_claimed', 'lead_converted_to_contact', 'lead_import_completed', 'lead_ready_for_assignment', 'lead_scored', 'lead_sla_breached', 'lifetime_customer', 'listing_published', 'message_from_contact', 'message_needs_response', 'new_lead', 'offer_eligible', 'offer_received', 'offer_submitted', 'price_determined', 'qr_scan_received', 'ready_to_close', 'reengagement_completed', 'reengagement_started', 'referral_received', 'showing_completed', 'showing_scheduled', 'stale_lead_alert', 'task_assigned', 'task_completed', 'task_due', 'task_overdue', 'tour_eligible', 'tour_scheduled', 'walkthrough_due', 'website_visitor_identified'));
+COMMIT;
+-- After: Before (1) still 0 rows; inserting a rule with trigger_event 'enrichment_failed' raises 23514.
+-- Rollback: the same two statements with the three values added back to the list.
+```
+
+### R.3 Re-key live `website_question:` topic rows onto the one customer-question key (lane 155F2)
+
+- Why: the topic feeder now keys `ti:customer_question:<theme>`; a live row under the retired `website_question:<topic>` key is
+  ADOPTED by the code (merged into, never duplicated), so this is tidy-up, not a fix. Two retired rows can map to one theme:
+  list collisions FIRST and merge those by hand. The re-key touches only tenants with no row under the new key.
+- Status: OPEN — not run
+
+```sql
+-- Before: the retired keys still live (any number; 0 means nothing to do)
+SELECT brokerage_id, raw_data->>'dedup_key' k FROM content_topic_bank WHERE raw_data->>'dedup_key' LIKE 'website_question:%';
+-- Do: earliest retired row per tenant + theme, only where the tenant has no row under the new key
+WITH m(lex,theme) AS (VALUES ('new_construction_warranty','new_construction'),('closing_costs','closing_costs'),('title_insurance','escrow_title'),('insurance','insurance'),('escrow','escrow_title'),('earnest_money','escrow_title'),('appraisal','appraisal'),('inspection','home_inspection'),('contingency','offers_negotiation'),('pre_approval','pre_approval'),('hoa','hoa'),('property_tax','property_taxes'),('wire_fraud','escrow_title'),('clear_to_close','buying_process')),
+c AS (SELECT DISTINCT ON (b.brokerage_id, m.theme) b.id, m.theme FROM content_topic_bank b JOIN m ON b.raw_data->>'dedup_key' = 'website_question:'||m.lex WHERE NOT EXISTS (SELECT 1 FROM content_topic_bank o WHERE o.brokerage_id = b.brokerage_id AND o.raw_data->>'dedup_key' = 'ti:customer_question:'||m.theme) ORDER BY b.brokerage_id, m.theme, b.created_at)
+UPDATE content_topic_bank b SET raw_data = jsonb_set(b.raw_data, '{dedup_key}', to_jsonb('ti:customer_question:'||c.theme)) FROM c WHERE b.id = c.id;
+-- After: the Before query lists only the collision rows you chose to merge by hand.
+-- Rollback: none needed for correctness (the code adopts either key); record the ids from Before if you want to reverse it.
+```
+
+### R.4 Retarget the m705 "First Appointment" badge to the signed-agreement milestone (lane 155C)
+
+- Why: owner R3 retired the booking award; the platform badge keyed on `FIRST_APPOINTMENT` is shown "Not available to earn right
+  now". This makes it the badge of `SIGNED_AGREEMENT_APPOINTMENT` (an appointment that became an executed agreement). Default
+  if you do nothing: it stays shown unavailable.
+- Status: OPEN — your choice (not run)
+
+```sql
+-- Before: expect 1 row (the platform badge, brokerage_id null)
+SELECT id, badge_name, trigger_event FROM public.gamification_badges WHERE brokerage_id IS NULL AND trigger_event = 'FIRST_APPOINTMENT';
+-- Do:
+UPDATE gamification_badges SET trigger_event='SIGNED_AGREEMENT_APPOINTMENT', badge_name='Signed From an Appointment', badge_description='An appointment that became a signed agreement.' WHERE brokerage_id IS NULL AND trigger_event='FIRST_APPOINTMENT';
+-- After: the Before query returns 0 rows; the same id now reads trigger_event SIGNED_AGREEMENT_APPOINTMENT.
+-- Rollback: UPDATE gamification_badges SET trigger_event='FIRST_APPOINTMENT' WHERE id = '<id from Before>';
+```
+
+### R.5 Drop `public.title_company_users` — an empty table nothing writes and, after lane 155T3, nothing reads
+
+- Why: the title portal was gated on this table, which has 0 rows and no writer anywhere (no code, trigger or function). A title
+  company is a VENDOR CATEGORY (CLAUDE.md §4): the portal now gates on the title vendor assigned to the deal
+  (`lib/kernel/portal-auth.ts` `requireTitleVendorActor`), and no file under `app/` or `lib/` reads the table any more.
+- Status: OPEN — optional, not release-blocking (not run). DROP TABLE is destructive; the block refuses if the table is not empty.
+
+```sql
+-- Before: expect 0
+SELECT count(*) FROM public.title_company_users;
+-- Do:
+begin;
+do $$ begin
+  if (select count(*) from public.title_company_users) <> 0 then raise exception 'title_company_users is not empty — stop'; end if;
+end $$;
+drop table public.title_company_users;  -- RESTRICT (default): refuses if any view / FK still depends on it
+commit;
+-- After: SELECT to_regclass('public.title_company_users');  -- expect null
+-- Then tell the integrator: the schema caches are regenerated (live-tables, schema-snapshot, schema-fk-map, check-vocabularies)
+-- and the table's two classification lines are removed (lib/kernel/brokerage-transfer.ts, lib/kernel/manager-registry.ts).
+-- Rollback: none (the table held no rows); its definition is in the migration history.
+```
+
+### R.6 Five deal tables: the INSERT side of row security admits any signed-in seat of a tenant, on any deal — READY TO RUN
+
+- Found 2026-11-20 (`lib/application/transactions.ts` `dealDeskWriteContext`; proof `test:deal-desk` §E and §F). Read on the live
+  database (`pg_policies`, `pg_proc`, `has_table_privilege`), not from migration files. Tables:
+  `transaction_participants`, `transaction_deadlines`, `transaction_title_escrow`, `transaction_repair_negotiations`, `transaction_timeline`. All five are empty live.
+- What is live. Each table has exactly two permissive `ALL` policies for `public`, and `authenticated` holds INSERT:
+  - `trx_agent_<table>` — USING: the caller is `agent_id` / `buyer_agent_id` / `seller_agent_id` of the row's deal. WITH CHECK:
+    `brokerage_id = current_user_brokerage_id()` — **the tenant only; not the deal, not the seat.**
+  - `trx_broker_<table>` — USING and WITH CHECK: the row's tenant is the caller's AND `current_user_type()` is one of
+    `broker`, `admin`, `super_admin`, `tc` (`super_admin` is not a storable `users.user_type`).
+- Why it matters. An INSERT that returns nothing is judged by WITH CHECK alone, and permissive policies OR together. So any
+  signed-in user who has a tenant — a vendor seat or a client (contact) seat included — can insert a row into these tables
+  through the data API on ANY `transaction_id`, another tenant's deal included, as long as the row carries their own tenant.
+  The deal's agents then see that row (their USING is the deal, not the row's tenant).
+- What the block does. `trx_agent_*`: the CHECK now also requires what the USING requires — the caller is an agent ON the row's
+  deal — and that the deal is in the caller's tenant. `trx_broker_*`: the roster becomes the deal desk's brokerage tier
+  (`broker`, `broker_owner`, `broker_admin`, `admin`, `compliance_officer`, `tc`; the dead name goes), and the CHECK also
+  requires the DEAL to be in the caller's tenant. USING is not narrowed, so no row anyone reads today disappears.
+- Measured, not asserted. The verbatim live policy and helper-function text was loaded into a local PostgreSQL 16.15, the block
+  below was applied to it unchanged, and 16 seats × 8 operations × 5 tables were run before and after. Before: every seat with a
+  tenant inserts on its tenant's deal AND on another tenant's deal. After: only an agent on the deal and the six desk seats
+  insert, and only on a deal of their own tenant; a vendor, a contact, an ISA, an agent off the deal, a seat with no type and
+  an anonymous caller are refused (42501) on all five tables. The table is in `scripts/deal-desk-guard.ts` (`PG_MEASURED`),
+  which fails if this block's text changes without a new measurement. **It has not been run on the live database.**
+- The application is ready for it (audited 2026-11-20, the census in `test:deal-desk` §F): every write site on these five
+  tables in `app/` and `lib/` now rides the service client behind a gate; none rides a session client. A team lead on a team
+  member's deal is deliberately NOT in the policy (it would need the team function); the application serves that seat
+  through the gated doors, which is why the audit had to come first.
+- The CHECKs read `public.transactions` and `public.agents` as the caller — the same dependency the live `trx_agent_*` USING
+  already has. If a seat cannot read its own tenant's deals there, its insert is refused (fail closed).
+- Status: **OPEN — owner-run, not release-blocking by itself; closes a cross-tenant write through the data API.**
+
+```sql
+-- Before: expect 10 rows (2 per table); every trx_agent_* with_check reads "(brokerage_id = current_user_brokerage_id())"
+select tablename, policyname, cmd, with_check from pg_policies
+ where schemaname = 'public' and tablename in ('transaction_participants', 'transaction_deadlines', 'transaction_title_escrow', 'transaction_repair_negotiations', 'transaction_timeline') order by 1, 2;
+-- Do (one transaction; ALTER POLICY keeps each policy's name, command and roles):
+begin;
+alter policy trx_agent_transaction_participants on public.transaction_participants
+  with check (brokerage_id = current_user_brokerage_id() and transaction_id in (select t.id from public.transactions t where t.brokerage_id = current_user_brokerage_id() and (t.agent_id in (select a.id from public.agents a where a.user_id = auth.uid()) or t.buyer_agent_id in (select a.id from public.agents a where a.user_id = auth.uid()) or t.seller_agent_id in (select a.id from public.agents a where a.user_id = auth.uid()))));
+alter policy trx_broker_transaction_participants on public.transaction_participants
+  using (brokerage_id = current_user_brokerage_id() and current_user_type() = any (array['broker','broker_owner','broker_admin','admin','compliance_officer','tc']))
+  with check (brokerage_id = current_user_brokerage_id() and current_user_type() = any (array['broker','broker_owner','broker_admin','admin','compliance_officer','tc']) and transaction_id in (select t.id from public.transactions t where t.brokerage_id = current_user_brokerage_id()));
+alter policy trx_agent_transaction_deadlines on public.transaction_deadlines
+  with check (brokerage_id = current_user_brokerage_id() and transaction_id in (select t.id from public.transactions t where t.brokerage_id = current_user_brokerage_id() and (t.agent_id in (select a.id from public.agents a where a.user_id = auth.uid()) or t.buyer_agent_id in (select a.id from public.agents a where a.user_id = auth.uid()) or t.seller_agent_id in (select a.id from public.agents a where a.user_id = auth.uid()))));
+alter policy trx_broker_transaction_deadlines on public.transaction_deadlines
+  using (brokerage_id = current_user_brokerage_id() and current_user_type() = any (array['broker','broker_owner','broker_admin','admin','compliance_officer','tc']))
+  with check (brokerage_id = current_user_brokerage_id() and current_user_type() = any (array['broker','broker_owner','broker_admin','admin','compliance_officer','tc']) and transaction_id in (select t.id from public.transactions t where t.brokerage_id = current_user_brokerage_id()));
+alter policy trx_agent_transaction_title_escrow on public.transaction_title_escrow
+  with check (brokerage_id = current_user_brokerage_id() and transaction_id in (select t.id from public.transactions t where t.brokerage_id = current_user_brokerage_id() and (t.agent_id in (select a.id from public.agents a where a.user_id = auth.uid()) or t.buyer_agent_id in (select a.id from public.agents a where a.user_id = auth.uid()) or t.seller_agent_id in (select a.id from public.agents a where a.user_id = auth.uid()))));
+alter policy trx_broker_transaction_title_escrow on public.transaction_title_escrow
+  using (brokerage_id = current_user_brokerage_id() and current_user_type() = any (array['broker','broker_owner','broker_admin','admin','compliance_officer','tc']))
+  with check (brokerage_id = current_user_brokerage_id() and current_user_type() = any (array['broker','broker_owner','broker_admin','admin','compliance_officer','tc']) and transaction_id in (select t.id from public.transactions t where t.brokerage_id = current_user_brokerage_id()));
+alter policy trx_agent_transaction_repair_negotiations on public.transaction_repair_negotiations
+  with check (brokerage_id = current_user_brokerage_id() and transaction_id in (select t.id from public.transactions t where t.brokerage_id = current_user_brokerage_id() and (t.agent_id in (select a.id from public.agents a where a.user_id = auth.uid()) or t.buyer_agent_id in (select a.id from public.agents a where a.user_id = auth.uid()) or t.seller_agent_id in (select a.id from public.agents a where a.user_id = auth.uid()))));
+alter policy trx_broker_transaction_repair_negotiations on public.transaction_repair_negotiations
+  using (brokerage_id = current_user_brokerage_id() and current_user_type() = any (array['broker','broker_owner','broker_admin','admin','compliance_officer','tc']))
+  with check (brokerage_id = current_user_brokerage_id() and current_user_type() = any (array['broker','broker_owner','broker_admin','admin','compliance_officer','tc']) and transaction_id in (select t.id from public.transactions t where t.brokerage_id = current_user_brokerage_id()));
+alter policy trx_agent_transaction_timeline on public.transaction_timeline
+  with check (brokerage_id = current_user_brokerage_id() and transaction_id in (select t.id from public.transactions t where t.brokerage_id = current_user_brokerage_id() and (t.agent_id in (select a.id from public.agents a where a.user_id = auth.uid()) or t.buyer_agent_id in (select a.id from public.agents a where a.user_id = auth.uid()) or t.seller_agent_id in (select a.id from public.agents a where a.user_id = auth.uid()))));
+alter policy trx_broker_transaction_timeline on public.transaction_timeline
+  using (brokerage_id = current_user_brokerage_id() and current_user_type() = any (array['broker','broker_owner','broker_admin','admin','compliance_officer','tc']))
+  with check (brokerage_id = current_user_brokerage_id() and current_user_type() = any (array['broker','broker_owner','broker_admin','admin','compliance_officer','tc']) and transaction_id in (select t.id from public.transactions t where t.brokerage_id = current_user_brokerage_id()));
+commit;
+-- After: the same SELECT — every trx_agent_* with_check names the deal; every trx_broker_* names the six desk seats and the deal.
+-- Then, signed in as a vendor seat and as a contact seat of a test tenant, an INSERT into each table must be refused (42501).
+-- Rollback: re-run ALTER POLICY with the with_check / using text the Before read returned.
+```
+
+## S. Wave 156 — owner SQL named by the wave's lanes (2026-11-25)
+
+Nothing in this section has been run. The ORDER of work, the release-blocking steps and each step's before read, after read and rollback are in
+`docs/operations/WAVE156-OWNER-ACTION-SHEET.md` — that sheet is the one place the wave's owner steps are sequenced; this section holds the
+statements that sheet does not carry in full and points at the ones it does (one copy of each statement, never two).
+
+### S.1 — `compliance_events`: approval rows become append-only for tenant sessions (lane 156B)
+
+The exact block (before read, statements, after read, rollback, required role `postgres`) is **Also A** of the action sheet. Until it runs, a tenant
+staff seat can write or change an approval row in its own name through the data API; the application ignores an approval whose author does not
+hold review authority when the row is read, so this closes the hole at the database as well.
+
+### S.2 — `brokerage_form_library`: office and agent scope in the read policy and the registered-packet function (lane 156C; m1005 is applied)
+
+The exact block, including the full replacement text of `public.brokerage_forms_registered_packet_readable(text)`, is **Also B** of the action sheet.
+Until it runs, the product's own doors already enforce office and agent scope after their gate; a direct authenticated read through the data API or
+storage can still see a same-brokerage office row or another agent's own supplemental form.
+
+### S.3 — training progress is written by the server only; `recruits` is limited to the tenant-admin roster (lane 156K)
+
+Why: one request claiming 100% watched earned a certificate and its points (the application now credits watch time itself and writes through the
+service client after its gate, so the session INSERT / UPDATE policies have no remaining caller); and `recruits_brokerage_isolation` lets every
+signed-in user that carries the tenant — a Contact or a vendor seat included — read and write every recruit row. Live policies read 2026-11-25.
+
+```sql
+-- Before: select tablename, policyname, cmd, qual, with_check from pg_policies where tablename in ('video_completion_tracking','recruits');
+-- Expected before: vct_insert, vct_select, vct_update, video_completion_tracking_brokerage_isolation (ALL), recruits_brokerage_isolation (ALL).
+-- A: video progress becomes server-written only. Readers keep SELECT. Both writers now use the service client.
+DROP POLICY IF EXISTS vct_insert ON public.video_completion_tracking;
+DROP POLICY IF EXISTS vct_update ON public.video_completion_tracking;
+DROP POLICY IF EXISTS video_completion_tracking_brokerage_isolation ON public.video_completion_tracking;
+CREATE POLICY video_completion_tracking_brokerage_isolation ON public.video_completion_tracking FOR SELECT TO public USING (brokerage_id = current_user_brokerage_id());
+-- B: recruits limited to the tenant-admin roster (is_brokerage_admin() = TENANT_ADMIN_USER_TYPES), plus the referring agent reading their own referrals.
+DROP POLICY IF EXISTS recruits_brokerage_isolation ON public.recruits;
+CREATE POLICY recruits_tenant_admin ON public.recruits FOR ALL TO authenticated USING (is_platform_admin() OR (brokerage_id = current_user_brokerage_id() AND is_brokerage_admin())) WITH CHECK (is_platform_admin() OR (brokerage_id = current_user_brokerage_id() AND is_brokerage_admin()));
+CREATE POLICY recruits_recruiter_read ON public.recruits FOR SELECT TO authenticated USING (brokerage_id = current_user_brokerage_id() AND recruiter_agent_id IN (SELECT a.id FROM public.agents a WHERE a.user_id = auth.uid()));
+-- After: the same query. Expected: vct_select plus the SELECT-only isolation policy; recruits_tenant_admin plus recruits_recruiter_read.
+-- Rollback: drop the three new policies, then recreate the originals verbatim from the Before read:
+-- - vct_insert: INSERT, WITH CHECK agent_id IN (SELECT agents.id FROM agents WHERE agents.user_id = auth.uid())
+-- - vct_update: UPDATE, USING the same subquery; WITH CHECK that subquery AND has_brokerage_access(brokerage_id)
+-- - video_completion_tracking_brokerage_isolation: ALL, USING brokerage_id = current_user_brokerage_id()
+-- - recruits_brokerage_isolation: ALL, USING brokerage_id = current_user_brokerage_id()
+```
+
+Session-client readers of recruits found: the recruiting-roi page, which is gated to the admin roster. The other readers I saw use the service client. I did not exhaustively audit for other session readers.
+
+### S.4 — the fraud network's private evidence bucket (lane 156J)
+
+The network (m1035, applied) stores a FINGERPRINT of each evidence file and never the file: no bucket exists, and a bucket plus its `storage.objects`
+policies are owner SQL. Until it exists the evidence door answers "Evidence storage is not enabled yet" and a case keeps its text, fingerprints and
+report numbers (JPEG / PNG uploads are stripped of EXIF, GPS and text metadata before that refusal, so the step exists the day the bucket does).
+
+Required role: `postgres` inserts the bucket row; dropping a stray policy needs `supabase_storage_admin`. Private and service-only, modeled on §H —
+NO `storage.objects` policy is created; the product serves evidence as five-minute signed links after the case gate.
+
+```sql
+-- Before: SELECT id, public FROM storage.buckets WHERE id='fraud-evidence';                                  -- expect 0 rows
+--         SELECT policyname FROM pg_policies WHERE schemaname='storage' AND tablename='objects'
+--           AND (coalesce(qual,'') || coalesce(with_check,'')) LIKE '%fraud-evidence%';                       -- expect 0 rows
+INSERT INTO storage.buckets (id,name,public,file_size_limit,allowed_mime_types)
+VALUES ('fraud-evidence','fraud-evidence',false,10485760,ARRAY['image/jpeg','image/png'])
+ON CONFLICT (id) DO UPDATE SET public=false, file_size_limit=10485760, allowed_mime_types=ARRAY['image/jpeg','image/png'];
+-- After: the row reads private, 10 MB, JPEG / PNG; the policy read still returns 0 rows. Then regenerate lib/storage/bucket-limits.ts
+--        (scripts/generate-bucket-limits.ts — that cache is what opens the upload door) and list the bucket as service-only in
+--        storage_bucket_policy_readiness().
+-- Rollback: DELETE FROM storage.buckets WHERE id='fraud-evidence';   -- only while it holds 0 objects
+```
+
+### S.5 — §R.6 status
+
+NOT APPLIED — re-read live 2026-11-25: the ten policies are unchanged and the five deal tables hold no rows. Statements: §R.6 above (unchanged, the
+deal-desk guard pins their fingerprint). How to apply, the two-tenant check that ends in ROLLBACK, and the rollback order:
+`docs/operations/WAVE156-R6-DEAL-TABLE-POLICY-PACKET.md`.

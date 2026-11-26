@@ -13,7 +13,10 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/hooks/use-toast"
-import { estimateMonthlyPayment, affordabilityRead, preApprovalStatus, clientAffordabilityFraming, AFFORDABILITY_DEFAULTS } from "@/lib/buyer-offers/affordability"
+import { affordabilityRead, preApprovalStatus, clientAffordabilityFraming } from "@/lib/buyer-offers/affordability"
+// Wave 156 (156H round 2): the payment is the ONE engine's, over the buyer's OWN figures — no default rate (lib/calculators/buyer-payment.ts).
+import { buyerPaymentFor, calculatorNeeds } from "@/lib/calculators/buyer-payment"
+import { LoanAssumptionsFields, useLoanAssumptions } from "@/app/components/calculators/LoanAssumptionsFields"
 import { signalAffordabilityChecked, requestOfferHelp, requestPreApprovalRefresh } from "@/app/actions/buyer-offer-tools"
 
 const money = (n: number) => `$${Math.round(n).toLocaleString()}`
@@ -38,14 +41,11 @@ export function BuyerOfferToolsCard({
   const [pending, startTransition] = useTransition()
   const [offerPending, startOffer] = useTransition()
   const [refreshPending, startRefresh] = useTransition()
-  // Down payment seeds from the buyer's OWN financial profile when it exists (the real
-  // record); only a profile-less buyer sees the labeled, editable 20% estimate default.
-  const [downPct, setDownPct] = useState<number>(
-    profileDownPaymentPercent && profileDownPaymentPercent > 0 && profileDownPaymentPercent < 100
-      ? profileDownPaymentPercent
-      : AFFORDABILITY_DEFAULTS.downPaymentPercent,
+  // Down payment seeds from the buyer's OWN financial profile when it exists (the real record); otherwise it is blank and the
+  // card asks for it — the generic 20% / 6.5% this used to show are gone (wave 156H).
+  const loan = useLoanAssumptions(
+    profileDownPaymentPercent && profileDownPaymentPercent > 0 && profileDownPaymentPercent < 100 ? { downPaymentPct: profileDownPaymentPercent } : {},
   )
-  const [ratePct, setRatePct] = useState<number>(AFFORDABILITY_DEFAULTS.annualInterestRatePct)
   const [budget, setBudget] = useState<string>("")
 
   if (!price || price <= 0) return null
@@ -54,24 +54,26 @@ export function BuyerOfferToolsCard({
   const paStatus = preApprovalStatus(preApprovalAmount, preApprovalExpiresAt, new Date())
   const usablePreApproval = paStatus.state === "expired" ? null : paStatus.amount
 
-  const breakdown = useMemo(
-    () => estimateMonthlyPayment({ price, downPaymentPercent: downPct, annualInterestRatePct: ratePct }),
-    [price, downPct, ratePct],
-  )
+  const outcome = useMemo(() => buyerPaymentFor(price, loan.values), [price, loan.values])
+  const total = outcome.ok ? Number(outcome.outputs.monthlyTotal) : null
+  const line = (k: string) => (outcome.ok ? outcome.lines.find((l) => l.key === k)?.amount ?? 0 : 0)
   const read = useMemo(
     () => affordabilityRead({
-      price, monthlyTotal: breakdown.total, preApprovalAmount: usablePreApproval,
-      maxMonthlyBudget: budget ? Number(budget) : null,
+      price, monthlyTotal: total ?? 0, preApprovalAmount: usablePreApproval,
+      maxMonthlyBudget: total != null && budget ? Number(budget) : null,
     }),
-    [price, breakdown.total, usablePreApproval, budget],
+    [price, total, usablePreApproval, budget],
   )
 
   function refreshPreApproval() {
     startRefresh(async () => {
       const r = await requestPreApprovalRefresh({ contactId, propertyId, propertyAddress })
+      // "Your agent will help you refresh" used to show even when nothing was delivered — this
+      // is the one where believing it is most expensive (a buyer stops chasing the lender and
+      // walks into an offer on an expired approval). The server's own sentence names the way out.
       toast(r.success
         ? { title: "Your agent will help you refresh", description: "They'll connect you with a lender to get back to offer-ready." }
-        : { title: "Couldn't send the request", description: r.error ?? "Try again", variant: "destructive" })
+        : { title: "Your agent wasn't reached", description: r.error ?? "Try again", variant: "destructive" })
     })
   }
 
@@ -89,20 +91,37 @@ export function BuyerOfferToolsCard({
   function letAgentKnow() {
     startTransition(async () => {
       const r = await signalAffordabilityChecked({
-        contactId, propertyId, propertyAddress, price: price!, monthlyEstimate: breakdown.total, verdict: read.verdict,
+        contactId, propertyId, propertyAddress, price: price!, monthlyEstimate: total ?? 0, verdict: read.verdict,
       })
+      // The title used to assert the notification unconditionally; the server discarded
+      // notifyAgent's verdict, so "Your agent has been notified" was printed over a dropped alert.
+      // r.success now MEANS the alert landed, and the refusal carries the route that still works.
       toast(r.success
         ? { title: "Your agent has been notified", description: "They'll follow up on this home." }
-        : { title: "Couldn't notify your agent", description: r.error ?? "Try again", variant: "destructive" })
+        : { title: "Your agent wasn't notified", description: r.error ?? "Try again", variant: "destructive" })
     })
   }
 
+  // The toast now SAYS WHAT HAPPENED. It used to promise "your agent is preparing your offer
+  // plan" on every click, including the ones that produced nothing — and a toast is all the buyer
+  // got, so a refresh erased even that. The server returns the same sentence it wrote to the
+  // buyer's portal message thread, so the transient and the durable record cannot disagree, and
+  // neither carries a recommended price (the agent approves the plan and delivers the number).
   function helpMakeOffer() {
     startOffer(async () => {
       const r = await requestOfferHelp({ contactId, propertyId, propertyAddress })
-      toast(r.success
-        ? { title: "Your agent is preparing your offer plan", description: "They'll reach out with a recommended price and terms." }
-        : { title: "Couldn't send the request", description: r.error ?? "Try again", variant: "destructive" })
+      if (!r.success) {
+        toast({ title: "Couldn't send the request", description: r.error ?? "Try again", variant: "destructive" })
+        return
+      }
+      toast({
+        title: r.duplicate
+          ? "Your agent already has this request"
+          : r.accelerated
+          ? "Your agent is preparing your offer plan"
+          : "Your agent has been notified",
+        description: r.message ?? "They'll be in touch about this home. It's saved to your messages.",
+      })
     })
   }
 
@@ -118,7 +137,7 @@ export function BuyerOfferToolsCard({
         <div className="flex items-end justify-between">
           <div>
             <p className="text-xs text-muted-foreground">Estimated monthly payment</p>
-            <p className="text-2xl font-bold">{money(breakdown.total)}<span className="text-sm font-normal text-muted-foreground">/mo</span></p>
+            <p className="text-2xl font-bold">{total != null ? <>{money(total)}<span className="text-sm font-normal text-muted-foreground">/mo</span></> : <span className="text-sm font-normal text-muted-foreground">Enter your figures below</span>}</p>
           </div>
           <Badge className={`${verdictUI.cls} flex items-center gap-1`}><VIcon className="h-3 w-3" />{verdictUI.label}</Badge>
         </div>
@@ -126,30 +145,23 @@ export function BuyerOfferToolsCard({
         {/* Warm, conversation-STARTING line — routes to the agent, never a scary verdict. */}
         <p className="text-xs text-muted-foreground">{framing.line}</p>
 
-        <div className="grid grid-cols-3 gap-3">
-          <div>
-            <Label className="text-xs">Down payment %</Label>
-            <Input type="number" inputMode="decimal" value={downPct}
-              onChange={(e) => setDownPct(Math.max(0, Math.min(100, Number(e.target.value) || 0)))} />
-          </div>
-          <div>
-            <Label className="text-xs">Rate % <span className="text-muted-foreground">(est.)</span></Label>
-            <Input type="number" inputMode="decimal" step="0.125" value={ratePct}
-              onChange={(e) => setRatePct(Math.max(0, Number(e.target.value) || 0))} />
-          </div>
-          <div>
-            <Label className="text-xs">My max $/mo</Label>
-            <Input type="number" inputMode="decimal" placeholder="optional" value={budget}
-              onChange={(e) => setBudget(e.target.value)} />
-          </div>
+        <LoanAssumptionsFields values={loan.values} set={loan.set} idPrefix={`bot-${propertyId}`} />
+        <div>
+          <Label className="text-xs">My max $/mo</Label>
+          <Input type="number" inputMode="decimal" placeholder="optional" value={budget}
+            onChange={(e) => setBudget(e.target.value)} />
         </div>
 
-        <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
-          <span>Principal &amp; interest: {money(breakdown.principalInterest)}</span>
-          <span>Taxes: {money(breakdown.propertyTax)}</span>
-          <span>Insurance: {money(breakdown.insurance)}</span>
-          {breakdown.pmi > 0 && <span>PMI: {money(breakdown.pmi)}</span>}
-        </div>
+        {outcome.ok ? (
+          <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+            <span>Principal &amp; interest: {money(line("principalInterest"))}</span>
+            <span>Taxes: {money(line("propertyTax"))}</span>
+            <span>Insurance: {money(line("insurance"))}</span>
+            {line("mortgageInsurance") > 0 && <span>Mortgage insurance: {money(line("mortgageInsurance"))}</span>}
+          </div>
+        ) : (
+          <ul className="list-disc pl-5 text-xs text-muted-foreground">{calculatorNeeds(outcome).map((n) => <li key={n}>{n}</li>)}</ul>
+        )}
         {read.headroomToPreApproval != null && (
           <p className="text-xs text-muted-foreground">
             {read.headroomToPreApproval >= 0
@@ -157,10 +169,10 @@ export function BuyerOfferToolsCard({
               : `${money(-read.headroomToPreApproval)} over your pre-approval${preApprovalLender ? ` from ${preApprovalLender}` : ""}.`}
           </p>
         )}
-        {profileDownPaymentPercent != null && profileDownPaymentPercent > 0 && profileDownPaymentPercent < 100 && downPct === profileDownPaymentPercent && (
+        {profileDownPaymentPercent != null && profileDownPaymentPercent > 0 && profileDownPaymentPercent < 100 && Number(loan.values.downPaymentPct) === profileDownPaymentPercent && (
           <p className="text-[11px] text-muted-foreground">Down payment pre-filled from your financial profile ({profileDownPaymentPercent}%).</p>
         )}
-        <p className="text-[11px] text-muted-foreground">Estimates only — rate, taxes, and insurance vary. Your agent and lender confirm the real numbers.</p>
+        {outcome.ok && outcome.disclaimers.map((d) => <p key={d} className="text-[11px] text-muted-foreground">{d}</p>)}
 
         {(paStatus.state === "expired" || paStatus.state === "expiring" || paStatus.state === "none") && (
           <div className="rounded-md border border-amber-200 bg-amber-50 p-3 space-y-2">
@@ -176,10 +188,10 @@ export function BuyerOfferToolsCard({
         )}
 
         <div className="flex flex-col sm:flex-row gap-2">
-          <Button variant="outline" className="flex-1" onClick={letAgentKnow} disabled={pending}>
+          <Button variant="outline" className="flex-1" onClick={letAgentKnow} disabled={pending || total == null}>
             {pending ? "Notifying…" : "Let my agent know I'm interested"}
           </Button>
-          <Button className="flex-1 bg-teal-600 hover:bg-teal-700 text-white" onClick={helpMakeOffer} disabled={offerPending}>
+          <Button className="flex-1 bg-teal-700 hover:bg-teal-800 text-white" onClick={helpMakeOffer} disabled={offerPending}>
             <HandCoins className="h-4 w-4 mr-1" />{offerPending ? "Sending…" : "Help me make an offer"}
           </Button>
         </div>

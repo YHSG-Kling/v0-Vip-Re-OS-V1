@@ -12,11 +12,12 @@ import {
   SheetDescription,
 } from "@/components/ui/sheet"
 import { TrendingUp, DollarSign, ExternalLink, Loader2, BarChart3 } from "lucide-react"
-import { getBreakEvenAnalysis, getRecruitingCostBreakdown } from "@/app/actions/recruiting-roi"
+import { getBreakEvenAnalysis, getRecruitingCostBreakdown } from "@/app/actions/recruiting-roi"; import { settleRecruitingFigure, recruitingFigureWords } from "@/lib/recruiting/recruiting-roi-compute"
 import Link from "next/link"
 
+// `brokerageId` prop REMOVED (2026-09-03): the two actions derive the tenant from
+// the session (app/actions/recruiting-roi.ts, §4), so nothing here needs it.
 interface Props {
-  brokerageId: string
   breakEvenAnalysis: {
     avgBreakEvenMonth: number
     breakEvenMonths: { recruitId?: string; months: number }[]
@@ -31,25 +32,25 @@ interface Props {
   }
 }
 
-export function BrokerRecruitingActionBar({ brokerageId, breakEvenAnalysis, costBreakdown }: Props) {
+export function BrokerRecruitingActionBar({ breakEvenAnalysis, costBreakdown }: Props) {
   const [sheet, setSheet] = useState<"break-even" | "cost" | null>(null)
   const [liveBreakEven, setLiveBreakEven] = useState(breakEvenAnalysis)
   const [liveCost, setLiveCost] = useState(costBreakdown)
-  const [isPending, startTransition] = useTransition()
+  const [isPending, startTransition] = useTransition(); const [refreshNote, setRefreshNote] = useState<string | null>(null) // 156K: a refused refresh is SAID; the page-loaded figure is kept and labeled, never replaced by a default
 
   function openBreakEven() {
     setSheet("break-even")
     startTransition(async () => {
-      const result = await getBreakEvenAnalysis(brokerageId).catch(() => liveBreakEven)
-      setLiveBreakEven(result as any)
+      const fig = await settleRecruitingFigure(getBreakEvenAnalysis())
+      if (fig.state === "ok") { setLiveBreakEven(fig.value as any); setRefreshNote(null) } else setRefreshNote(`Break-even could not be refreshed (${recruitingFigureWords(fig)}) — showing the figures loaded with the page.`)
     })
   }
 
   function openCostBreakdown() {
     setSheet("cost")
     startTransition(async () => {
-      const result = await getRecruitingCostBreakdown(brokerageId).catch(() => liveCost)
-      setLiveCost(result)
+      const fig = await settleRecruitingFigure(getRecruitingCostBreakdown())
+      if (fig.state === "ok") { setLiveCost(fig.value); setRefreshNote(null) } else setRefreshNote(`Cost breakdown could not be refreshed (${recruitingFigureWords(fig)}) — showing the figures loaded with the page.`)
     })
   }
 
@@ -64,7 +65,7 @@ export function BrokerRecruitingActionBar({ brokerageId, breakEvenAnalysis, cost
             Recruiting Correction Actions
           </CardTitle>
         </CardHeader>
-        <CardContent className="pt-0 space-y-2">
+        <CardContent className="pt-0 space-y-2">{refreshNote ? <p className="text-xs text-muted-foreground">{refreshNote}</p> : null}
           <Button
             variant="outline"
             size="sm"

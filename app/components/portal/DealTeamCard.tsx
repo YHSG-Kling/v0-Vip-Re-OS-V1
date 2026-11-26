@@ -42,6 +42,8 @@ export interface DealTeamCardProps {
   primaryAgent: PrimaryAgent | null
   teamMembers: DealTeamMember[]
   variant?: "compact" | "full"
+  /** optional by design: style-override passthrough onto the root Card; every
+   *  current caller (the four portal home pages) uses the default layout. */
   className?: string
 }
 

@@ -1,9 +1,10 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { listNotificationRules } from '@/app/actions/settings/list-notification-rules';
 import { NotificationRulesForm } from '@/app/components/settings/NotificationRulesForm';
 import { SettingsCard } from '@/app/components/settings/SettingsCard';
+import { NotificationChannelsCard } from '@/app/components/settings/NotificationChannelsCard';
 import { PushPermissionToggle } from '@/app/components/shared/push-permission-toggle';
 import type { NotificationRuleRow } from "@/lib/kernel"
 
@@ -41,6 +42,9 @@ export default function NotificationsPage() {
         <h1 className="text-3xl font-bold text-gray-900">Notification Rules</h1>
         <p className="text-gray-600 mt-2">Configure when notifications are sent</p>
       </div>
+
+      {/* Channel master switches, moved off the orphaned /settings/global page. */}
+      <NotificationChannelsCard />
 
       <SettingsCard
         title="Push Notifications"

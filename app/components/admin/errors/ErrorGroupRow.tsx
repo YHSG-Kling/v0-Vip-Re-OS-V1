@@ -34,9 +34,9 @@ export function ErrorGroupRow({ group, isSelected }: ErrorGroupRowProps) {
       case "critical":
         return <AlertOctagon className="h-4 w-4 text-destructive" />
       case "high":
-        return <AlertTriangle className="h-4 w-4 text-orange-500" />
+        return <AlertTriangle className="h-4 w-4 text-orange-600" />
       case "medium":
-        return <AlertCircle className="h-4 w-4 text-yellow-500" />
+        return <AlertCircle className="h-4 w-4 text-yellow-700" />
       default:
         return <AlertCircle className="h-4 w-4 text-blue-500" />
     }

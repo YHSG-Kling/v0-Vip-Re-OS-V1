@@ -5,7 +5,11 @@
  * BUYER SELF-SERVE AFFORDABILITY — proves the exact mortgage math + the honest verdict the
  * portal tool shows a buyer on a property they like. Pure: no I/O, deterministic.
  */
-import { estimateMonthlyPayment, affordabilityRead, preApprovalStatus, clientAffordabilityFraming } from "../lib/buyer-offers/affordability"
+// Wave 156 (156H round 2): the payment math moved to the ONE engine (lib/calculators/buyer-payment.ts buyerPaymentFor over
+// lib/calculators/engine.ts "buyer_payment"); estimateMonthlyPayment and AFFORDABILITY_DEFAULTS are tombstones. The same exact
+// amortization is proven here on the buyer's OWN figures, plus the rule that a blank figure is asked for, never defaulted.
+import { affordabilityRead, preApprovalStatus, clientAffordabilityFraming } from "../lib/buyer-offers/affordability"
+import { buyerPaymentFor } from "../lib/calculators/buyer-payment"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -13,31 +17,35 @@ const check = (n: string, c: boolean) => { if (c) { pass++; console.log(`  ✓ $
 const near = (a: number, b: number, tol = 1) => Math.abs(a - b) <= tol
 
 function main() {
-  console.log("\n[Monthly payment — exact amortization]")
-  // $500k, 20% down ($100k), 6.5%/30yr → P&I on $400k ≈ $2,528.27
-  const m = estimateMonthlyPayment({ price: 500000, downPaymentPercent: 20, annualInterestRatePct: 6.5, loanTermYears: 30, propertyTaxRatePct: 1.1, annualInsuranceRatePct: 0.35, hoaMonthly: 0 })
-  check("loan amount = price − down", m.loanAmount === 400000 && m.downPayment === 100000)
-  check("P&I matches the amortization formula (~$2,528)", near(m.principalInterest, 2528.27, 1))
-  check("property tax monthly = price·1.1%/12 (~$458)", near(m.propertyTax, 458.33, 1))
-  check("insurance monthly = price·0.35%/12 (~$146)", near(m.insurance, 145.83, 1))
-  check("no PMI at 20% down", m.pmi === 0)
-  check("total = PITI sum", near(m.total, m.principalInterest + m.propertyTax + m.insurance + m.hoa, 0.5))
+  console.log("\n[Monthly payment — exact amortization, on the buyer's own figures]")
+  // $500k, 20% down ($100k), 6.5%/30yr → P&I on $400k ≈ $2,528.27; tax 1.1% of price; insurance $1,750/yr
+  const r = buyerPaymentFor(500000, { downPaymentPct: 20, ratePct: 6.5, termYears: 30, propertyTaxRatePct: 1.1, annualInsurance: 1750 })
+  const line = (o: any, k: string) => o.lines.find((l: any) => l.key === k)?.amount ?? NaN
+  check("computes on complete figures", r.ok === true)
+  const m = r as any
+  check("loan amount = price − down", m.outputs.loanAmount === 400000)
+  check("P&I matches the amortization formula (~$2,528)", near(line(m, "principalInterest"), 2528.27, 1))
+  check("property tax monthly = price·1.1%/12 (~$458)", near(line(m, "propertyTax"), 458.33, 1))
+  check("insurance monthly = $1,750/12 (~$146)", near(line(m, "insurance"), 145.83, 1))
+  check("mortgage insurance is not included unless the buyer enters it (said in a note)", line(m, "mortgageInsurance") === 0 && m.notes.some((n: string) => /Mortgage insurance is not included/.test(n)))
+  check("total = sum of the lines", near(m.outputs.monthlyTotal, m.lines.reduce((s: number, l: any) => s + l.amount, 0), 0.5))
 
-  console.log("\n[PMI kicks in under 20% down]")
-  const lowDown = estimateMonthlyPayment({ price: 500000, downPaymentPercent: 10, annualInterestRatePct: 6.5 })
-  check("PMI > 0 when down < 20%", lowDown.pmi > 0)
+  console.log("\n[No default — a blank figure is asked for]")
+  const blank = buyerPaymentFor(500000, { downPaymentPct: 10 })
+  check("blank rate / term / tax / insurance → 'Enter a value' for each, no payment", blank.ok === false && ["ratePct", "termYears", "property_tax", "annualInsurance"].every((k) => (blank as any).missing.some((x: any) => x.key === k)))
 
   console.log("\n[Edge cases — honest, no NaN]")
-  check("0% rate degrades to P/n (no divide-by-zero)", estimateMonthlyPayment({ price: 360000, downPaymentPercent: 0, annualInterestRatePct: 0, loanTermYears: 30 }).principalInterest === 1000)
-  check("cash (100% down) → no loan, no P&I", estimateMonthlyPayment({ price: 500000, downPaymentPercent: 100 }).principalInterest === 0)
-  check("price 0 → all zeros (no NaN)", estimateMonthlyPayment({ price: 0 }).total === 0)
+  check("0% rate degrades to P/n (no divide-by-zero)", line(buyerPaymentFor(360000, { downPaymentPct: 0, ratePct: 0, termYears: 30, propertyTaxRatePct: 0, annualInsurance: 0 }), "principalInterest") === 1000)
+  check("cash (100% down) → no loan, no P&I", line(buyerPaymentFor(500000, { downPaymentPct: 100, ratePct: 6.5, termYears: 30, propertyTaxRatePct: 1, annualInsurance: 1200 }), "principalInterest") === 0)
+  const zero = buyerPaymentFor(0, { downPaymentPct: 0, ratePct: 6.5, termYears: 30, propertyTaxRatePct: 1, annualInsurance: 0 }) as any
+  check("price 0 → all zeros (no NaN)", zero.ok === true && zero.outputs.monthlyTotal === 0)
 
   console.log("\n[Affordability verdict — honest against pre-approval + budget]")
   check("price over pre-approval → over_budget", affordabilityRead({ price: 550000, monthlyTotal: 3500, preApprovalAmount: 500000 }).verdict === "over_budget")
   check("within pre-approval, no budget → within_budget", affordabilityRead({ price: 480000, monthlyTotal: 3000, preApprovalAmount: 500000 }).verdict === "within_budget")
   check("headroom to pre-approval computed", affordabilityRead({ price: 480000, monthlyTotal: 3000, preApprovalAmount: 500000 }).headroomToPreApproval === 20000)
   check("monthly within budget → within_budget", affordabilityRead({ price: 480000, monthlyTotal: 2800, preApprovalAmount: 500000, maxMonthlyBudget: 3000 }).verdict === "within_budget")
-  check("monthly ≤10% over budget → stretch", affordabilityRead({ price: 480000, monthlyTotal: 3200, preApprovalAmount: 500000, maxMonthlyBudget: 3000 }).verdict === "stretch")
+  check("over budget but within the buyer's OWN stretch figure → stretch (no invented 10% band)", affordabilityRead({ price: 480000, monthlyTotal: 3200, preApprovalAmount: 500000, maxMonthlyBudget: 3000, stretchMonthlyBudget: 3300 }).verdict === "stretch" && affordabilityRead({ price: 480000, monthlyTotal: 3200, preApprovalAmount: 500000, maxMonthlyBudget: 3000 }).verdict === "over_budget")
   check("monthly far over budget → over_budget", affordabilityRead({ price: 480000, monthlyTotal: 4000, preApprovalAmount: 500000, maxMonthlyBudget: 3000 }).verdict === "over_budget")
   check("no pre-approval + no budget → unknown (honest)", affordabilityRead({ price: 480000, monthlyTotal: 3000 }).verdict === "unknown")
 

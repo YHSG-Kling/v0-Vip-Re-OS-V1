@@ -2,65 +2,67 @@ import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { requirePlatformStaffAuth } from "@/lib/kernel/api-auth"
+import { isRawProcessingStatus, RAW_PROCESSING_STATUSES } from "@/lib/lead-pipeline/processing-status"
 
 /**
- * Raw scraped-lead inspection + state updates.
+ * Raw scraped-lead state updates (the PATCH repair verb).
  *
  * ACCESS POLICY (owner): RAW LEADS = PLATFORM ONLY. The raw_scraped_leads
  * bench is platform-owned pre-promotion inventory (mirrors migration 035's
  * platform-only RLS): NO tenant surface or action reads raw records — the
  * promotion pipeline processes them server-side and tenants first see the
- * data as promoted `leads`. This route previously admitted ANY authenticated
- * brokerage user via requireAuth + a service client (RLS bypassed); it is now
- * platform staff (superadmin / support) only. Platform staff may optionally
- * narrow to one brokerage with ?brokerage_id=.
+ * data as promoted `leads`.
+ *
+ * ─── TOMBSTONE: THE GET HALF IS DELETED (§1.1, 2026-09-03) ──────────────────
+ *
+ * `GET /api/leads/raw` listed raw_scraped_leads for platform staff, filtered by
+ * `?source=`, `?status=` (default "pending"), `?brokerage_id=` and `?limit=`,
+ * off a service client behind requirePlatformStaffAuth. It was a SECOND door
+ * onto exactly the read that app/actions/lead-promotion/promote-lead.ts:
+ * listRawLeadsForReview already served — the one the Lead Intake Cockpit
+ * (app/dashboard/admin/lead-intake/page.tsx) actually renders, with the same
+ * platform-staff gate and the same platform-only ruling in its header.
+ *
+ * SURVIVOR: app/actions/lead-promotion/promote-lead.ts:63
+ * listRawLeadsForReview. Merged onto it FIRST, then this half was removed:
+ *   · `source`           — the `?source=` filter (was :26 / :44-46 here).
+ *   · `processingStatus` — the `?status=` filter (was :27 / :36 here), now
+ *                          validated against lib/lead-pipeline/processing-status
+ *                          so an impossible value refuses instead of reading as
+ *                          "no data yet". The old default of "pending" was NOT
+ *                          carried: the bench shows every state, un-promoted
+ *                          first, and a caller who wants one state names it.
+ *   · `brokerageId` / `limit` — the survivor already had both.
+ * NO EXTERNAL CALLER CAN EXIST FOR IT: the handler authenticated on a Supabase
+ * SESSION (never a bearer token or cron secret), so its only possible caller
+ * was this app's own UI, which calls the server action. Nothing in the tree,
+ * vercel.json, or lib/kernel/cron-dispatch.ts addressed the path.
+ *
+ * The PATCH below is LEFT STANDING: it is the only state-repair verb on raw rows
+ * and has no sibling anywhere (the survivor is documented inspection-only and a
+ * write verb there would contradict its own header and the round-37 ruling that
+ * there is no manual door on raw records).
  */
 
-export async function GET(request: NextRequest) {
-  const supabase = await createClient()
-  const auth = await requirePlatformStaffAuth(supabase)
-  if (!auth.ok) return auth.response
-
-  try {
-    const searchParams = request.nextUrl.searchParams
-    const source = searchParams.get("source")
-    const status = searchParams.get("status") || "pending"
-    const limit = parseInt(searchParams.get("limit") || "100")
-    const brokerageId = searchParams.get("brokerage_id")
-
-    const svc = createServiceClient()
-
-    let query = svc
-      .from("raw_scraped_leads")
-      .select("*")
-      .eq("processing_status", status)
-      .order("created_at", { ascending: false })
-      .limit(limit)
-
-    if (brokerageId) {
-      query = query.eq("brokerage_id", brokerageId)
-    }
-
-    if (source) {
-      query = query.eq("source", source)
-    }
-
-    const { data, error } = await query
-
-    if (error) {
-      console.error("[leads/raw] Error fetching raw leads:", error)
-      return NextResponse.json({ error: error.message }, { status: 500 })
-    }
-
-    return NextResponse.json({ data, count: data.length })
-  } catch (error) {
-    console.error("[leads/raw] Unexpected error:", error)
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 })
-  }
+// WAVE 155 (lane 155R4, G12): the repair verb leaves ONE agent_action_ledger receipt through ledgerSessionAction
+// (lib/kernel/action-ledger.ts, the one helper): the staff user, the SESSION's tenant (requirePlatformStaffAuth's brokerageId —
+// never the body, never the raw row's), the raw row and the status set; never error_message text. A response with status >= 400
+// settles failed; the response itself is returned untouched. NO cycle / idempotencyKey (a repeated repair runs and records
+// again). Staff with no tenant on the session → no valid row → the repair runs unrecorded, as before.
+async function withRouteReceipt(who: { userId: string; brokerageId: string | null }, action: string, subject: { type: string; id?: string | null }, riskClass: string, detail: Record<string, unknown>, run: () => Promise<NextResponse>): Promise<NextResponse> {
+  if (!who.userId || !who.brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const sid = subject.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(subject.id) ? subject.id : null
+  let res: NextResponse | null = null
+  const r = await ledgerSessionAction({ brokerageId: who.brokerageId, action, actor: { type: "user", userId: who.userId }, subject: { type: subject.type, id: sid, ref: sid ? null : subject.id ?? null }, riskClass, reasonCode: "HUMAN_REQUESTED", detail }, async () => {
+    res = await run()
+    return res.status >= 400 ? { success: false, error: `HTTP ${res.status}` } : { success: true }
+  })
+  return res ?? NextResponse.json({ error: r.error ?? "The repair was not recorded and did not run." }, { status: 500 })
 }
 
 export async function PATCH(request: NextRequest) {
-  // ACCESS POLICY (owner): RAW LEADS = PLATFORM ONLY — see GET above. State
+  // ACCESS POLICY (owner): RAW LEADS = PLATFORM ONLY — see the header. State
   // updates on raw rows are a platform-staff repair verb, never a tenant one.
   const supabase = await createClient()
   const auth = await requirePlatformStaffAuth(supabase)
@@ -73,20 +75,39 @@ export async function PATCH(request: NextRequest) {
     if (!id) {
       return NextResponse.json({ error: "Missing id parameter" }, { status: 400 })
     }
+    // ONE vocabulary. A repair that writes a value the CHECK refuses is rejected
+    // by the database entirely, and a value no reader knows loses the row in
+    // silence (lib/lead-pipeline/processing-status.ts) — so refuse it here, out loud.
+    if (processing_status !== undefined && !isRawProcessingStatus(processing_status)) {
+      return NextResponse.json(
+        { error: `Unknown processing_status "${String(processing_status)}" — admitted: ${RAW_PROCESSING_STATUSES.join(", ")}` },
+        { status: 400 },
+      )
+    }
 
+    return await withRouteReceipt({ userId: auth.userId, brokerageId: auth.brokerageId || null }, "lead_pipeline.raw_lead.repair", { type: "raw_scraped_lead", id: typeof id === "string" ? id : String(id) }, "LOW_RISK_WRITE", { processing_status: processing_status ?? null, error_message_changed: error_message !== undefined }, async () => {
     const svc = createServiceClient()
 
-    const { data: row } = await svc
+    // The error is READ (CLAUDE.md §3): a refused read resolved as "no row" and
+    // this answered 404 for an outage, which is the wrong answer for a repair verb.
+    const { data: row, error: rowError } = await svc
       .from("raw_scraped_leads")
       .select("brokerage_id")
       .eq("id", id)
       .maybeSingle()
+    if (rowError) {
+      console.error("[leads/raw] Error reading raw lead:", rowError)
+      return NextResponse.json({ error: rowError.message }, { status: 500 })
+    }
     if (!row) return NextResponse.json({ error: "Lead not found" }, { status: 404 })
 
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
     if (processing_status) updates.processing_status = processing_status
     if (error_message !== undefined) updates.error_message = error_message
 
+    // `.select().single()` COUNTS the update: an update that matched nothing
+    // (row gone between the read and the write) surfaces as an error here
+    // rather than resolving as success with no row.
     const { data, error } = await svc
       .from("raw_scraped_leads")
       .update(updates)
@@ -100,6 +121,7 @@ export async function PATCH(request: NextRequest) {
     }
 
     return NextResponse.json({ data })
+    })
   } catch (error) {
     console.error("[leads/raw] Unexpected error:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })

@@ -7,11 +7,48 @@
 // /get-started) resolves through resolveProductBrand. CTA links carry UTM params so
 // the growth funnel can attribute which channel/angle produced each signup.
 
+/**
+ * THE PLATFORM'S OWN LIVE AGENT (lane 77B, owner verbatim: "the platform should
+ * also offer the same ai agents like the live agent using d-id because the
+ * platform can use those ai agents as a demo'd product"). The platform's
+ * D-ID presenter is part of its brand kit — its face and voice — and lives
+ * HERE, on the platform_settings singleton, NEVER on a tenant's twin row
+ * (agent_avatar_assets / agent_voice_profiles belong to a real agent, whose
+ * likeness is not the platform's to borrow). The presenter is a D-ID stock
+ * Expressive (V4) avatar id (`name@avt_…` from D-ID's public gallery — no
+ * likeness of a real person, so the consent gate in app/api/did/create-avatar
+ * is never involved) or an `avt_…` id the platform trained under its own
+ * account. `didAgentId` is the cached D-ID Agent record lib/did/platform-live-
+ * agent.ts creates once and the did-agent-sync cron keeps patched.
+ */
+export interface ProductLiveAgent {
+  /** D-ID presenter id (Expressive: `public_x@avt_…` or `avt_…`). null = not configured → the surface falls back to text chat. */
+  presenterId: string | null
+  /** ElevenLabs voice id for the platform agent; null = D-ID's default voice. */
+  voiceId: string | null
+  /** The agent's display name (what D-ID shows and what it calls itself). */
+  name: string
+  /** Opening line the live widget shows before the first turn. */
+  greeting: string
+  /** Free-text personality folded into the D-ID Agent's baseline instructions. */
+  personality: string | null
+  /** A pre-rendered public sample clip (mp4) the agent may play on "show me" — rendered ONCE, never per conversation. */
+  demoClipUrl: string | null
+  /** Cached D-ID Agent id (server-written by lib/did/platform-live-agent.ts; never edited by hand). */
+  didAgentId: string | null
+}
+
 export interface ProductBrand {
   name: string
   tagline: string
   primaryColor: string
   accentColor: string
+  /**
+   * The platform's own LOGO file (wave 144 — lane 144H Outside-lane 7): an https URL in the platform's OWN storage, so a
+   * platform book's cover carries it (lib/lead-magnets/book-publishing-produce.ts fetches a logo ONLY from that storage
+   * host — any other address is reported unreadable, never fetched). null = no logo on file.
+   */
+  logoUrl: string | null
   /** Marketing site origin for CTAs (no trailing slash). */
   ctaUrl: string
   /** What the AI receptionist SAYS the product is (owner rule: no hardcoded
@@ -20,6 +57,18 @@ export interface ProductBrand {
   /** The platform line's opening question (the legal preamble is composed
    *  around it automatically — never part of the setting). */
   receptionGreeting: string
+  /** The platform's own D-ID live agent (lane 77B). */
+  liveAgent: ProductLiveAgent
+}
+
+export const DEFAULT_PRODUCT_LIVE_AGENT: ProductLiveAgent = {
+  presenterId: null,
+  voiceId: null,
+  name: "Guide",
+  greeting: "Hi — I'm the live AI guide. I'm the same live agent every subscriber's website gets. Ask me anything about the platform, or tell me what you run and I'll show you what it would do for you.",
+  personality: null,
+  demoClipUrl: null,
+  didAgentId: null,
 }
 
 export const DEFAULT_PRODUCT_BRAND: ProductBrand = {
@@ -27,12 +76,33 @@ export const DEFAULT_PRODUCT_BRAND: ProductBrand = {
   tagline: "The AI team that runs the whole business",
   primaryColor: "#0F172A",
   accentColor: "#F59E0B",
+  logoUrl: null,
   ctaUrl: "https://vipagents.ai",
   voicePitch: "an AI-powered operating system for real-estate brokerages, teams, and agents — an accountable AI team that handles reception, follow-up, marketing, and operations in one command center",
   receptionGreeting: "Are you calling to learn about the platform, or are you already a customer who needs support?",
+  liveAgent: DEFAULT_PRODUCT_LIVE_AGENT,
 }
 
 const HEX = /^#[0-9a-fA-F]{6}$/
+/** A D-ID presenter id: the Expressive family (`avt_…`, optionally `name@avt_…`) or a gallery presenter slug. */
+const PRESENTER_ID = /^[A-Za-z0-9_@.-]{3,120}$/
+
+/** PURE: the live-agent block — bad values fall back field by field, never the whole block. */
+export function resolveProductLiveAgent(raw: any): ProductLiveAgent {
+  const r = raw ?? {}
+  const str = (v: unknown, max: number): string | null => (typeof v === "string" && v.trim() ? v.trim().slice(0, max) : null)
+  const presenterId = str(r.presenterId, 120)
+  const demoClipUrl = str(r.demoClipUrl, 500)
+  return {
+    presenterId: presenterId && PRESENTER_ID.test(presenterId) ? presenterId : null,
+    voiceId: str(r.voiceId, 80),
+    name: str(r.name, 40) ?? DEFAULT_PRODUCT_LIVE_AGENT.name,
+    greeting: str(r.greeting, 300) ?? DEFAULT_PRODUCT_LIVE_AGENT.greeting,
+    personality: str(r.personality, 600),
+    demoClipUrl: demoClipUrl && /^https:\/\//.test(demoClipUrl) ? demoClipUrl : null,
+    didAgentId: str(r.didAgentId, 120),
+  }
+}
 
 /** PURE: merge a stored product_brand jsonb over the defaults; bad values fall back. */
 export function resolveProductBrand(raw: any): ProductBrand {
@@ -42,9 +112,12 @@ export function resolveProductBrand(raw: any): ProductBrand {
     tagline: (typeof r.tagline === "string" && r.tagline.trim()) ? r.tagline.trim().slice(0, 140) : DEFAULT_PRODUCT_BRAND.tagline,
     primaryColor: HEX.test(r.primaryColor ?? "") ? r.primaryColor : DEFAULT_PRODUCT_BRAND.primaryColor,
     accentColor: HEX.test(r.accentColor ?? "") ? r.accentColor : DEFAULT_PRODUCT_BRAND.accentColor,
+    // https only, bounded; anything else falls back to no logo (never a guessed URL)
+    logoUrl: (typeof r.logoUrl === "string" && /^https:\/\/\S+$/.test(r.logoUrl.trim()) && r.logoUrl.trim().length <= 500) ? r.logoUrl.trim() : DEFAULT_PRODUCT_BRAND.logoUrl,
     ctaUrl: (typeof r.ctaUrl === "string" && /^https?:\/\//.test(r.ctaUrl)) ? r.ctaUrl.replace(/\/$/, "") : DEFAULT_PRODUCT_BRAND.ctaUrl,
     voicePitch: (typeof r.voicePitch === "string" && r.voicePitch.trim()) ? r.voicePitch.trim().slice(0, 600) : DEFAULT_PRODUCT_BRAND.voicePitch,
     receptionGreeting: (typeof r.receptionGreeting === "string" && r.receptionGreeting.trim()) ? r.receptionGreeting.trim().slice(0, 300) : DEFAULT_PRODUCT_BRAND.receptionGreeting,
+    liveAgent: resolveProductLiveAgent(r.liveAgent),
   }
 }
 

@@ -17,6 +17,14 @@
  * verified field as high confidence, so an amber "propose" from a
  * medium-confidence scan upgrades to a green autonomous insert the
  * moment a human confirms the fact — the assisted→autonomous ladder.
+ *
+ * WHO VERIFIED. `verified_by_user_id` is written below from the session's
+ * auth user id — a USERS-class id (it has no FK in scripts/schema-fk-map.ts;
+ * the class is the writer's). It was stamped on every verification and read
+ * by nothing: the list reported WHEN and dropped WHO. It is now resolved in
+ * one batched read anchored on the actor's brokerage, in four states that are
+ * never collapsed and never "the system": resolved / unresolved (an id that
+ * no user of this brokerage carries) / not_recorded (NULL) / lookup_refused.
  */
 
 import { createClient } from "@/lib/supabase/server"
@@ -42,6 +50,12 @@ export interface ExtractionRow {
   value: unknown
   confidence: string
   verified: boolean
+  verifiedAt: string | null
+  /** users.id of the person who verified — null when unverified. */
+  verifiedByUserId: string | null
+  /** Display name resolved inside the actor's brokerage; null unless `resolved`. */
+  verifiedByName: string | null
+  verifiedByState: "resolved" | "unresolved" | "not_recorded" | "lookup_refused"
   classification: string | null
   documentSummary: string | null
   transactionId: string | null
@@ -56,24 +70,61 @@ export async function listRecentExtractionsAction(input?: {
   if (!actor.ok) return { ok: false, error: actor.error }
   const svc = createServiceClient()
 
-  const { data } = await svc
+  // `error` is read: a refused ledger read used to resolve as "no facts yet".
+  // RECEIPT FACTS ARE NOT DEAL-FILE FACTS (wave 152, lane 152D). `expense.*` rows are someone's BOOKS — merchant,
+  // amount, payment card — reviewed only on the receipt review page by the uploader or an admin who keeps the books
+  // (lib/documents/receipt-intake.ts). This list is every authenticated seat's; it never shows them.
+  const { data, error: listErr } = await svc
     .from("document_field_extractions")
-    .select("id, document_id, field_key, field_value_json, confidence, verified_at, created_at")
+    .select("id, document_id, field_key, field_value_json, confidence, verified_at, verified_by_user_id, created_at")
     .eq("brokerage_id", actor.brokerageId)
+    .not("field_key", "like", "expense.%")
     .order("created_at", { ascending: false })
     .limit(input?.limit ?? 30)
+  if (listErr) return { ok: false, error: listErr.message }
   const rows = (data ?? []) as any[]
   if (rows.length === 0) return { ok: true, rows: [] }
 
   const docIds = Array.from(new Set(rows.map((r) => r.document_id)))
-  const { data: docs } = await svc
+  const { data: docs, error: docsErr } = await svc
     .from("documents")
     .select("id, classification, summary, transaction_id")
     .in("id", docIds)
+    .eq("brokerage_id", actor.brokerageId)
+  if (docsErr) console.error("[document-extractions] documents lookup refused — facts render without document context:", docsErr.message)
   const docById = new Map(((docs ?? []) as any[]).map((d) => [d.id, d]))
+
+  // Batched, tenant-anchored verifier names. The brokerage predicate is the
+  // point: a users.id from another tenant must resolve to "unresolved", not to
+  // a name this brokerage has no business seeing.
+  const verifierIds = Array.from(new Set(rows.map((r) => r.verified_by_user_id).filter((id): id is string => !!id)))
+  const verifierNameById = new Map<string, string>()
+  let verifierLookupRefused = false
+  if (verifierIds.length > 0) {
+    const { data: verifiers, error: verifiersErr } = await svc
+      .from("users")
+      .select("id, first_name, last_name, email")
+      .in("id", verifierIds)
+      .eq("brokerage_id", actor.brokerageId)
+    if (verifiersErr) {
+      verifierLookupRefused = true
+      console.error("[document-extractions] verifier name lookup refused:", verifiersErr.message)
+    }
+    for (const u of (verifiers ?? []) as any[]) {
+      const label = [u.first_name, u.last_name].filter(Boolean).join(" ") || u.email
+      if (label) verifierNameById.set(u.id as string, label as string)
+    }
+  }
 
   const out: ExtractionRow[] = rows.map((r) => {
     const d = docById.get(r.document_id)
+    const verifiedByUserId = (r.verified_by_user_id as string | null) ?? null
+    const verifiedByName = verifiedByUserId ? verifierNameById.get(verifiedByUserId) ?? null : null
+    const verifiedByState: ExtractionRow["verifiedByState"] =
+      !verifiedByUserId ? "not_recorded"
+      : verifiedByName ? "resolved"
+      : verifierLookupRefused ? "lookup_refused"
+      : "unresolved"
     return {
       id: r.id,
       documentId: r.document_id,
@@ -81,6 +132,10 @@ export async function listRecentExtractionsAction(input?: {
       value: r.field_value_json,
       confidence: r.confidence,
       verified: !!r.verified_at,
+      verifiedAt: (r.verified_at as string | null) ?? null,
+      verifiedByUserId,
+      verifiedByName,
+      verifiedByState,
       classification: (d?.classification as string | null) ?? null,
       documentSummary: (d?.summary as string | null) ?? null,
       transactionId: (d?.transaction_id as string | null) ?? null,
@@ -99,6 +154,7 @@ export async function verifyExtractionAction(input: {
 }): Promise<{ ok: boolean; rederived?: boolean; error?: string }> {
   const actor = await loadActor()
   if (!actor.ok) return { ok: false, error: actor.error }
+  return ledgered(actor, { action: "document.extraction.verify", subject: { type: "document_field_extraction", id: input.extractionId }, riskClass: "LEGAL", detail: { corrected: typeof input.correctedValue === "string" && input.correctedValue.trim() !== "" } }, async () => {
   const svc = createServiceClient()
 
   const { data: row } = await svc
@@ -108,6 +164,12 @@ export async function verifyExtractionAction(input: {
     .eq("brokerage_id", actor.brokerageId)
     .maybeSingle()
   if (!row) return { ok: false, error: "Extraction not found" }
+  // A receipt fact is confirmed ONLY through the receipt review (approve → the one expense writer, under the books'
+  // authority). Verifying it here would stamp a human's name on a fact no books-keeper approved, and a corrected value
+  // written here would replace its evidence envelope with a bare string.
+  if (String((row as any).field_key ?? "").startsWith("expense.")) {
+    return { ok: false, error: "Receipt details are confirmed on the receipt's review page." }
+  }
 
   const corrected = typeof input.correctedValue === "string" && input.correctedValue.trim() !== ""
   const update: Record<string, unknown> = {
@@ -131,11 +193,14 @@ export async function verifyExtractionAction(input: {
     if (doc?.classification) {
       // Effective fields = the raw scan overlaid with every verified ledger
       // value (human corrections included) — the scan blob itself stays as-is.
-      const { data: ledger } = await svc
+      // The ledger's error is read: a refused overlay read must not re-derive
+      // from the raw scan as though no human had ever corrected anything.
+      const { data: ledger, error: ledgerErr } = await svc
         .from("document_field_extractions")
         .select("field_key, field_value_json")
         .eq("document_id", (doc as any).id)
         .not("verified_at", "is", null)
+      if (ledgerErr) throw new Error(`verified-ledger read refused: ${ledgerErr.message}`)
       const fields: Record<string, unknown> = { ...(((doc as any).extracted_fields ?? {}) as Record<string, unknown>) }
       for (const l of ((ledger ?? []) as any[])) fields[l.field_key] = l.field_value_json
 
@@ -150,7 +215,36 @@ export async function verifyExtractionAction(input: {
       })
       rederived = run.inserted > 0 || run.confirmed > 0
     }
-  } catch { /* verification stands even if re-derivation hiccups */ }
+  } catch (e) {
+    // Verification stands even if re-derivation hiccups — but say so.
+    console.error("[document-extractions] re-derivation skipped after verify:", e instanceof Error ? e.message : e)
+  }
 
   return { ok: true, rederived }
+  })
+}
+
+/**
+ * WAVE 155 (lane 155R9, G12): ONE agent_action_ledger receipt per session write — ledgerSessionAction
+ * (lib/kernel/action-ledger.ts) does the claim → run → settle. Who and which tenant come from the SESSION (CLAUDE.md §4);
+ * "session" resolves them through getAgentContext. NO idempotency key: a person's second save runs again and leaves a
+ * second receipt. The export's value comes back unchanged; a refused claim (only a malformed action name, caught by
+ * test:action-ledger §14) throws instead of returning a value of another shape. No session tenant → the write runs exactly
+ * as before, unrecorded (agent_action_ledger.brokerage_id is NOT NULL — there is no valid row to write).
+ * @proofSeam scripts/ledger-receipts-transaction2-guard.ts
+ */
+async function ledgered<T>(
+  who: { userId?: string | null; brokerageId?: string | null; agentId?: string | null } | null | undefined | "session",
+  what: { action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> },
+  run: () => Promise<T>,
+): Promise<T> {
+  const seat = who === "session" ? await (await import("@/lib/identity/get-agent-context")).getAgentContext() : who
+  if (!seat?.userId || !seat.brokerageId) return run()
+  const id = what.subject.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(what.subject.id) ? what.subject.id : null
+  const subject = { type: what.subject.type, id, ref: id ? what.subject.ref ?? null : what.subject.ref ?? what.subject.id ?? null }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const r = await ledgerSessionAction({ brokerageId: seat.brokerageId, action: what.action, actor: { type: "user", userId: seat.userId, agentId: seat.agentId ?? null }, subject, riskClass: what.riskClass, reasonCode: "HUMAN_REQUESTED", detail: what.detail ?? null }, async () => { ran = true; return run() })
+  if (!ran) throw new Error((r as { error?: string }).error ?? "action ledger refused the claim")
+  return r as T
 }

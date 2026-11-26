@@ -8,6 +8,7 @@ import {
 NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateMarketInsight } from "@/lib/intelligence/market-insight-generator"
+import { resolveActivePullGate } from "@/lib/lead-pipeline/scrape-territories"
 import {
   createCronRunContextAction,
   recordCronStartAction,
@@ -28,6 +29,7 @@ export async function GET(request: Request) {
     cron_name: "market-insights-weekly",
     cron_path: "/app/api/cron/market-insights-weekly/route.ts",
   })
+  if (contextResult.data?.held) return NextResponse.json({ success: true, held: true, decision: contextResult.data.decision }) // cron decision door (155R1): held before any domain write
   if (!contextResult.success || !contextResult.data) {
     return NextResponse.json({ error: "Failed to create cron context" }, { status: 500 })
   }
@@ -40,6 +42,7 @@ export async function GET(request: Request) {
   const supabase = createServiceClient()
   let generated = 0
   let errors = 0
+  let territoryTally: unknown = null
 
   try {
     // Get distinct market areas from active sources
@@ -75,7 +78,17 @@ export async function GET(request: Request) {
     }
 
     // Generate insights for each unique market
+    // ACTIVE-TERRITORY PRE-CHECK (wave 92, lane 92B — owner: "checking the active territories before
+  // scrapping and pulling data will cutdown on runs"): ONE resolution, every skipped run counted.
+    // AREA-level: this is a RentCast MARKET sweep (zip statistics) — it runs only for a live
+    // tenant's zip inside one of that tenant's active territories.
+    const pullGate = await resolveActivePullGate(supabase)
+    territoryTally = pullGate.tally
     for (const source of uniqueMarkets.values()) {
+      if (!pullGate.check(
+        { brokerageId: source.brokerage_id, zip: source.zip_codes?.[0] ?? null },
+        { requireArea: true },
+      ).allowed) continue
       try {
         const result = await generateMarketInsight({
           brokerageId: source.brokerage_id,
@@ -106,7 +119,7 @@ export async function GET(request: Request) {
       context_id: contextId,
       records_processed: uniqueMarkets.size,
       output_count: generated,
-      metadata: { generated, errors, total: uniqueMarkets.size },
+      metadata: { generated, errors, total: uniqueMarkets.size, territory_gate: territoryTally },
     })
 
     return NextResponse.json({

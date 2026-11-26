@@ -17,6 +17,10 @@ import {
   batchCreateSnippets,
   type PlatformTarget,
 } from "@/app/actions/video-repurposing"
+import {
+  getVideoProjectSnippetSource,
+  type VideoProjectSnippetSource,
+} from "@/app/actions/video/create-video-project"
 import { getVideoProjects, getPodcastEpisodes } from "@/app/actions/podcast-generation"
 
 interface Props {
@@ -70,6 +74,43 @@ export function SnippetWizardPanel({ brokerageId, userId }: Props) {
   // Step 4 — schedule
   const [createdSnippetIds, setCreatedSnippetIds] = useState<string[]>([])
 
+  // The selected video project, loaded through the tenant-gated reader so the
+  // agent can see its render state — and, crucially, whether it carries a
+  // script — BEFORE spending AI inference. generateSnippetSuggestions reads
+  // ai_video_projects.script_content and quietly falls back to a generic clip
+  // when it is empty; that is now said out loud instead.
+  const [projectSource, setProjectSource] = useState<VideoProjectSnippetSource | null>(null)
+  const [projectSourceError, setProjectSourceError] = useState<string | null>(null)
+  const [projectSourceLoading, setProjectSourceLoading] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    if (sourceType !== "video_project" || !sourceId) {
+      setProjectSource(null)
+      setProjectSourceError(null)
+      return
+    }
+    setProjectSourceLoading(true)
+    setProjectSourceError(null)
+    ;(async () => {
+      try {
+        const result = await getVideoProjectSnippetSource(sourceId)
+        if (cancelled) return
+        if (!result.success || !result.source) {
+          setProjectSource(null)
+          setProjectSourceError(result.error ?? "Could not load that project.")
+          return
+        }
+        setProjectSource(result.source)
+      } catch (err: any) {
+        if (!cancelled) setProjectSourceError(err?.message ?? "Could not load that project.")
+      } finally {
+        if (!cancelled) setProjectSourceLoading(false)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [sourceType, sourceId])
+
   useEffect(() => {
     let cancelled = false
     ;(async () => {
@@ -116,11 +157,16 @@ export function SnippetWizardPanel({ brokerageId, userId }: Props) {
           sourceTitle: sourceType === "external_url" ? (externalUrl || "External content") : undefined,
           platforms,
         })
-        if (!(result as any).success) {
-          toast.error((result as any).error ?? "Failed to generate suggestions.")
+        // generateSnippetSuggestions returns a discriminated result. It used to
+        // return a bare ARRAY while this read `result.success` — always
+        // undefined — so a successful generation was reported to the agent as
+        // "Failed to generate suggestions." every single time and the wizard
+        // could never reach step 3.
+        if (!result.success) {
+          toast.error(result.error ?? "Failed to generate suggestions.")
           return
         }
-        const sugg = ((result as any).suggestions ?? []) as Suggestion[]
+        const sugg = result.suggestions as Suggestion[]
         if (sugg.length === 0) {
           toast.warning("No suggestions returned. Try a longer source clip.")
           return
@@ -158,12 +204,23 @@ export function SnippetWizardPanel({ brokerageId, userId }: Props) {
           })),
           createdBy: userId,
         })
-        if (!(result as any).success) {
-          toast.error((result as any).error ?? "Failed to create snippets.")
+        // Same inverted-verdict bug as above, plus: the count reported was
+        // `suggestions.length` (what we ASKED for) rather than what the server
+        // actually created, so a batch in which every insert was refused still
+        // announced "Created 4 snippets."
+        if (!result.success) {
+          toast.error(result.error ?? "Failed to create snippets.")
           return
         }
-        setCreatedSnippetIds(((result as any).snippetIds ?? []) as string[])
-        toast.success(`Created ${suggestions.length} snippet${suggestions.length === 1 ? "" : "s"}.`)
+        setCreatedSnippetIds(result.snippetIds)
+        const n = result.snippetIds.length
+        if (result.failed.length > 0) {
+          toast.warning(
+            `Created ${n} snippet${n === 1 ? "" : "s"}; ${result.failed.length} refused — ${result.failed[0].error}`
+          )
+        } else {
+          toast.success(`Created ${n} snippet${n === 1 ? "" : "s"}.`)
+        }
         setStep(4)
       } catch (err: any) {
         toast.error(err?.message ?? "Failed to create snippets.")
@@ -264,6 +321,48 @@ export function SnippetWizardPanel({ brokerageId, userId }: Props) {
                 </Select>
               )}
             </div>
+
+            {/* Selected project — render state + whether it has a script */}
+            {sourceType === "video_project" && sourceId && (
+              <div className="rounded-lg border p-3 space-y-1.5">
+                {projectSourceLoading && (
+                  <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    Checking that project…
+                  </p>
+                )}
+                {projectSourceError && !projectSourceLoading && (
+                  <p className="text-xs text-destructive">{projectSourceError}</p>
+                )}
+                {projectSource && !projectSourceLoading && (
+                  <>
+                    <p className="text-sm font-medium">{projectSource.title}</p>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <Badge variant="outline" className="text-[10px]">
+                        status: {projectSource.status}
+                      </Badge>
+                      {projectSource.durationSeconds != null && (
+                        <Badge variant="outline" className="text-[10px]">
+                          {projectSource.durationSeconds}s
+                        </Badge>
+                      )}
+                      <Badge
+                        variant={projectSource.hasScript ? "secondary" : "destructive"}
+                        className="text-[10px]"
+                      >
+                        {projectSource.hasScript ? "has script" : "no script"}
+                      </Badge>
+                    </div>
+                    {!projectSource.hasScript && (
+                      <p className="text-xs text-muted-foreground">
+                        This project has no script, so the AI has nothing to read — suggestions will
+                        be generic. Add a script to the project for clip picks that match the content.
+                      </p>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
 
             <div className="flex justify-end">
               <Button disabled={!canAdvanceToStep2} onClick={() => setStep(2)}>

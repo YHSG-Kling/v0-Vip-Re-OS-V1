@@ -11,7 +11,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
-import { buildCdaContractVerdict, expectedGrossFromTerms, sumOutstandingAgentFees, type CdaDiscrepancy } from "@/lib/commission/cda-discrepancy"
+import { buildCdaContractVerdict, buildCdaFeeDeduction, expectedGrossFromTerms, sumOutstandingAgentFees, type CdaDiscrepancy, type CdaFeeDeduction } from "@/lib/commission/cda-discrepancy"
 
 const COMPLIANCE_ROLES = new Set([
   "compliance_officer",
@@ -29,6 +29,9 @@ export interface CdaReviewItem {
   status:                   string
   /** Set once the broker has applied their signature (the 2nd signature). */
   brokerApprovedAt:         string | null
+  /** Set once the signed CDA has actually reached the closing agent. Until then
+   *  the deal's disbursement instruction has not been delivered to anyone. */
+  sentToTitleAt:            string | null
   revisionNumber:           number
   grossCommission:          number | null
   agentNet:                 number | null
@@ -46,6 +49,11 @@ export interface CdaReviewItem {
   contractSplitPct:         number | null
   /** Unpaid fees the agent owes the brokerage — must be deducted in the CDA (0 = none). */
   outstandingFees:          number
+  /** What those fees DO to the disbursement (wave 26): the deduction line
+   *  compliance must confirm is on the CDA, and the agent's net after it
+   *  (null when the post-split share is unknown — never a guessed figure).
+   *  Surfaces only; `contractCheckPassed` above is untouched by it. */
+  feeDeduction:             CdaFeeDeduction
 }
 
 /**
@@ -75,12 +83,18 @@ export async function listCdasForComplianceReviewAction(): Promise<{
       gross_commission, agent_net, brokerage_net,
       signature_check_passed, missing_docs, manual_override_by,
       agent_submitted_at, changes_requested_at, changes_requested_notes,
-      preliminary_cd_uploaded_at, broker_approved_at
+      preliminary_cd_uploaded_at, broker_approved_at, sent_to_title_at
     `)
     .eq("brokerage_id", auth.brokerageId)
     // submitted (compliance review) + recent changes_requested + approved-awaiting-
-    // broker-signature (broker_approved_at null) so the broker can sign in the panel.
-    .or(`status.eq.submitted,and(status.eq.changes_requested,changes_requested_at.gte.${sevenDaysAgo}),and(status.eq.approved,broker_approved_at.is.null)`)
+    // broker-signature (broker_approved_at null) so the broker can sign in the panel
+    // + approved-AND-signed-but-NOT-YET-SENT, which is the step the queue used to
+    // drop on the floor: the moment the broker signed, broker_approved_at stopped
+    // being null and the CDA vanished from this list. Nothing else surfaces it, so
+    // the disbursement authorization was signed and then never delivered to the
+    // closing agent — the panel even said "ready to send to the closing agent"
+    // with no way to send it.
+    .or(`status.eq.submitted,and(status.eq.changes_requested,changes_requested_at.gte.${sevenDaysAgo}),and(status.eq.approved,broker_approved_at.is.null),and(status.eq.approved,broker_approved_at.not.is.null,sent_to_title_at.is.null)`)
     .order("agent_submitted_at", { ascending: true, nullsFirst: false })
     .limit(50)
 
@@ -89,16 +103,28 @@ export async function listCdasForComplianceReviewAction(): Promise<{
 
   // Resolve transaction property + agent name (separate batched lookups —
   // the table has no FK joins declared)
+  //
+  // cda.agent_id is agents-class, the same class agent_commission_profiles /
+  // agent_cap_tracking / agent_fee_charges key on, so every agent-scoped read
+  // below is keyed straight off it. Only the DISPLAY NAME needs the other
+  // direction — names live on users — so agents.user_id is the single hop.
   const txnIds = Array.from(new Set(cdas.map(c => c.transaction_id).filter(Boolean)))
   const agentIds = Array.from(new Set(cdas.map(c => c.agent_id).filter(Boolean)))
 
-  const [txnsRes, agentsRes, profilesRes, capRes] = await Promise.all([
+  const { data: agentRows } = agentIds.length
+    ? await supabase.from("agents").select("id, user_id").eq("brokerage_id", auth.brokerageId).in("id", agentIds)
+    : { data: [] as Array<{ id: string; user_id: string | null }> }
+
+  /** agents.id → users.id, for the name lookup only. */
+  const userIdByAgentId = new Map<string, string>()
+  for (const a of agentRows ?? []) {
+    if (a.user_id) userIdByAgentId.set(a.id, a.user_id)
+  }
+
+  const [txnsRes, profilesRes, capRes] = await Promise.all([
     txnIds.length
       ? supabase.from("transactions").select("id, property_address, estimated_commission, purchase_price, commission_percentage").in("id", txnIds)
       : Promise.resolve({ data: [] as Array<{ id: string; property_address: string | null; estimated_commission: number | null; purchase_price: number | null; commission_percentage: number | null }> }),
-    agentIds.length
-      ? supabase.from("agents").select("id, user_id").in("id", agentIds)
-      : Promise.resolve({ data: [] as Array<{ id: string; user_id: string | null }> }),
     agentIds.length
       ? supabase.from("agent_commission_profiles").select("agent_id, split_percent, cap_amount, effective_date").eq("is_active", true).in("agent_id", agentIds).order("effective_date", { ascending: false })
       : Promise.resolve({ data: [] as Array<{ agent_id: string; split_percent: number | null; cap_amount: number | null; effective_date: string | null }> }),
@@ -136,27 +162,33 @@ export async function listCdasForComplianceReviewAction(): Promise<{
     const prev = capByAgent.get(c.agent_id)
     if (!prev || Number(c.cap_paid_to_date ?? 0) > Number(prev.cap_paid_to_date ?? 0)) capByAgent.set(c.agent_id, { cap_amount: c.cap_amount, cap_paid_to_date: c.cap_paid_to_date })
   }
-  const userIds = (agentsRes.data ?? []).map(a => a.user_id).filter(Boolean) as string[]
-  const usersRes = userIds.length
-    ? await supabase.from("users").select("id, first_name, last_name").in("id", userIds)
+  const cdaUserIds = Array.from(new Set([...userIdByAgentId.values()]))
+  const usersRes = cdaUserIds.length
+    ? await supabase.from("users").select("id, first_name, last_name").in("id", cdaUserIds)
     : { data: [] as Array<{ id: string; first_name: string | null; last_name: string | null }> }
   const nameByUserId = new Map<string, string | null>(
     (usersRes.data ?? []).map((u: any) => [u.id, `${u.first_name ?? ""} ${u.last_name ?? ""}`.trim() || null])
   )
-  const userIdByAgent = new Map<string, string | null>(
-    (agentsRes.data ?? []).map(a => [a.id, a.user_id])
-  )
 
   const items: CdaReviewItem[] = cdas.map(c => {
-    const userId = userIdByAgent.get(c.agent_id) ?? null
+    const agentId = c.agent_id ?? null
+    const userId = agentId ? userIdByAgentId.get(agentId) ?? null : null
     // Live split-vs-contract verdict (the compliance officer's "does the contract agree" check).
-    const profile = profileByAgent.get(c.agent_id)
+    const profile = agentId ? profileByAgent.get(agentId) : undefined
     const contractSplit = profile?.split_percent ?? null
-    const outstandingFees = sumOutstandingAgentFees(feeChargesByAgent.get(c.agent_id) ?? [])
+    const outstandingFees = sumOutstandingAgentFees(agentId ? feeChargesByAgent.get(agentId) ?? [] : [])
+    // The deduction the queue row must show beside the total (wave 26). Computed
+    // OUTSIDE the contract-split branch on purpose: an agent can owe fees with no
+    // split on file, and the fees are still owed and still deducted — the split
+    // verdict's absence is not the deduction's absence.
+    const feeDeduction = buildCdaFeeDeduction({
+      outstandingFees,
+      agentCommissionShare: c.agent_net == null ? null : Number(c.agent_net),
+    })
     let contractCheckPassed: boolean | null = null
     let contractDiscrepancies: CdaDiscrepancy[] | null = null
     if (contractSplit != null && Number.isFinite(contractSplit)) {
-      const cap = capByAgent.get(c.agent_id)
+      const cap = agentId ? capByAgent.get(agentId) : undefined
       const capAmount = Number(cap?.cap_amount ?? profile?.cap_amount ?? 0)
       const capPaid = Number(cap?.cap_paid_to_date ?? 0)
       const capReached = capAmount > 0 && capPaid >= capAmount
@@ -178,6 +210,7 @@ export async function listCdasForComplianceReviewAction(): Promise<{
       agentName:                userId ? (nameByUserId.get(userId) ?? null) : null,
       status:                   c.status,
       brokerApprovedAt:         c.broker_approved_at ?? null,
+      sentToTitleAt:            (c as any).sent_to_title_at ?? null,
       revisionNumber:           c.revision_number ?? 1,
       grossCommission:          c.gross_commission,
       agentNet:                 c.agent_net,
@@ -193,6 +226,7 @@ export async function listCdasForComplianceReviewAction(): Promise<{
       contractDiscrepancies,
       contractSplitPct:         contractSplit,
       outstandingFees,
+      feeDeduction,
     }
   })
 

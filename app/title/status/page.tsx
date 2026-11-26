@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Clock, ArrowLeft } from 'lucide-react'
@@ -37,7 +37,7 @@ export default async function TitleStatusPage() {
         <Link href="/title/dashboard"><Button variant="ghost" size="sm"><ArrowLeft className="w-4 h-4" /></Button></Link>
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2">
-            <Clock className="w-6 h-6 text-yellow-600" />
+            <Clock className="w-6 h-6 text-yellow-700" />
             Order Status
           </h1>
         </div>
@@ -55,7 +55,7 @@ export default async function TitleStatusPage() {
                     <p className="text-sm font-medium">{t.property_address || 'Address TBD'}</p>
                     <p className="text-xs text-gray-500">{t.client_name}</p>
                   </div>
-                  {t.close_date && <span className="text-xs text-gray-400">{new Date(t.close_date).toLocaleDateString()}</span>}
+                  {t.close_date && <span className="text-xs text-gray-500">{new Date(t.close_date).toLocaleDateString()}</span>}
                 </CardContent>
               </Card>
             ))}

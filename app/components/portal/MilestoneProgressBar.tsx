@@ -23,6 +23,8 @@ export interface MilestoneProgressBarProps {
   milestones: TransactionMilestone[]
   contactId: string
   labelMap?: Record<string, string>
+  /** optional by design: style-override passthrough onto the root element; no
+   *  current caller needs a non-default look. */
   className?: string
 }
 
@@ -209,7 +211,7 @@ export function MilestoneProgressBar({
                   className={cn(
                     "text-xs shrink-0",
                     status === "completed"
-                      ? "text-green-600"
+                      ? "text-green-700"
                       : isCurrent
                       ? "text-blue-600 font-medium"
                       : "text-muted-foreground"

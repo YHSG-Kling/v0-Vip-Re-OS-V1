@@ -12,6 +12,10 @@
  */
 import { createServiceClient } from "@/lib/supabase/service"
 import { sanitizeProperNoun } from "@/lib/compliance/client-text-guard"
+// ONE SPELLING (§6) — this file was already speaking the owner's public word
+// for a lowered list price; it now takes it from the single label helper so the
+// ad, the postcard, the portal badge and the reel cover frame cannot drift.
+import { priceImprovementLabel } from "@/lib/listings/price-improvement-label"
 
 export type ListingAdKind = "just_listed" | "just_sold" | "price_reduction"
 
@@ -45,8 +49,8 @@ export function buildListingCreative(facts: ListingFacts, kind: ListingAdKind): 
     // Positive, industry-standard framing ("improved" not "reduced/desperate");
     // no protected-class language, no suggested value — just the new opportunity.
     return {
-      variationName: "Price Improved — agent-initiated",
-      headline:      "Price Improved!",
+      variationName: `${priceImprovementLabel("badge")} — agent-initiated`,
+      headline:      `${priceImprovementLabel("badge")}!`,
       primaryText:   `New price on this home ${where}${specs ? ` — ${specs}` : ""}. A fresh opportunity to tour or make it yours. Ask for details today.`,
       description:   "New price",
       callToAction:  "LEARN_MORE",
@@ -98,15 +102,21 @@ export async function produceListingAdCampaign(
   if (!brokerageId || !listingId) return { produced: false, reason: "missing ids" }
 
   // Idempotent — one auto campaign per listing per kind.
-  const { data: existing } = await supabase.from("ad_campaigns")
+  const { data: existing, error: existingErr } = await supabase.from("ad_campaigns")
     .select("id").eq("brokerage_id", brokerageId)
     .contains("targeting_config", { listing_id: listingId, auto_kind: kind }).maybeSingle()
+  // Fail closed (wave 148Z): an unreadable idempotency check must not produce a second campaign.
+  if (existingErr) return { produced: false, reason: `idempotency read refused: ${existingErr.message}` }
   if (existing) return { produced: false, campaignId: (existing as { id: string }).id, reason: "already produced" }
 
-  const { data: l } = await supabase.from("listings")
-    .select("address, city, state, agent_id, list_price, bedrooms, bathrooms, property_type").eq("id", listingId).maybeSingle()
+  // WAVE 148 (148Z — lane 148D Outside-lane 1): TENANT-PINNED. This read was `.eq("id", listingId)` alone on a service client —
+  // C17 resolved the listing under the tenant first, but every other caller could hand in another brokerage's listing id and
+  // get an ad drafted from its facts under THIS tenant's name. The listing must belong to the brokerage the campaign is for.
+  const { data: l, error: lErr } = await supabase.from("listings")
+    .select("address, city, state, agent_id, list_price, bedrooms, bathrooms, property_type").eq("id", listingId).eq("brokerage_id", brokerageId).maybeSingle()
+  if (lErr) return { produced: false, reason: `listing read refused: ${lErr.message}` }
   const listing = l as (ListingFacts & { agent_id: string | null }) | null
-  if (!listing) return { produced: false, reason: "listing not found" }
+  if (!listing) return { produced: false, reason: "listing not found in this brokerage" }
 
   let agentUserId: string | null = null
   if (listing.agent_id) {
@@ -114,7 +124,7 @@ export async function produceListingAdCampaign(
     agentUserId = await resolveAgentRecordToUserId(listing.agent_id)
   }
 
-  const kindLabel = kind === "just_sold" ? "Just Sold" : kind === "price_reduction" ? "Price Improved" : "Just Listed"
+  const kindLabel = kind === "just_sold" ? "Just Sold" : kind === "price_reduction" ? priceImprovementLabel("badge") : "Just Listed"
   const campaignName = `${kindLabel} — ${listing.address ?? listing.city ?? "Listing"}`
   const { data: campaign, error: cErr } = await supabase.from("ad_campaigns").insert({
     brokerage_id: brokerageId, agent_user_id: agentUserId, campaign_name: campaignName,
@@ -136,11 +146,14 @@ export async function produceListingAdCampaign(
   // principles — and generated_from records the decision so the flywheel
   // is auditable ('learned:<arm>' vs the norm path).
   let generatedFrom = "listing_handoff"
+  // HOISTED OUT OF THE try. The team is the first rung of the destination
+  // ladder too (lib/ads/ad-destination.ts), and a learned-emphasis failure
+  // must not also cost the creative its landing page.
+  let teamId: string | null = null
   try {
     const { learnedCreativeEmphasis } = await import("./ad-outcome-loop")
     // Scope ladder: this agent's own evidence first, then their team's,
     // then the brokerage blend — every tier learns from ITS OWN results.
-    let teamId: string | null = null
     if (listing.agent_id) {
       const { data: agentRow } = await supabase.from("agents").select("team_id").eq("id", listing.agent_id).maybeSingle()
       teamId = (agentRow as { team_id: string | null } | null)?.team_id ?? null
@@ -158,10 +171,20 @@ export async function produceListingAdCampaign(
   } catch { /* the deterministic FH-clean creative stands */ }
 
   const media = await resolveMedia(brokerageId, agentUserId, supabase)
+  // WHERE THE CLICK GOES. `destination_url` was read at launch
+  // (lib/ads/launch-assembler.ts:51) and written by no producer, so every Google
+  // ad and every non-`leads` Meta objective failed validateAdReadiness with
+  // `missing: ["creative.destinationUrl"]` and could never launch. For a listing
+  // ad the destination is that listing's own published landing page; null when
+  // it is not published yet, which keeps the readiness check refusing rather
+  // than sending paid traffic to a 404. See lib/ads/ad-destination.ts.
+  const { resolveAdDestination } = await import("./ad-destination")
+  const destinationUrl = await resolveAdDestination(supabase, { brokerageId, listingId, teamId })
   const { data: cr, error: crErr } = await supabase.from("ad_creative_variations").insert({
     brokerage_id: brokerageId, ad_campaign_id: campaignId, variation_name: creative.variationName,
     headline: creative.headline, primary_text: creative.primaryText, description: creative.description, call_to_action: creative.callToAction,
     media_asset_url: media?.url ?? null, source_marketing_asset_id: media?.assetId ?? null,
+    destination_url: destinationUrl,
     generated_from: generatedFrom, approval_status: "draft",
   }).select("id").single()
   if (crErr || !cr) return { produced: false, campaignId, reason: crErr?.message ?? "creative insert failed" }

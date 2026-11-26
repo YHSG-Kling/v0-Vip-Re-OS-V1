@@ -7,6 +7,12 @@
 // (the 6-month check-in in particular has no delivery path). That's the "stale, alone, not managed by a
 // manager" pattern the rest of the system reaps (manager_signals, video, workflow_runs, stranded offers).
 //
+// WAVE 143 (lane 143E): the missing delivery path now exists — lib/sphere/followup-moments.ts conductDueFollowUpMoments runs in the
+// daily lifetime cron BEFORE this reaper can see a row (the grace below is days after the date): each due moment is delivered,
+// delegated, routed to the agent, deferred by the arbiter, or settled `skipped` as a decision (a person who cannot be contacted),
+// and anniversary rows are reconciled against the send the cron made. So a row that is STILL `scheduled` here, past the grace,
+// is a real miss (the conductor could not read the person's journey / the gateway stayed down), not a phantom.
+//
 // This reaper, owned by the Sphere Manager, sweeps scheduled touchpoints whose date passed (beyond a
 // short grace) and reconciles them: marks the row resolved and surfaces the MISS to the responsible
 // agent so a past client's sequence never stalls silently. Pure + unit-tested; the runner does the I/O.

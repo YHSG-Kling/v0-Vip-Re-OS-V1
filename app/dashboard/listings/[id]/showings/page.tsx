@@ -11,6 +11,7 @@ import {
 import { getAIShowingInsights } from "@/app/actions/ai-showing-management"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import ShowingsClient from "./showings-client"
+import { SellerSentimentPanel } from "./seller-sentiment-panel"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Eye } from "lucide-react"
 import Link from "next/link"
@@ -107,6 +108,11 @@ export default async function ShowingsPage({ params }: Props) {
           )}
         </CardContent>
       </Card>
+
+      {/* On-demand seller sentiment. The action behind it re-checks the
+          caller's brokerage against the listing's; this page has already done
+          the same, but the gate lives in the action, not here. */}
+      <SellerSentimentPanel listingId={listingId} />
 
       <ShowingsClient
       listing={listing}

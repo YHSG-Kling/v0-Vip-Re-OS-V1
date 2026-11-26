@@ -29,7 +29,7 @@ function fmtDate(iso: string | null) {
 const STATUS_BADGE: Record<string, string> = {
   active: "bg-emerald-100 text-emerald-800",
   paused: "bg-amber-100 text-amber-800",
-  ended: "bg-slate-100 text-slate-500",
+  ended: "bg-slate-100 text-slate-600",
 }
 
 interface FormState {
@@ -277,7 +277,7 @@ export function AffiliatesManager({ initialAffiliates, refLinkBase, readOnly }: 
                                 <td className="py-1.5 pr-3">{fmtDate(r.first_payment_at)}</td>
                                 <td className="py-1.5 pr-3">{fmtDate(r.window_end)}</td>
                                 <td className="py-1.5">
-                                  <Badge className={`text-xs ${r.active ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-500"}`}>
+                                  <Badge className={`text-xs ${r.active ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-600"}`}>
                                     {r.active ? "open" : "closed"}
                                   </Badge>
                                 </td>

@@ -2,6 +2,31 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
+
+/**
+ * The two readers below are `"use server"` exports, i.e. public HTTP endpoints,
+ * and both took the agent whose activities to return **from the caller**.
+ * `getPendingFollowups` embeds `contacts(first_name, last_name, phone, email)`,
+ * so an anonymous caller iterating agent ids was reading contact PII out of any
+ * brokerage. Neither had any caller, so nothing depended on the loose behaviour.
+ *
+ * They now resolve the agent from the SESSION and refuse a mismatch. Callers may
+ * still pass the id (that is how the surfaces are written) — it just has to be
+ * their own. Platform staff acting-as a tenant are covered because
+ * getAgentContext() already returns the impersonated agentId.
+ */
+async function resolveOwnAgentId(
+  requestedAgentId: string,
+): Promise<{ ok: true; agentId: string } | { ok: false; error: string }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return { ok: false, error: "Unauthenticated" }
+  if (!ctx.agentId) return { ok: false, error: "No agent profile for this user" }
+  if (requestedAgentId && requestedAgentId !== ctx.agentId) {
+    return { ok: false, error: "Forbidden — you can only read your own activities" }
+  }
+  return { ok: true, agentId: ctx.agentId }
+}
 
 // ─── Log Activity ────────────────────────────────────────────────────────────
 export async function logActivity(data: {
@@ -20,14 +45,22 @@ export async function logActivity(data: {
   completedAt?: string
   durationMinutes?: number
 }): Promise<{ success: boolean; activityId?: string; error?: string }> {
+  const actx = await getAgentContext()
+  if (!actx.isAuthenticated || !actx.brokerageId || !actx.userId) return { success: false, error: "Unauthenticated" }
+  // WAVE 155 (lane 155S3): the AGENT is the session's too (the sibling resolveOwnAgentId's rule, above). `agent_id` was still
+  // taken from the body, so a caller could file an activity under any agent (RLS its only fence). A body id naming a different
+  // agent is refused; a seat with no agents row logs with agent_id NULL rather than borrowing one.
+  if (data.agentId && data.agentId !== actx.agentId) return { success: false, error: "Forbidden — you can log only your own activity" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<{ success: boolean; activityId?: string; error?: string }>({ brokerageId: actx.brokerageId, action: "crm.activity.log", actor: { type: "user", userId: actx.impersonatorUserId ?? actx.userId, agentId: actx.agentId }, subject: data.contactId ? { type: "contact", id: data.contactId } : data.transactionId ? { type: "transaction", id: data.transactionId } : { type: "activity" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { activity_type: data.activityType } }, async () => {
   try {
     const supabase = await createClient()
 
     const { data: activity, error } = await supabase
       .from("activities")
       .insert({
-        brokerage_id: data.brokerageId,
-        agent_id: data.agentId,
+        brokerage_id: actx.brokerageId,
+        agent_id: actx.agentId ?? null,
         contact_id: data.contactId ?? null,
         transaction_id: data.transactionId ?? null,
         activity_type: data.activityType,
@@ -51,26 +84,41 @@ export async function logActivity(data: {
 
     revalidatePath("/mobile/assistant")
     revalidatePath("/dashboard")
+    // The activity log renders this on the server — a freshly logged activity is
+    // invisible there until this entry is dropped.
+    revalidatePath("/mobile/activity")
 
     return { success: true, activityId: activity?.id }
   } catch (err) {
     console.error("[logActivity] Exception:", err)
     return { success: false, error: "Failed to log activity" }
   }
+  })
 }
 
 // ─── Complete Activity ───────────────────────────────────────────────────────
 export async function completeActivity(
-  activityId: string
+  activityId: string,
+  /** What the agent heard, captured at the moment of completion. The mobile
+   *  sheet has always shown an "Add notes" box; until now the text was dropped
+   *  on submit, so the most perishable intelligence in the business — what the
+   *  seller actually said at the door — was collected and destroyed. */
+  notes?: string,
 ): Promise<{ success: boolean; error?: string }> {
+  const actx = await getAgentContext()
+  if (!actx.isAuthenticated || !actx.brokerageId || !actx.userId) return { success: false, error: "Unauthenticated" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: actx.brokerageId, action: "crm.activity.complete", actor: { type: "user", userId: actx.impersonatorUserId ?? actx.userId, agentId: actx.agentId }, subject: { type: "activity", id: activityId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { notes_captured: !!notes?.trim() } }, async () => {
   try {
     const supabase = await createClient()
 
+    const trimmed = notes?.trim()
     const { error } = await supabase
       .from("activities")
       .update({
         status: "completed",
         completed_at: new Date().toISOString(),
+        ...(trimmed ? { notes: trimmed } : {}),
       })
       .eq("id", activityId)
 
@@ -81,26 +129,52 @@ export async function completeActivity(
 
     revalidatePath("/mobile/assistant")
     revalidatePath("/dashboard")
+    // Completion moves the row between the log's status filters AND writes the note
+    // the log renders.
+    revalidatePath("/mobile/activity")
 
     return { success: true }
   } catch (err) {
     console.error("[completeActivity] Exception:", err)
     return { success: false, error: "Failed to complete activity" }
   }
+  })
 }
 
 // ─── Get Agent Activities ────────────────────────────────────────────────────
+/**
+ * WIRED (orphan burn-down). This file had three live WRITERS on the field surfaces —
+ * app/mobile/components/os/field-quick-actions.tsx, app/crm/components/os/
+ * contact-command-strip.tsx and app/crm/components/contact-header-card.tsx all call
+ * logActivity, and app/mobile/components/os/mobile-followup-panel.tsx calls
+ * completeActivity — and this read had no caller at all. An agent could log a door
+ * knock, a call and a note from the field and there was no screen anywhere in the
+ * product that showed them back, including the notes captured at completion, which
+ * are the most perishable thing the business collects.
+ *
+ * Its reader is now app/mobile/activity/page.tsx: the full history behind the
+ * `getPendingFollowups` queue, status-filtered through searchParams so it stays a
+ * server component and no unrendered activity row (free-text notes included) is ever
+ * shipped to the client.
+ *
+ * NOT A DUPLICATE OF getPendingFollowups below: that one returns only `pending` rows
+ * of four follow-up types with the contact embedded, ordered by schedule. This one
+ * returns every activity type in every status, newest first, and embeds nothing.
+ */
 export async function getAgentActivities(
   agentId: string,
   options?: { limit?: number; status?: string }
 ): Promise<{ activities: any[]; error?: string }> {
   try {
+    const actor = await resolveOwnAgentId(agentId)
+    if (!actor.ok) return { activities: [], error: actor.error }
+
     const supabase = await createClient()
 
     let query = supabase
       .from("activities")
       .select("*")
-      .eq("agent_id", agentId)
+      .eq("agent_id", actor.agentId)
       .order("created_at", { ascending: false })
 
     if (options?.status) {
@@ -131,6 +205,9 @@ export async function getPendingFollowups(
   limit: number = 10
 ): Promise<{ followups: any[]; error?: string }> {
   try {
+    const actor = await resolveOwnAgentId(agentId)
+    if (!actor.ok) return { followups: [], error: actor.error }
+
     const supabase = await createClient()
 
     const { data, error } = await supabase
@@ -145,7 +222,7 @@ export async function getPendingFollowups(
           email
         )
       `)
-      .eq("agent_id", agentId)
+      .eq("agent_id", actor.agentId)
       .eq("status", "pending")
       .in("activity_type", ["followup", "callback", "reminder", "task"])
       .order("scheduled_at", { ascending: true, nullsFirst: false })

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { runDailySphereResonanceScan } from "@/lib/sphere-resonance/run-resonance-scan"
+import { verifyCronAuth } from "@/lib/cron-auth"
 import {
   createCronRunContextAction,
   recordCronStartAction,
@@ -18,15 +19,17 @@ export const maxDuration = 300
  * Schedule: `30 7 * * *` (7:30am UTC, after wealth scan at 7am).
  */
 export async function GET(request: Request) {
-  const auth = request.headers.get("authorization")
-  if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // Fail closed (lane 86G): this compared against `Bearer ${process.env.CRON_SECRET}`,
+  // which is the literal "Bearer undefined" when the secret is unset — a
+  // guessable credential. Survivor: lib/cron-auth.ts verifyCronAuth.
+  const denied = verifyCronAuth(request)
+  if (denied) return denied
 
   const ctx = await createCronRunContextAction({
     cron_name: "sphere-resonance",
     cron_path: "/app/api/cron/sphere-resonance/route.ts",
   })
+  if (ctx.data?.held) return NextResponse.json({ success: true, held: true, decision: ctx.data.decision }) // cron decision door (155R1): held before any domain write
   if (!ctx.success || !ctx.data) {
     return NextResponse.json({ error: "Failed to create cron context" }, { status: 500 })
   }

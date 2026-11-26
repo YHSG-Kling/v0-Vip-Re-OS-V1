@@ -1,21 +1,28 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
-import { getAgentContext } from "@/lib/identity"
-import { toCanonicalRoleOrDefault } from "@/lib/security"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { TCSettingsClient } from "./tc-settings-client"
 
 export const metadata = { title: "Transaction Coordinators | Team Settings" }
 
 export default async function TCSettingsPage() {
   // Kernel OS: getAgentContext — canonical identity resolution
-  const ctx = await getAgentContext()
+  // Self-healing identity: an agent who reached this page without a brokerage/agents row is
+  // PROVISIONED in place rather than bounced to onboarding (the "bounce" class in the live
+  // walkthrough). The redirect below now only fires for an account that genuinely cannot
+  // self-provision — a pending brokerage invite, or a staff user whose brokerage comes from
+  // their org. Idempotent: a no-op for an already-anchored user.
+  const ctx = await ensureAgentContextInPlace()
   if (!ctx.isAuthenticated) redirect("/login")
 
-  const userRole = toCanonicalRoleOrDefault(ctx.userType, "agent")
   if (!ctx.brokerageId) return (
     <div className="p-6 text-red-600 text-sm">No brokerage found. Please contact your administrator.</div>
   )
-  if (!["broker", "admin", "superadmin"].includes(userRole)) return (
+  // TRUE ADMIN GATE (operational: team/TC settings) — repointed to the ONE
+  // tenant roster (it accepts every legacy input spelling the canonicalizer
+  // does). 'superadmin' was dead: 0 live rows store that users.user_type.
+  if (!isAdminOrBroker({ user_type: ctx.userType })) return (
     <div className="p-6 text-red-600 text-sm">
       You do not have permission to access this page. Only brokers and admins can manage TC settings.
     </div>

@@ -13,6 +13,13 @@
  *   · AffordabilityDonut — monthly payment split (P&I / tax / insurance / HOA)
  */
 
+// RELATIVE, never "@/" (lane 85E): the chart reels (CMAReel,
+// ExplainerAnimReel, the four remotion/charts/*) import this module into the
+// Remotion webpack bundle, which resolves no tsconfig alias — the "@/" spelling
+// made bundle(remotion/index.ts) fail for EVERY composition. Guarded by
+// scripts/video-timing-audit.ts (the bundle graph carries no "@/").
+import { clamp } from "../format/math"
+
 export interface Point { x: number; y: number }
 
 /** Linear remap of v from [inMin,inMax] to [outMin,outMax]. Guards a zero
@@ -159,5 +166,5 @@ export function annulusSegment(cx: number, cy: number, rOuter: number, rInner: n
   ].join(" ")
 }
 
-function clamp(v: number, lo: number, hi: number): number { return Math.min(hi, Math.max(lo, v)) }
+// TOMBSTONE (§1.1, 2026-09-08): local `clamp` lived here; survivor lib/format/math.ts:clamp
 function round(n: number): number { return Math.round(n * 100) / 100 }

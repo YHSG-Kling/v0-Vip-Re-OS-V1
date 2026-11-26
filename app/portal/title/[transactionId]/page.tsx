@@ -2,13 +2,12 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import Link from "next/link"
 import { getTitleTransactionDetail } from "@/app/actions/title-portal"
-import { TITLE_VISIBLE_MILESTONES } from "@/lib/title-portal/constants"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
   ArrowLeft,
-  Building,
+  // (Building was imported here and never rendered — removed; this line keeps the file:line references into the page true)
   FileText,
   Clock,
   CheckCircle2,
@@ -17,13 +16,14 @@ import {
   User,
   Phone,
   Mail,
-  DollarSign,
   AlertTriangle,
 } from "lucide-react"
 import { TitleDocumentUpload } from "./document-upload"
 import { TitleActions } from "./title-actions"
 import { ClosingChecklist } from "./closing-checklist"
 import { InternalAIAssistant } from "@/app/components/shared/internal-ai-assistant"
+import { usdOrNA } from "@/lib/format/money"
+import { formatDateOrTBDWithWeekday } from "@/lib/format/dates"
 
 const TITLE_STATUS_CONFIG: Record<string, { label: string; color: string }> = {
   title_search: { label: "Title Search", color: "bg-blue-100 text-blue-800" },
@@ -41,30 +41,15 @@ const EMD_STATUS_CONFIG: Record<string, { label: string; color: string }> = {
 }
 
 const MILESTONE_STATUS_CONFIG: Record<string, { icon: any; color: string }> = {
-  completed: { icon: CheckCircle2, color: "text-green-600" },
+  completed: { icon: CheckCircle2, color: "text-green-700" },
   in_progress: { icon: Clock, color: "text-blue-600" },
   pending: { icon: Clock, color: "text-muted-foreground" },
   overdue: { icon: AlertCircle, color: "text-red-600" },
 }
 
-function formatCurrency(amount: number | null | undefined): string {
-  if (!amount) return "N/A"
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0,
-  }).format(amount)
-}
-
-function formatDate(date: string | null | undefined): string {
-  if (!date) return "TBD"
-  return new Date(date).toLocaleDateString("en-US", {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  })
-}
+// `formatCurrency`/`formatDate` — same-body census, round 4 (2026-09-09, lane
+// FC): DELETED, byte-identical to lib/format/money.ts `usdOrNA` and
+// lib/format/dates.ts `formatDateOrTBDWithWeekday` (both imported above).
 
 export default async function TitleTransactionDetailPage({
   params,
@@ -77,29 +62,12 @@ export default async function TitleTransactionDetailPage({
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
-  // Get title user profile
-  const { data: titleUser } = await supabase
-    .from("title_company_users")
-    .select("id, email, company_name")
-    .eq("user_id", user.id)
-    .single()
-
-  if (!titleUser) {
-    return (
-      <div className="container mx-auto p-6">
-        <Card>
-          <CardContent className="p-8 text-center">
-            <Building className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
-            <p className="text-muted-foreground">No title company profile found.</p>
-          </CardContent>
-        </Card>
-      </div>
-    )
-  }
-
+  // TOMBSTONE (wave 155, lane 155T3): a title_company_users profile was read here (0 rows, no writer) and its id
+  // threaded into every action as an authority. The survivor is the session's title vendor seat, assigned to THIS
+  // deal — lib/kernel/portal-auth.ts requireTitleVendorActor, called inside the loader and inside every action.
   let detail
   try {
-    detail = await getTitleTransactionDetail(transactionId, titleUser.id)
+    detail = await getTitleTransactionDetail(transactionId)
   } catch (error: any) {
     return (
       <div className="container mx-auto p-6">
@@ -116,7 +84,7 @@ export default async function TitleTransactionDetailPage({
     )
   }
 
-  const { transaction, titleEscrow, milestones, documents, closingPrep, daysUntilClose } = detail
+  const { transaction, titleCompany, titleEscrow, milestones, documents, closingPrep, daysUntilClose } = detail
   const titleStatus = titleEscrow?.title_status || "pending"
   const emdStatus = titleEscrow?.earnest_money_status || "pending"
   const titleStatusConfig = TITLE_STATUS_CONFIG[titleStatus] || TITLE_STATUS_CONFIG.pending
@@ -137,7 +105,7 @@ export default async function TitleTransactionDetailPage({
           </Button>
           <h1 className="text-2xl font-bold">{transaction.property_address || "Transaction Details"}</h1>
           <div className="flex items-center gap-2 text-muted-foreground">
-            <span>{titleUser.company_name}</span>
+            <span>{titleCompany.name}</span>
             {titleEscrow?.escrow_number && (
               <>
                 <span>|</span>
@@ -201,7 +169,7 @@ export default async function TitleTransactionDetailPage({
                         : `${Math.abs(daysUntilClose)} days past scheduled close`}
                   </p>
                   <p className="text-sm text-muted-foreground">
-                    Scheduled: {formatDate(transaction.close_date || transaction.closing_date)}
+                    Scheduled: {formatDateOrTBDWithWeekday(transaction.close_date || transaction.closing_date)}
                   </p>
                 </div>
               </div>
@@ -225,19 +193,19 @@ export default async function TitleTransactionDetailPage({
               <div className="grid gap-4 sm:grid-cols-2">
                 <div>
                   <p className="text-sm text-muted-foreground">Purchase Price</p>
-                  <p className="font-semibold text-lg">{formatCurrency(transaction.purchase_price)}</p>
+                  <p className="font-semibold text-lg">{usdOrNA(transaction.purchase_price)}</p>
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">Earnest Money</p>
-                  <p className="font-semibold text-lg">{formatCurrency(titleEscrow?.earnest_money_amount)}</p>
+                  <p className="font-semibold text-lg">{usdOrNA(titleEscrow?.earnest_money_amount)}</p>
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">Contract Date</p>
-                  <p className="font-medium">{formatDate(transaction.contract_date)}</p>
+                  <p className="font-medium">{formatDateOrTBDWithWeekday(transaction.contract_date)}</p>
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">Closing Date</p>
-                  <p className="font-medium">{formatDate(transaction.close_date || transaction.closing_date)}</p>
+                  <p className="font-medium">{formatDateOrTBDWithWeekday(transaction.close_date || transaction.closing_date)}</p>
                 </div>
               </div>
             </CardContent>
@@ -246,7 +214,6 @@ export default async function TitleTransactionDetailPage({
           {/* Closing Checklist */}
           <ClosingChecklist
             transactionId={transactionId}
-            titleUserId={titleUser.id}
             closingPrep={closingPrep}
           />
 
@@ -278,7 +245,7 @@ export default async function TitleTransactionDetailPage({
                             </p>
                             {milestone.target_date && (
                               <p className="text-sm text-muted-foreground">
-                                {formatDate(milestone.target_date)}
+                                {formatDateOrTBDWithWeekday(milestone.target_date)}
                               </p>
                             )}
                           </div>
@@ -299,7 +266,6 @@ export default async function TitleTransactionDetailPage({
           {/* Document Upload */}
           <TitleDocumentUpload
             transactionId={transactionId}
-            titleUserId={titleUser.id}
             existingDocuments={documents}
           />
         </div>
@@ -309,7 +275,6 @@ export default async function TitleTransactionDetailPage({
           {/* Actions Card */}
           <TitleActions
             transactionId={transactionId}
-            titleUserId={titleUser.id}
             currentStatus={titleStatus}
           />
 

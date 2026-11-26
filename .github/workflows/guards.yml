@@ -27,22 +27,106 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  egress-guards:
+  # ── THE CHAIN IN TWO HALVES (2026-11-26). `npm run guard` is still ONE chain (scripts.guard in package.json) and is
+  # still what runs locally before a push. CI runs it as two jobs on two runners; scripts/guard-chain-shards.ts is the
+  # ONE definition of where the chain divides, and test:guard-chain-shards (in the chain) fails if this matrix and that
+  # definition disagree, if a step is in neither half or in both, or if the verdict below would pass a half that did
+  # not succeed. The measurement that forced the split is in the timeout note below.
+  egress-guards-half:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    strategy:
+      # One half failing must not cancel the other: both results are wanted, and the verdict job reads both.
+      fail-fast: false
+      matrix:
+        shard: [first, second]
+    name: egress-guards-half (${{ matrix.shard }})
+    # 2026-09-11: 20 minutes was the cap while `npm run guard` ran ~16 min on
+    # this runner (run 34548154361 at 844546ce: 16m12s, green). Waves 55-56 added
+    # test:ai-callback-loop, test:dead-imports, test:anchor-census,
+    # test:children-census and test:import-export-parity plus the simulator
+    # sweep's growth, and runs 34562243590 / 34562249006 / 34622268553 /
+    # 34622276787 were all CANCELLED by this timeout at 19m30s-20m20s inside
+    # "Run egress integrity guards" — not a red proof (the same chain is green
+    # locally, GUARD_EXIT=0, at 26c2c9e4). 40 leaves headroom for the chain to
+    # keep growing without turning a slow runner into a false red.
+    # 60, not 40 — MEASURED, not guessed (wave 147 close, 2026-10-31, runs 41220735331 + 41220729288 at
+    # d196e7c5): both egress-guards jobs were CANCELLED by the 40-minute timeout at 40:00 while still
+    # inside `npm run guard` (the runner terminated `npm run test:video-script-compliance-negative`
+    # mid-flight). The chain grew from 850 to 862 proofs this wave; wave 146's two runs at 4d527cc3
+    # finished at 38 and 40 minutes, so 40 was already the edge. A cancelled guards job reads as
+    # "nobody checked", which §4 of CLAUDE.md says must never render as "checked and fine". If a run
+    # approaches 60, split the chain into two jobs rather than raising this again.
+    # THE SPLIT — MEASURED, not guessed (wave 156 close, 2026-11-26, at 224e2bfd, 1,027 steps): run 45727441327 ran the
+    # chain in 35.1 min and was green; run 45727453928, the same job on the same commit, was CANCELLED by this timeout
+    # 58.5 min into the chain, inside its LAST step (test:wave156-canaries), with every earlier step green. Step by step
+    # the second runner was 1.52x slower over the same steps (53.6 against 35.2 minutes) and no step hung. The chain is
+    # now two halves divided at a step NAME (test:lead-magnet-creation — 52% of the measured time before it, 48% after),
+    # so a half is about 18 minutes on an ordinary runner and about 28 on one that slow. 60 is UNCHANGED and is
+    # headroom now, not a target. Each half prints how long every step took (`GUARD_SHARD_EXIT=` is its last line);
+    # when a half approaches 60, add a third shard to GUARD_SHARDS and to the matrix above — never raise this.
+    timeout-minutes: 60
     env:
       # tsc + the simulators need more than Node's default ~4GB heap on this large
-      # codebase (CI OOM'd at the default cap; passes locally with a bigger heap).
-      NODE_OPTIONS: --max-old-space-size=8192
+      # codebase. 8192 was enough until the program outgrew it: `tsc --noEmit
+      # --extendedDiagnostics` now reports "Memory used: 8450371K" — 8.45 GB, just
+      # past the 8 GB cap — and the job died with exit 134, "Ineffective
+      # mark-compacts near heap limit". It passes locally only because a dev box
+      # has more headroom, which is exactly how this stays invisible until CI.
+      #
+      # Measured before choosing the number, not guessed: excluding all 643
+      # scripts/ files from the program saves only ~540 MB (8450 MB → 7911 MB),
+      # so the simulators are NOT the driver and splitting the program would add
+      # a second tsconfig for a 6% win while still sitting at the edge. The app
+      # graph itself is ~7.9 GB. 10240 is the value build.yml already runs on the
+      # same ubuntu-latest runner (16 GB), so it is proven rather than hopeful,
+      # and it leaves ~21% headroom over today's peak.
+      #
+      # This raises the ceiling; it does not shrink the graph. When the peak
+      # approaches 10 GB the answer is project references, not another bump.
+      #
+      # 2026-11-16 (wave 153): 12288 → 14336. Measured, not guessed: the program is now 13,943 files / 1.90 M lines
+      # (5.44 M types); `tsc --noEmit` ABORTED at 12288 ("Ineffective mark-compacts", 12.05 GB in use at the cap) and
+      # PASSED at a 14000 cap with `--extendedDiagnostics` reporting "Memory used: 13087618K" (13.09 GB; peak RSS
+      # 12.86 GB). 14336 is the value build.yml already runs on this same 16 GB runner. This is the LAST bump the
+      # runner can take — the next step is project references (splitting scripts/ from the app program), as the
+      # paragraph above already says.
+      #
+      # 2026-11-20 (wave 155): THE SPLIT. The one program had grown to 14,021 files / 5.57 M types, 13.18 GB peak RSS.
+      # `npm run type-check` now runs two programs one after the other: tsconfig.app.json (no roots under scripts/ —
+      # 12,632 files, 11.47 GB peak) and tsconfig.scripts.json (the scripts roots and what they import — 9,607 files,
+      # 8.03 GB peak). Both checked clean; together they load exactly the 6,771 first-party files the one program did.
+      # The peak is the larger of the two: 1.71 GB lower, for 45 s more. The cap below is UNCHANGED and is headroom
+      # now. test:type-check-coverage (in the chain) fails if a root of tsconfig.json is in neither program.
+      NODE_OPTIONS: --max-old-space-size=14336
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - name: Install dependencies
-        run: npm ci
-      - name: Run egress integrity guards
-        run: npm run guard
+      # Node + `npm ci` live in ONE composite action for all four workflows —
+      # see .github/actions/node-deps/action.yml for why the ffmpeg-static
+      # postinstall no longer sits on the critical path of every check.
+      - uses: ./.github/actions/node-deps
+      - name: Run egress integrity guards — one half of the chain
+        run: npm run guard:shard -- ${{ matrix.shard }}
+      # Once, not once per half: after the LAST half's steps, where it ran before the split.
       - name: Run compliance / consent guards
+        if: ${{ matrix.shard == 'second' }}
         run: npm run guard:compliance
+
+  # ── THE ONE VERDICT, under the name the single job had. Fail closed: green only when EVERY half ran and succeeded.
+  # A half that was cancelled (the timeout), skipped or failed makes this job fail, so "nobody checked" can never
+  # render as "checked and fine" (CLAUDE.md §4).
+  egress-guards:
+    needs: [egress-guards-half]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verdict — every half of the guard chain ran and passed
+        run: |
+          HALF_RESULT="${{ needs.egress-guards-half.result }}"
+          echo "guard chain halves: ${HALF_RESULT}"
+          if [ "$HALF_RESULT" = "success" ]; then
+            echo "CERTIFIED — every step of the guard chain ran in exactly one half and passed; the compliance guards passed."
+            exit 0
+          fi
+          echo "::error::NOT CERTIFIED — halves=${HALF_RESULT}. A cancelled, skipped or failed half is never a green guard chain."
+          exit 1

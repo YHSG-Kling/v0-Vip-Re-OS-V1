@@ -41,17 +41,15 @@ export class DotloopProvider implements ITransactionProvider {
   }
 
   private getCredentials() {
-    // Injected DB credentials take priority over env vars
-    if (this.injectedCredentials) return this.injectedCredentials
-
-    const apiKey = process.env.DOTLOOP_API_KEY
-    const profileId = process.env.DOTLOOP_PROFILE_ID
-
-    if (!apiKey || !profileId) {
-      return null
-    }
-
-    return { apiKey, profileId }
+    // THE TENANT'S credential only (wave 141, lane 141C; owner: "Transaction-provider credentials
+    // are the TENANT's; no shared cross-tenant credentials"). TOMBSTONE: the DOTLOOP_API_KEY /
+    // DOTLOOP_PROFILE_ID env fallback that stood here (one platform Dotloop profile silently
+    // carrying every tenant's loops whenever a caller forgot the credential) is DELETED. The
+    // survivor that resolves the tenant's own row is lib/integrations/providers/provider-resolver.ts
+    // resolveTenantProviderCredentials (agent → team → brokerage, platform tier refused); a caller
+    // that constructs this class without it is refused by name below — never served another account.
+    if (this.injectedCredentials?.apiKey && this.injectedCredentials.profileId) return this.injectedCredentials
+    return null
   }
 
   /** Single egress choke point — every Dotloop API call leaves through the connector-gateway. */
@@ -317,7 +315,7 @@ export class DotloopProvider implements ITransactionProvider {
 
       const response = await this.request<{ data?: any[] }>(apiKey, `/profile/${profileId}/form`, { query })
       if (!response.ok) {
-        return { success: false, error: `Dotloop listForms ${response.status}: ${response.error}` }
+        return { success: false, status: response.status, error: `Dotloop listForms ${response.status}: ${response.error}` }
       }
       const data = response.data
       const forms: ProviderForm[] = ((data?.data ?? (Array.isArray(data) ? data : [])) as any[]).map((f: any) => ({
@@ -329,7 +327,7 @@ export class DotloopProvider implements ITransactionProvider {
         version:   f.version,
         previewUrl: f.preview_url ?? f.url,
       }))
-      return { success: true, forms }
+      return { success: true, forms, total: typeof (data as any)?.meta?.total === "number" ? (data as any).meta.total : null } // 156C: meta.total when sent — a total above the returned count is labelled possibly-truncated
     } catch (err: any) {
       console.error("[v0] Dotloop listForms error:", err)
       return { success: false, error: err.message }

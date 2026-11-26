@@ -56,7 +56,8 @@ import { checkThemFirstCompliance } from "@/app/actions/ai-chat"
 import {
   compareNeighborhoods,
   analyzeInvestmentProperty,
-  calculateRentVsBuy,
+  runCalculatorTool,
+  calculateHomeValue,
 } from "@/app/actions/calculators"
 
 // Tool definitions with categories
@@ -95,7 +96,12 @@ const TOOLS = [
       { name: "income", type: "text", label: "Annual income", placeholder: "$120,000" },
       { name: "debt", type: "text", label: "Monthly debt", placeholder: "$500" },
       { name: "downPayment", type: "text", label: "Down payment", placeholder: "$50,000" },
-      { name: "rate", type: "text", label: "Interest rate", placeholder: "6.5%" },
+      { name: "rate", type: "text", label: "Interest rate (%) — the lender's quote", placeholder: "rate %" },
+      { name: "termYears", type: "text", label: "Loan term (years)", placeholder: "years" },
+      { name: "propertyTax", type: "text", label: "Property tax per year ($)", placeholder: "from the county" },
+      { name: "insurance", type: "text", label: "Insurance per year ($)", placeholder: "from a quote" },
+      { name: "housingRatio", type: "text", label: "Housing-payment limit (% of income — the lender's)", placeholder: "%" },
+      { name: "debtRatio", type: "text", label: "Total-debt limit (% of income — the lender's)", placeholder: "%" },
     ],
   },
   {
@@ -270,6 +276,36 @@ const TOOLS = [
       { name: "state", type: "text", label: "State", placeholder: "CO" },
     ],
   },
+  // THE FOURTH CALCULATOR. `calculateHomeValue` is the only export in
+  // app/actions/calculators.ts with no surface anywhere: its three siblings each
+  // have a tile below and it had none, so the one calculator that runs a real AI
+  // CMA (comparable sourcing + adjustment) was unreachable from the signed-in
+  // product and existed only for the public agent page.
+  //
+  // TENANT COMES FROM THE SESSION, not from this form. `calculateHomeValue`
+  // resolves the brokerage from getAgentContext first and only falls back to
+  // `agentSlug` on the public path — so this tile passes NO slug and no brokerage
+  // id, and a signed-in agent's own tenant pays for and receives their own CMA
+  // (CLAUDE.md §4). Its own rate limiter bounds the provider spend before any
+  // paid call, so the tile adds no second limiter of its own.
+  {
+    id: "home_value",
+    name: "Home Value (AI CMA)",
+    description: "Run a real comparable-sales valuation for one address — the same engine behind your public home-value page",
+    category: "intelligence",
+    categoryColor: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
+    icon: Home,
+    directAction: true,
+    inputs: [
+      { name: "address", type: "text", label: "Street address", placeholder: "1234 N Lamar Blvd" },
+      { name: "state", type: "text", label: "State (2-letter)", placeholder: "TX" },
+      { name: "city", type: "text", label: "City", placeholder: "Austin", required: false },
+      { name: "zipCode", type: "text", label: "ZIP", placeholder: "78701", required: false },
+      { name: "bedrooms", type: "text", label: "Bedrooms", placeholder: "3", required: false },
+      { name: "bathrooms", type: "text", label: "Bathrooms", placeholder: "2", required: false },
+      { name: "squareFeet", type: "text", label: "Square feet", placeholder: "1850", required: false },
+    ],
+  },
   {
     id: "investment_analyzer",
     name: "Investment Property Analyzer",
@@ -281,10 +317,13 @@ const TOOLS = [
     inputs: [
       { name: "purchasePrice", type: "text", label: "Purchase price ($)", placeholder: "450000" },
       { name: "downPaymentPercent", type: "text", label: "Down payment (%)", placeholder: "25" },
-      { name: "interestRate", type: "text", label: "Interest rate (%)", placeholder: "7.0" },
+      { name: "interestRate", type: "text", label: "Interest rate (%)", placeholder: "rate %" },
       { name: "estimatedRent", type: "text", label: "Monthly rent ($)", placeholder: "2800" },
       { name: "propertyTaxes", type: "text", label: "Annual property taxes ($)", placeholder: "6000" },
       { name: "insurance", type: "text", label: "Annual insurance ($)", placeholder: "1800" },
+      { name: "loanTermYears", type: "text", label: "Loan term (years)", placeholder: "years" },
+      { name: "vacancyRate", type: "text", label: "Vacancy (% of the year)", placeholder: "%" },
+      { name: "maintenanceReserve", type: "text", label: "Maintenance reserve (% of rent)", placeholder: "%" },
     ],
   },
   {
@@ -296,11 +335,19 @@ const TOOLS = [
     icon: Calculator,
     directAction: true,
     inputs: [
-      { name: "rentAmount", type: "text", label: "Monthly rent ($)", placeholder: "2500" },
+      { name: "monthlyRent", type: "text", label: "Monthly rent ($)", placeholder: "2500" },
       { name: "homePrice", type: "text", label: "Home price ($)", placeholder: "500000" },
       { name: "downPayment", type: "text", label: "Down payment ($)", placeholder: "100000" },
-      { name: "interestRate", type: "text", label: "Interest rate (%)", placeholder: "7.0" },
-      { name: "yearsToStay", type: "text", label: "Years planning to stay", placeholder: "5" },
+      { name: "ratePct", type: "text", label: "Interest rate (%)", placeholder: "rate %" },
+      { name: "termYears", type: "text", label: "Loan term (years)", placeholder: "years" },
+      { name: "years", type: "text", label: "Years planning to stay", placeholder: "5" },
+      { name: "rentIncreasePct", type: "text", label: "Yearly rent increase (%)", placeholder: "%" },
+      { name: "appreciationPct", type: "text", label: "Yearly home-value change (%)", placeholder: "%" },
+      { name: "sellingCostPct", type: "text", label: "Cost to sell at the end (%)", placeholder: "%" },
+      { name: "annualPropertyTax", type: "text", label: "Property tax per year ($)", placeholder: "$" },
+      { name: "annualInsurance", type: "text", label: "Insurance per year ($)", placeholder: "$" },
+      { name: "annualMaintenance", type: "text", label: "Maintenance per year ($)", placeholder: "$" },
+      { name: "buyingClosingCosts", type: "text", label: "Closing costs to buy ($)", placeholder: "$" },
     ],
   },
 ]
@@ -340,8 +387,12 @@ export function AIToolsClient({ agentId, userId, userRole }: AIToolsClientProps)
         getBrandVoiceProfile(agentId),
       ])
 
-      if (favResult) setFavorites(favResult as any)
-      if (statsResult) setUsageStats(statsResult as any)
+      if (favResult) setFavorites(Array.isArray(favResult) ? favResult : [])
+      // getAIToolUsageStats returns an OBJECT of totals; the per-tool counts the
+      // "Recently Used" row needs live on .by_tool. Assigning the whole object here
+      // (behind an `as any`) is what made this page crash: the next render called
+      // .sort() on an object and threw before anything painted.
+      setUsageStats(Array.isArray(statsResult?.by_tool) ? statsResult.by_tool : [])
       if (voiceResult) setBrandVoice(voiceResult)
     } catch (error) {
       console.error("Error loading AI tools data:", error)
@@ -387,18 +438,31 @@ export function AIToolsClient({ agentId, userId, userRole }: AIToolsClientProps)
             propertyTaxes: parseFloat(inputs.propertyTaxes),
             insurance: parseFloat(inputs.insurance),
             hoaFees: 0,
-            maintenanceReserve: 5,
-            vacancyRate: 5,
+            // Wave 156 (156H round 2): the investor's own vacancy, maintenance and term — the 5% / 5% / 30 years this used were invented.
+            maintenanceReserve: parseFloat(inputs.maintenanceReserve),
+            vacancyRate: parseFloat(inputs.vacancyRate),
+            loanTermYears: parseFloat(inputs.loanTermYears),
+          })
+        } else if (tool.id === "home_value") {
+          // Optional facts stay UNKNOWN when the agent leaves them blank — null,
+          // never a fabricated 0, because runAiCma adjusts against them and a
+          // zero-bed subject is a different property, not a missing one.
+          const num = (v: string | undefined) => {
+            const n = parseFloat(v ?? "")
+            return Number.isFinite(n) ? n : null
+          }
+          result = await calculateHomeValue(inputs.address, {
+            state: (inputs.state ?? "").trim().toUpperCase(),
+            city: inputs.city?.trim() || null,
+            zipCode: inputs.zipCode?.trim() || null,
+            bedrooms: num(inputs.bedrooms),
+            bathrooms: num(inputs.bathrooms),
+            squareFeet: num(inputs.squareFeet),
           })
         } else if (tool.id === "rent_vs_buy") {
-          result = await calculateRentVsBuy({
-            rentAmount: parseFloat(inputs.rentAmount),
-            homePrice: parseFloat(inputs.homePrice),
-            downPayment: parseFloat(inputs.downPayment),
-            interestRate: parseFloat(inputs.interestRate),
-            yearsToStay: parseFloat(inputs.yearsToStay),
-            brokerageId: "",
-          })
+          // Wave 156 (156H round 2): the ONE engine (runCalculatorTool → "buy_vs_rent") on the agent's own figures; calculateRentVsBuy is retired.
+          const r = await runCalculatorTool({ kind: "buy_vs_rent", inputs })
+          result = !r.success ? r.error : r.outcome.ok ? r.outcome : `Enter a value — ${[...r.outcome.missing.map((m) => m.message), ...r.outcome.refused.map((x) => `${x.label}: ${x.reason}`)].join("; ")}`
         }
         if (result) {
           const formatted = typeof result === "string" ? result : JSON.stringify(result, null, 2)
@@ -416,7 +480,15 @@ export function AIToolsClient({ agentId, userId, userRole }: AIToolsClientProps)
 
       const result = await executeAITool(tool.id, userId, userType, params)
 
-      if (result.success && result.result) {
+      // Read the outcome — a refusal (quota, permission, provider error) used to
+      // leave the panel exactly as it was, indistinguishable from never pressing.
+      if (!result.success || !result.result) {
+        setToolResults((prev) => ({
+          ...prev,
+          [tool.id]: (result as any)?.error ?? "The tool returned no result.",
+        }))
+        setExpandedResults((prev) => ({ ...prev, [tool.id]: true }))
+      } else {
         let finalResult = result.result
 
         // Check compliance for customer-facing content
@@ -430,12 +502,12 @@ export function AIToolsClient({ agentId, userId, userRole }: AIToolsClientProps)
         setToolResults((prev) => ({ ...prev, [tool.id]: finalResult }))
         setExpandedResults((prev) => ({ ...prev, [tool.id]: true }))
       }
-    } catch (error) {
-      console.error(`Error running tool ${tool.id}:`, error)
+    } catch (error: any) {
       setToolResults((prev) => ({
         ...prev,
-        [tool.id]: "Error running tool. Please try again.",
+        [tool.id]: error?.message ? `The tool did not run: ${error.message}` : "The tool did not run.",
       }))
+      setExpandedResults((prev) => ({ ...prev, [tool.id]: true }))
     } finally {
       setLoadingTools((prev) => ({ ...prev, [tool.id]: false }))
     }
@@ -456,8 +528,9 @@ export function AIToolsClient({ agentId, userId, userRole }: AIToolsClientProps)
     setTimeout(() => setCopiedId(null), 2000)
   }
 
-  // Get top 3 recently used tools
-  const recentlyUsedTools = usageStats
+  // Get top 3 recently used tools. Copy before sorting — .sort() mutates in place,
+  // and mutating state during render is how you get inconsistent paints.
+  const recentlyUsedTools = [...usageStats]
     .sort((a, b) => b.count - a.count)
     .slice(0, 3)
     .map((stat) => TOOLS.find((t) => t.id === stat.toolName))
@@ -513,7 +586,16 @@ export function AIToolsClient({ agentId, userId, userRole }: AIToolsClientProps)
                     <div className="flex-1 min-w-0">
                       <p className="font-medium truncate">{tool.name}</p>
                     </div>
-                    <Button size="sm" variant="outline">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={(e) => {
+                        // The Card carries the same jump; stop the bubble so it
+                        // does not run twice.
+                        e.stopPropagation()
+                        document.getElementById(`tool-${tool.id}`)?.scrollIntoView({ behavior: "smooth" })
+                      }}
+                    >
                       Launch
                     </Button>
                   </CardContent>
@@ -675,14 +757,14 @@ function ToolCard({
           <Button
             variant="ghost"
             size="icon"
-            className="h-7 w-7 shrink-0"
+            className="h-7 w-7 shrink-0" aria-label="Toggle favorite"
             onClick={(e) => {
               e.stopPropagation()
               onToggleFavorite()
             }}
           >
             {isFavorite ? (
-              <Star className="h-4 w-4 fill-amber-400 text-amber-400" />
+              <Star className="h-4 w-4 fill-amber-400 text-amber-600" />
             ) : (
               <StarOff className="h-4 w-4 text-muted-foreground" />
             )}

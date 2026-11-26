@@ -36,10 +36,13 @@ export async function loadCounterOfferDiff(input: {
   }
 
   try {
-    const diff = await buildCounterOfferDiff({
+    // RECEIPT (wave 155, lane 155R5 — G11): the model call is claimed → run → settled on agent_action_ledger (who asked, under
+    // which risk class); ai_tool_usage stays the cost ledger, written by the same inner call with the same numbers (CLAUDE.md §5).
+    const { ledgerToolCall } = await import("@/lib/kernel/action-ledger")
+    const diff = await ledgerToolCall({ brokerageId: String(offer.brokerage_id), action: "ai.counter_offer_diff.generate", actor: { type: "user", userId: user.id }, subject: { type: "offer", id: input.offerId }, reasonCode: "HUMAN_REQUESTED", riskClass: "READ", systemSource: "counter_offer_diff" }, () => buildCounterOfferDiff({
       offerId:        input.offerId,
       counterPayload: input.counterPayload,
-    })
+    })) as CounterOfferDiff
     return { success: true, diff }
   } catch (err) {
     return { success: false, error: (err as Error).message }

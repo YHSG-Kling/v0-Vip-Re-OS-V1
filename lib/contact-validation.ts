@@ -3,7 +3,12 @@
 import { lookupPhone as twilioLookupPhone } from "@/lib/providers/messaging"
 import { skipTraceWithPeopleData } from "@/lib/external/peopledata-client"
 
-export class ContactValidationClient {
+// UN-EXPORTED (§1.1, 2026-08-31, lane M4): every consumer reaches this class
+// through the module-level wrappers below (validateEmail / validatePhone /
+// validateContact — live at lib/enrichment/contact-enrichment-core.ts and
+// app/actions/data-health.ts); nothing ever constructed it directly, so the
+// `export` keyword claimed a second door nobody used.
+class ContactValidationClient {
   private peopleDataKey: string
 
   constructor() {

@@ -76,3 +76,36 @@ export async function hasActiveRepresentation(
 
   return false
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// WAVE 156 (lane 156N): A REPRESENTATION AGREEMENT SUPPORTS SERVICING, NOT MARKETING
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The header above says "Agreement / active deal = consent", and both gates (lib/kernel/compliance.ts Gate 2 and
+// lib/kernel/communication-compliance.ts RULE 6/7) applied it to EVERY sms/phone/voicemail send, whatever the send was for.
+// So a fully signed listing agreement, by itself, cleared an automated CAMPAIGN text, and the dispatch-side purpose gate
+// (lib/providers/dispatch.ts, CAMPAIGN_SMS_REFUSING_BASES) defers `no_record` to exactly that gate.
+//
+// The rule now: the representation relationship may stand in for a missing `contacts.tcpa_consent` only for SERVICING
+// that representation (deadlines, showings, signatures, closing logistics; one-to-one conversation; recipient-initiated
+// transactional messages). A `campaign` send is marketing and needs its own channel-specific consent evidence. Opt-outs,
+// DNC and the suppression list are untouched: they block servicing too, exactly as before.
+//
+// An UNSTATED purpose keeps the previous behavior (servicing), because the gates cannot tell an urgent closing text from a
+// drip when the caller does not say, and refusing every unstated send would cut off the servicing contact the owner asked
+// to preserve. Which callers must state `campaign` is an integrator / counsel item, listed in
+// docs/legal/TCPA-REPRESENTATION-CONSENT-COUNSEL-MEMO-DRAFT.md.
+
+import type { ChannelPurpose } from "@/lib/providers/dispatch"
+
+/** The one channel-purpose vocabulary (lib/providers/dispatch.ts ChannelPurpose), re-exported for the gates as a TYPE. */
+export type RepresentationSendPurpose = ChannelPurpose
+
+/** The purposes a representation relationship may serve as consent for. Everything not listed is marketing. */
+export const REPRESENTATION_SERVICING_PURPOSES: ReadonlySet<ChannelPurpose> = new Set<ChannelPurpose>(["conversation", "update", "transactional"])
+
+/** PURE. May an active representation stand in for missing TCPA consent for a send of this purpose? */
+export function representationConsentCovers(purpose: ChannelPurpose | null | undefined): boolean {
+  if (purpose === null || purpose === undefined) return true
+  return REPRESENTATION_SERVICING_PURPOSES.has(purpose)
+}

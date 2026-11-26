@@ -33,7 +33,7 @@ interface Props {
 }
 
 const APPT_TYPES = [
-  { value: "listing_consultation", label: "Initial Consultation" },
+  { value: "listing_appointment", label: "Initial Consultation" },  // the ONE listing-appointment spelling (lane 87B2)
   { value: "listing_price_strategy", label: "Price Strategy Meeting" },
   { value: "listing_walkthrough", label: "Walkthrough" },
   { value: "listing_followup", label: "Follow-up" },
@@ -66,7 +66,7 @@ function toDatetimeLocal(date: string, time: string): string {
 
 export function ListingConsultationScheduler({ contactId, contactName, agentId, brokerageId }: Props) {
   const [open, setOpen] = useState(false)
-  const [type, setType] = useState<ApptType>("listing_consultation")
+  const [type, setType] = useState<ApptType>("listing_appointment")
   const [startTime, setStartTime] = useState<string>(defaultStart())
   const [duration, setDuration] = useState<number>(60)
   const [location, setLocation] = useState<string>("")
@@ -79,7 +79,7 @@ export function ListingConsultationScheduler({ contactId, contactName, agentId, 
   const [selectedSlotIdx, setSelectedSlotIdx] = useState<number | null>(null)
 
   function reset() {
-    setType("listing_consultation")
+    setType("listing_appointment")
     setStartTime(defaultStart())
     setDuration(60)
     setLocation("")
@@ -130,7 +130,7 @@ export function ListingConsultationScheduler({ contactId, contactName, agentId, 
       const start = new Date(startTime)
       const end = new Date(start.getTime() + duration * 60 * 1000)
       const titleByType: Record<ApptType, string> = {
-        listing_consultation: "Listing Consultation",
+        listing_appointment: "Listing Consultation",
         listing_price_strategy: "Price Strategy Meeting",
         listing_walkthrough: "Listing Walkthrough",
         listing_followup: "Listing Follow-up",

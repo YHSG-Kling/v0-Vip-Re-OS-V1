@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
-import { ASSISTANT_VOICE_OPTIONS, ASSISTANT_EXPRESSIVE_AVATARS } from "@/lib/video/assistant-options"
+import { ASSISTANT_VOICE_OPTIONS, ASSISTANT_EXPRESSIVE_AVATARS, assistantVoiceLabel } from "@/lib/video/assistant-options"
 import {
   Select,
   SelectContent,
@@ -23,7 +23,6 @@ import {
   Trash2,
   RefreshCw,
   Save,
-  MessageSquare,
   ShieldAlert,
   BookOpen,
   GitBranch,
@@ -55,7 +54,7 @@ interface ObjectionItem {
   category: string
 }
 
-export interface AIIdentityEditorProps {
+export interface AIIdentityEditorProps { /** wave 156Q: the session tenant's noun for the brokerage-scope editor, resolved once by the server page. */ words?: { payer: string }
   scope: Scope
   scopeId: string
   brokerageId: string
@@ -133,7 +132,7 @@ export function AIIdentityEditor({
   brokerageName,
   teamName,
   initialProfile,
-  parentProfile,
+  parentProfile, words,
 }: AIIdentityEditorProps) {
   // ── Identity section state
   const [assistantName, setAssistantName] = useState(
@@ -463,11 +462,13 @@ export function AIIdentityEditor({
                 </div>
               ))}
             </div>
-            {assistantVoiceId && !ASSISTANT_VOICE_OPTIONS.some((v) => v.voiceId === assistantVoiceId) && (
+            {/* assistantVoiceLabel is the ONE preset lookup (null = not a preset, i.e. a
+                custom/cloned id) — the inline `.some()` this replaced was a second spelling. */}
+            {assistantVoiceId && assistantVoiceLabel(assistantVoiceId) === null && (
               <p className="text-xs text-muted-foreground">Using a custom voice id: <code>{assistantVoiceId}</code></p>
             )}
             <p className="text-xs text-muted-foreground">
-              This voice answers your phone line and narrates your report videos. Agents&apos; own cloned voices (Twin Studio) always speak client-facing videos.
+              {assistantVoiceLabel(assistantVoiceId) ?? "This voice"} answers your phone line and narrates your report videos. Agents&apos; own cloned voices (Twin Studio) always speak client-facing videos.
             </p>
           </div>
 
@@ -675,7 +676,7 @@ export function AIIdentityEditor({
                     size="icon"
                     variant="ghost"
                     className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                    onClick={() => removeFaq(i)}
+                    aria-label="Remove this FAQ" onClick={() => removeFaq(i)}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>
@@ -744,7 +745,7 @@ export function AIIdentityEditor({
                     size="icon"
                     variant="ghost"
                     className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                    onClick={() => removeObjection(i)}
+                    aria-label="Remove this objection" onClick={() => removeObjection(i)}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>
@@ -908,7 +909,7 @@ export function AIIdentityEditor({
               <div>
                 <p className="font-medium text-sm">Enable AI call handling</p>
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  AI will be available to answer and/or place calls on behalf of your brokerage.
+                  AI will be available to answer and/or place calls on behalf of {words?.payer ?? "your account"}.
                 </p>
               </div>
               <Switch
@@ -1062,7 +1063,7 @@ export function AIIdentityEditor({
       <div className="flex items-center justify-between rounded-lg border bg-card px-5 py-3 sticky bottom-4 shadow-lg">
         <div className="text-sm text-muted-foreground">
           {saveStatus === "saved" && (
-            <span className="flex items-center gap-1.5 text-green-600">
+            <span className="flex items-center gap-1.5 text-green-700">
               <CheckCircle className="h-4 w-4" />
               Saved — changes will apply to new AI interactions immediately.
             </span>

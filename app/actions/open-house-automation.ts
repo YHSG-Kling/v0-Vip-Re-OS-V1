@@ -1,66 +1,33 @@
 "use server"
 
+import { bestEffort } from "@/lib/db/best-effort"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
-import { ContentGenerationResult } from "@/lib/services"
-import {
-  sendOpenHouseInvitation,
-  sendOpenHouseReminder,
-  sendWeatherAlertToAgent,
-  sendFeedbackRequest,
-} from "@/lib/communications"
-import { completeOpenHouseCheckInAction } from "@/app/actions/open-house-kernel"
+import { sendOpenHouseInvitation, sendWeatherAlertToAgent, sendFeedbackRequest } from "@/lib/communications/send-invitation"
 
-function parseAIJsonResponse(text: string) {
-  let cleanText = text.trim()
-  if (cleanText.startsWith("```json")) {
-    cleanText = cleanText.replace(/^```json\s*/, "").replace(/```\s*$/, "")
-  } else if (cleanText.startsWith("```")) {
-    cleanText = cleanText.replace(/^```\s*/, "").replace(/```\s*$/, "")
-  }
-  return JSON.parse(cleanText.trim())
-}
+
+
+
+import { completeOpenHouseCheckInAction } from "@/app/actions/open-house-kernel"
+import { parseAIJsonResponse } from "@/lib/ai/parse-json-response"
+
+// TOMBSTONE: local parseAIJsonResponse merged onto
+// lib/ai/parse-json-response.ts parseAIJsonResponse (imported above) — §1/§6
+// SAME BODY census round 3, 2026-09-09.
 
 // ============================================
 // OPEN HOUSE CRUD OPERATIONS
 // ============================================
 
-export async function scheduleOpenHouse(params: {
-  listingId: string
-  agentId: string
-  startTime: string
-  endTime: string
-  description?: string
-}) {
-  try {
-    const supabase = await createClient()
-
-    const { data, error } = await supabase
-      .from("open_house_events")
-      .insert({
-        listing_id: params.listingId,
-        agent_id: params.agentId,
-        event_date: params.startTime.split("T")[0],
-        start_time: params.startTime,
-        end_time: params.endTime,
-        description: params.description,
-        status: "scheduled",
-      })
-      .select()
-      .maybeSingle()
-
-    if (error) throw error
-    if (!data) throw new Error("Failed to create open house event")
-
-    revalidatePath("/dashboard")
-    return { success: true, openHouse: data }
-  } catch (error) {
-    return handleError(error, "scheduleOpenHouse")
-  }
-}
+// TOMBSTONE (wave 155, lane 155R29; CLAUDE.md §1 case 2 — the functionality lives elsewhere): scheduleOpenHouse DELETED. It was
+// already a pure adapter (wave 149F) onto the ONE producer — survivor app/actions/open-house.ts:93 createOpenHouse, which the open
+// houses page calls (app/dashboard/open-houses/open-houses-client.tsx:986) and which createOpenHouseEvent below still adapts onto.
+// Nothing imported this door; it only split ISO times. Nothing to merge.
 
 export async function getOpenHouseVisitors(openHouseId: string) {
   try {
@@ -111,10 +78,43 @@ export async function recordVisitor(params: {
 
     // If contact_id is provided, use direct insert
     if (params.contactId) {
+      // TENANT: the EVENT'S brokerage, read from the record this attendee is
+      // filed against — the same anchor `app/api/open-house/attend/route.ts` and
+      // `lib/kernel/open-house.ts` already use for this table, so there is one
+      // way an attendee gets its tenant rather than two.
+      //
+      // The event is also OWNERSHIP-CHECKED against the caller's brokerage here.
+      // `endOpenHouseEvent` reads attendees `.eq("event_id", …).eq("brokerage_id",
+      // <caller's users.brokerage_id>)`, so an attendee whose event belongs to
+      // another brokerage is unreadable however it is stamped — and stamping the
+      // caller's brokerage on another tenant's event would file the row across
+      // the boundary. Refuse instead.
+      const { data: event, error: eventErr } = await supabase
+        .from("open_house_events")
+        .select("id, brokerage_id")
+        .eq("id", params.openHouseId)
+        .maybeSingle()
+      if (eventErr) {
+        return { success: false, error: `Could not verify the open house: ${eventErr.message}` }
+      }
+      if (!event) {
+        return { success: false, error: "Open house event not found" }
+      }
+      if (event.brokerage_id !== userRow.brokerage_id) {
+        return { success: false, error: "Forbidden: this open house belongs to another brokerage" }
+      }
+      // The CONTACT is the body's (wave 147, lane 147F — CLAUDE.md §4): proved to be in the event's brokerage before it is
+      // filed against the attendee row — another tenant's contact id must not become this tenant's attendee.
+      const { data: knownContact, error: knownErr } = await supabase
+        .from("contacts").select("id").eq("id", params.contactId).eq("brokerage_id", event.brokerage_id).maybeSingle()
+      if (knownErr) return { success: false, error: `Could not verify the contact: ${knownErr.message}` }
+      if (!knownContact) return { success: false, error: "That contact is not in this open house's brokerage." }
+
       const { data, error } = await supabase
         .from("open_house_attendees")
         .insert({
           event_id: params.openHouseId,
+          brokerage_id: event.brokerage_id,
           contact_id: params.contactId,
           name: `${params.firstName ?? ""} ${params.lastName ?? ""}`.trim(),
           email: params.email,
@@ -128,6 +128,28 @@ export async function recordVisitor(params: {
 
       if (error) throw error
       if (!data) throw new Error("Failed to record visitor")
+
+      // IDENTITY + EVENT EVIDENCE + THE ARBITER (wave 147, lane 147F — ruling 7). This known-contact branch filed the
+      // attendee and stopped: no person-identity evidence and no OPEN_HOUSE_ATTENDEE_CAPTURED, so the AI ISA and the
+      // welcome never heard of the visit. Now the ONE check-in identity helper and the same fanned-out event every
+      // other check-in door emits. Best-effort: the check-in already landed.
+      const service = createServiceClient()
+      const { linkOpenHouseCheckInIdentity } = await import("@/lib/open-house/instant-greeting")
+      await linkOpenHouseCheckInIdentity(service, {
+        brokerageId: event.brokerage_id, contactId: params.contactId, attendeeId: String((data as { id: string }).id), eventId: params.openHouseId,
+        firstName: params.firstName, lastName: params.lastName ?? null, email: params.email ?? null, phone: params.phone ?? null, source: "open_house_mobile",
+      })
+      const k = await import("@/lib/kernel/emit")
+      const { KernelEvent } = await import("@/lib/kernel/events")
+      const { data: ev } = await service.from("open_house_events").select("listing_id").eq("id", params.openHouseId).eq("brokerage_id", event.brokerage_id).maybeSingle()
+      const listingId = (ev as { listing_id?: string | null } | null)?.listing_id ?? null
+      if (listingId) {
+        await sentinelWrite(service, k.emitKernelEvent({
+          brokerageId: event.brokerage_id, entityType: "listing", entityId: listingId, event: KernelEvent.OPEN_HOUSE_ATTENDEE_CAPTURED,
+          actorUserId: user.id, contactId: params.contactId,
+          metadata: { attendeeId: (data as { id: string }).id, eventId: params.openHouseId, contactId: params.contactId, via: "mobile_known_contact" },
+        }).then(k.asWriteResult), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "the mobile check-in's lifecycle event (fanned out); the attendee row already landed" })
+      }
 
       revalidatePath("/dashboard")
       return { success: true, visitor: data, contactId: params.contactId }
@@ -193,34 +215,29 @@ function mapInterestLevelText(interest?: string): "hot" | "warm" | "cold" | "no_
 // AI TIMING OPTIMIZER
 // ============================================
 
-/** Returns the next upcoming Saturday and Sunday from today as YYYY-MM-DD strings */
-function nextWeekendDates(): { saturday: string; sunday: string } {
-  const now = new Date()
-  const day = now.getDay() // 0=Sun, 6=Sat
-  const daysToSat = day === 6 ? 7 : (6 - day)
-  const sat = new Date(now)
-  sat.setDate(now.getDate() + daysToSat)
-  const sun = new Date(sat)
-  sun.setDate(sat.getDate() + 1)
-  const fmt = (d: Date) => d.toISOString().slice(0, 10)
-  return { saturday: fmt(sat), sunday: fmt(sun) }
-}
+// TOMBSTONE (wave 155, lane 155S2): `nextWeekendDates` deleted — its only reader was the invented-score branch of
+// optimizeOpenHouseTiming (below), which returned canned "score 92 / 88" weekend slots for an invalid id. That branch is
+// now a refusal; with no reader left the helper went with it. Real timing advice comes only from the model call in
+// optimizeOpenHouseTiming, from the listing's own data.
 
 export async function optimizeOpenHouseTiming(params: { propertyId: string; agentId: string; proposedDate?: string }) {
-  if (!isValidUUID(params.agentId)) {
-    const { saturday, sunday } = nextWeekendDates()
-    return {
-      recommended_times: [
-        { date: saturday, time: "14:00-16:00", score: 92, reasoning: "Saturday afternoon is prime time — families have flexibility after morning activities. 1-3 PM captures both early and mid-afternoon browsers." },
-        { date: sunday, time: "13:00-15:00", score: 88, reasoning: "Sunday early afternoon works well for serious buyers who prefer less crowded viewings. Good natural lighting and comfortable timing." },
-      ],
-    }
+  // WAVE 155 (lane 155S2): TRUTH — an invalid id used to return two INVENTED recommendations ("score: 92" / "88" with
+  // canned reasoning) as though they had been measured. Unmeasured is unknown: an invalid id is refused, and nothing is
+  // scored. (nextWeekendDates, which fed the invention, is retired just above with a tombstone.)
+  if (!isValidUUID(params.agentId) || !isValidUUID(params.propertyId)) {
+    return { success: false, error: "Invalid listing or agent id — no open house timing was analyzed." }
   }
+  // THE GATE, before the read and the model: a session with a tenant, and the listing is read INSIDE that tenant.
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const timingSession = await getAgentContext()
+  if (!timingSession.isAuthenticated || !timingSession.brokerageId) return { success: false, error: "Not authenticated" }
+  const timingBrokerageId = timingSession.brokerageId
+  return ledgered("session", { action: "marketing.open_house_timing.optimize", subject: { type: "listing", id: params.propertyId }, riskClass: "LOW_RISK_WRITE" }, async () => {
 
   const supabase = await createClient()
 
   try {
-    const { data: property } = await supabase.from("listings").select("*").eq("id", params.propertyId).maybeSingle()
+    const { data: property } = await supabase.from("listings").select("*").eq("id", params.propertyId).eq("brokerage_id", timingBrokerageId).maybeSingle()
     if (!property) {
       return { success: false, error: "Property not found" }
     }
@@ -283,22 +300,45 @@ OUTPUT FORMAT (JSON):
 }`
 
     const { text } = await generateText({
+      brokerageId: timingBrokerageId,
       model: "openai/gpt-4o",
       prompt,
     })
 
-    return parseAIJsonResponse(text)
+    // The caller (marketing-tab.tsx handleOptimizeTiming) renders ONLY `success: true` — the parsed advice never carried
+    // it, so real advice was always shown as "No timing advice was produced". A reply with no recommendations is a
+    // refusal, not an empty success; a recommendation whose score the model did not give keeps score null (unknown).
+    const advice = parseAIJsonResponse(text) as { recommended_times?: unknown } | null
+    const recs = Array.isArray(advice?.recommended_times) ? (advice!.recommended_times as Array<Record<string, unknown>>) : []
+    if (!advice || recs.length === 0) return { success: false, error: "The model returned no timing recommendations." }
+    return {
+      ...advice,
+      success: true,
+      recommended_times: recs.map((r) => ({ ...r, score: typeof r.score === "number" && Number.isFinite(r.score) ? r.score : null })),
+    }
   } catch (error) {
     console.error("Optimize timing error:", error)
-    return { error: "Failed to optimize timing" }
+    return { success: false, error: "Failed to optimize timing" }
   }
+  })
 }
 
 // ============================================
 // MATCH SCORING
 // ============================================
 
-export async function calculateMatchScore(contactId: string, propertyId: string): Promise<number> {
+/**
+ * ── NOT EXPORTED (CLAUDE.md §4, 2026-09-01) ─────────────────────────────────
+ * This file is `"use server"`, so an export here is a PUBLIC HTTP ENDPOINT.
+ * This one had NO auth gate and NO tenant predicate: it read `contacts` and
+ * `listings` by raw caller-supplied id and returned a number derived from both.
+ * That is a cross-tenant INFERENCE ORACLE — the score is a side channel that
+ * leaks another brokerage's contact preferences and another brokerage's listing
+ * attributes to anyone who can guess or enumerate two uuids, without ever
+ * returning a row. It was never meant to be a door: both call sites (:~486 and
+ * :~617) are in THIS file. Lowered to module-private; the callers are unchanged.
+ */
+async function calculateMatchScore(contactId: string, propertyId: string): Promise<number> {
   if (!isValidUUID(contactId) || !isValidUUID(propertyId)) {
     return 0
   }
@@ -364,6 +404,7 @@ export async function calculateMatchScore(contactId: string, propertyId: string)
 // ============================================
 
 export async function generatePersonalizedInvite(params: { contactId: string; eventId: string }) {
+  return ledgered("session", { action: "marketing.open_house_invite.generate", subject: { type: "contact", id: params.contactId }, riskClass: "LOW_RISK_WRITE", detail: { event_id: params.eventId } }, async () => {
   if (!isValidUUID(params.contactId) || !isValidUUID(params.eventId)) {
     return { success: false, error: "Invalid IDs" }
   }
@@ -379,24 +420,48 @@ export async function generatePersonalizedInvite(params: { contactId: string; ev
       .eq("id", params.eventId)
       .maybeSingle()
 
-    const { data: persona } = await supabase
-      .from("client_detailed_personas")
-      .select("*")
-      .eq("id", contact?.persona_id)
-      .maybeSingle()
+    // WAVE 148 (148Z): THE PERSONA IS READ BY ITS CONTACT, IN THE SESSION TENANT, FROM THE MARKETING-SAFE LAYER.
+    // TOMBSTONE: this read was `.from("client_detailed_personas").eq("id", contact?.persona_id)` — `contacts` has NO
+    // persona_id column (scripts/schema-snapshot.ts), so it always matched nothing (CLAUDE.md §3 trap) and the prompt said
+    // "Pain Points: Unknown" for everyone. SURVIVOR: app/actions/contact-persona.ts loadContactPersona (keyed on
+    // client_detailed_personas.contact_id + the session brokerage — the persona lane 148C's lib/contacts/persona-builder.ts
+    // writes). An invitation is public marketing copy to one person, so only layer 5 (marketing_persona, marketing_safe) is
+    // handed to the model — never the research layer, never the legacy pain_points (unscreened, pre-148).
+    const { loadContactPersona } = await import("@/app/actions/contact-persona")
+    const personaRead = await loadContactPersona({ contactId: params.contactId })
+    const storedPersona = personaRead.ok ? personaRead.persona : null
+    const marketing = personaRead.ok && personaRead.layered && storedPersona?.marketing_safe === true
+      ? (storedPersona.marketing_persona as { headline?: string; needs?: Array<{ need?: string }>; messaging?: { angles?: string[] } } | null)
+      : null
+    const { MARKETING_NEEDS } = await import("@/lib/contacts/persona-layers")
+    const needLabels = (marketing?.needs ?? [])
+      .map((n) => (n.need && n.need in MARKETING_NEEDS ? MARKETING_NEEDS[n.need as keyof typeof MARKETING_NEEDS].label : null))
+      .filter((l): l is string => !!l)
+      .slice(0, 3)
 
     const matchScore = await calculateMatchScore(params.contactId, event?.listing_id)
 
-    const prompt = `Generate personalized open house invitation for ${contact?.first_name} ${contact?.last_name}.
+    // WAVE 148 prompt standard: role + mandate, the brand and the person, the facts it may rely on (and must never invent),
+    // the decision it owns, a typed output contract, the compliance boundary (fair housing — this IS public marketing copy),
+    // and the escalation rule.
+    const system = `You are the listing agent's open-house concierge — the warm, specific voice of a real-estate agent's business, writing ONE personal invitation that makes this person want to come and meet the agent. It is about them: be kind and neighbourly, never pushy.
 
-RECIPIENT PROFILE:
-- Name: ${contact?.first_name} ${contact?.last_name}
-- Persona: ${persona?.persona_type || "general"}
-- Looking for: ${contact?.beds_wanted} bed, ${contact?.baths_wanted} bath
-- Budget: $${contact?.budget_min}-${contact?.budget_max}
-- Priorities: ${contact?.must_have_features?.join(", ") || "Not specified"}
-- Timeline: ${contact?.timeline || "flexible"}
-- Pain Points: ${persona?.pain_points?.join(", ") || "Unknown"}
+YOU OWN: the wording of one invitation (email subject + body, and a short text message).
+FACTS YOU MAY RELY ON: only the RECIPIENT, PROPERTY, MATCH and OPEN HOUSE facts in the message. A value shown as "not specified" is UNKNOWN — never fill it in, never guess a feature, price, school, commute or neighbourhood claim the facts do not state.
+COMPLIANCE (Fair Housing Act §3604(c) — this is public marketing copy): describe the HOME and the person's stated criteria only. Never mention or imply race, colour, religion, sex, disability, familial status, national origin, age or life stage, marital status, a life event, or who a home or area is "perfect for"; no school-quality claims (name a district only if the facts give it); no "exclusive"/"private community" wording that implies who is welcome.
+VOICE: warm, specific, conversational; no "great opportunity", no "don't miss out"; gentle, honest — if the match is weak, say plainly why it may still be worth a look.
+ESCALATE: if the facts are too thin to write something honest and specific, set "needs_human": true and explain in "reasoning" instead of padding.
+OUTPUT: JSON only — {"email_subject": string, "email_body": string, "sms_message": string (≤ 300 chars, include the date), "reasoning": string, "needs_human": boolean}.`
+
+    const prompt = `Write the invitation for ${contact?.first_name ?? "this person"}.
+
+RECIPIENT (their own stated criteria):
+- Name: ${contact?.first_name ?? ""} ${contact?.last_name ?? ""}
+- Looking for: ${contact?.beds_wanted ?? "not specified"} bed, ${contact?.baths_wanted ?? "not specified"} bath
+- Budget: ${contact?.budget_min || contact?.budget_max ? `$${contact?.budget_min ?? "?"}-${contact?.budget_max ?? "?"}` : "not specified"}
+- Priorities: ${contact?.must_have_features?.join(", ") || "not specified"}
+- Timeline: ${contact?.timeline || "not specified"}
+- What they are trying to do (marketing-safe, needs-based persona): ${needLabels.length ? needLabels.join("; ") : "not yet known — lead with the home and their criteria"}${marketing?.messaging?.angles?.length ? `\n- Angles that help them: ${marketing.messaging.angles.slice(0, 2).join("; ")}` : ""}
 
 PROPERTY DETAILS:
 - Address: ${event?.property?.address}
@@ -413,29 +478,12 @@ OPEN HOUSE DETAILS:
 - Date: ${event?.event_date}
 - Time: ${event?.start_time} - ${event?.end_time}
 
-TASK: Write personalized invitation that:
-1. Addresses ${contact?.first_name} by name
-2. Highlights property features matching THEIR specific priorities
-3. Explains why THIS home fits THEIR needs (not generic)
-4. Creates gentle urgency without pressure
-5. Makes it easy to RSVP
-
-TONE: ${persona?.communication_preferences === "formal" ? "Professional but friendly" : "Warm and conversational"}
-
-DO NOT use generic phrases like "great opportunity" or "don't miss out"
-DO reference their specific search criteria
-DO make them feel you're thinking about THEM specifically
-
-OUTPUT FORMAT (JSON):
-{
-  "email_subject": "...",
-  "email_body": "...",
-  "sms_message": "...",
-  "reasoning": "Why this property matches this contact"
-}`
+TASK: address ${contact?.first_name ?? "them"} by name; connect the home's stated features to THEIR stated priorities; say honestly why this home may fit; make RSVP easy. JSON only, per the contract.`
 
     const { text } = await generateText({
+      brokerageId: (event as { brokerage_id?: string | null } | null)?.brokerage_id ?? null,
       model: "openai/gpt-4o",
+      system,
       prompt,
     })
 
@@ -447,8 +495,21 @@ OUTPUT FORMAT (JSON):
     console.error("Generate invite error:", error)
     return { success: false, error: "Failed to generate invitation" }
   }
+  })
 }
 
+/**
+ * `score` WAS ACCEPTED HERE AND READ BY NOTHING until 2026-08-24 — and this string is
+ * printed straight into the prompt that writes a real invitation to a real person,
+ * one line below the match score itself (`- Match Score: ${matchScore}/100`).
+ *
+ * When none of the three specific checks fired, the old code returned the flat
+ * assertion "Good general fit" — for a 12/100 match exactly as confidently as for a
+ * 95/100 one. That is a claim about a person's fit that nothing measured, handed to a
+ * model as a FACT to build an invitation on. The score is the one thing in scope that
+ * knows better, so the no-specific-reason case now defers to it, and the model is
+ * told to be candid rather than to embellish a weak match.
+ */
 function generateMatchReasoning(contact: any, property: any, score: number): string {
   const reasons = []
 
@@ -462,7 +523,17 @@ function generateMatchReasoning(contact: any, property: any, score: number): str
     reasons.push("In preferred neighborhood")
   }
 
-  return reasons.join(", ") || "Good general fit"
+  if (reasons.length > 0) {
+    // A strong score corroborates the specific reasons; a weak one is worth saying
+    // out loud so the copy does not oversell what the data supports.
+    return score >= 70
+      ? `${reasons.join(", ")} (strong match, ${score}/100)`
+      : `${reasons.join(", ")} (partial match, ${score}/100)`
+  }
+
+  if (score >= 70) return `Strong overall fit (${score}/100), though no single stated criterion is on file`
+  if (score >= 40) return `Loose fit (${score}/100) — worth an invite, but do not claim it matches their criteria`
+  return `No recorded criteria match (${score}/100) — invite as a neighbourhood open house, not as a property match`
 }
 
 // ============================================
@@ -495,85 +566,253 @@ export async function sendOpenHouseInvitations(params: { eventId: string; contac
 
       const matchScore = await calculateMatchScore(contactId, event?.listing_id)
 
-      // Create invitation record
-      const { data: invitation } = await supabase
+      // STAGED, THEN PROMOTED ON A REAL DISPATCH. This row used to be written
+      // with sent_at = now() BEFORE the send was attempted, by code whose send
+      // was an empty comment — and then results.push said "sent" regardless of
+      // what happened. Every count downstream (total_invites_sent on the event
+      // analytics reads this table) inherited the fabrication. The sibling
+      // writer in seller-open-house.ts was already corrected this way; this one
+      // was missed.
+      //
+      // contacts.preferred_channel has NO check constraint, but
+      // open_house_invitations.channel does — {both, email, in_app, sms}. A
+      // contact whose preference is "phone" or "text" silently FAILED the
+      // insert. Normalise to the vocabulary the column actually accepts.
+      // Wave 145 (lane 145Z, §6): this read `preferred_contact_method`, which is NOT a contacts column (the star select never
+      // carried it — every invite fell to email). The live column is preferred_channel.
+      const preference = String(contact?.preferred_channel ?? "").toLowerCase()
+      const channel: "email" | "sms" | "both" =
+        preference === "sms" || preference === "text" || preference === "phone"
+          ? "sms"
+          : preference === "both"
+            ? "both"
+            : "email"
+
+      const { data: invitation, error: inviteRowErr } = await supabase
         .from("open_house_invitations")
         .insert({
           event_id: params.eventId,
           contact_id: contactId,
-          channel: contact?.preferred_contact_method || "email",
+          brokerage_id: contact?.brokerage_id ?? null,
+          channel,
           personalized_message: inviteResult.data.email_body,
           match_score: matchScore,
           match_reasoning: inviteResult.data.reasoning,
-          sent_at: new Date().toISOString(),
+          status: "queued",
+          sent_at: null,
         })
         .select()
         .maybeSingle()
+      if (inviteRowErr) console.error(`[open-house] invitation row NOT created: ${inviteRowErr.message}`)
 
-      // Send via email using the AI-generated content
-      if (invitation?.id) {
-        await sendOpenHouseInvitation({
-          contactId,
-          eventId: params.eventId,
-          method: contact?.preferred_contact_method ?? "email",
-          personalizedMessage: inviteResult.data.email_body,
-        })
+      if (!invitation?.id) {
+        results.push({ contactId, status: "failed", error: "Could not stage the invitation" })
+        continue
       }
 
-      results.push({ contactId, status: "sent", invitationId: invitation?.id })
+      // sendOpenHouseInvitation RETURNS { success:false, error } for a refusal
+      // (DNC, suppression, quiet hours, no address on file) — it does not throw,
+      // so the catch below would never see one. Read the result.
+      const sendRes = await sendOpenHouseInvitation({
+        contactId,
+        eventId: params.eventId,
+        method: channel,
+        personalizedMessage: inviteResult.data.email_body,
+        // generatePersonalizedInvite writes an sms_message per contact and this
+        // was the only place that could carry it to the send.
+        personalizedSms: inviteResult.data.sms_message,
+        // ── ORPHAN-ROUTE SWEEP (lane G): THE RSVP LINK'S MISSING HALF. ───────
+        // This is the only place in the tree that knows the staged invitation's
+        // id, and the RSVP page's credential is the PAIR (eventId, invitationId)
+        // — so without it `sendOpenHouseInvitation` could not build a link that
+        // resolves, and it built `/open-house/rsvp/${eventId}` instead, a route
+        // that has never existed. Consequence, not theory: `handleRSVP` (a
+        // complete, hardened writer sitting just below in this file) had no
+        // caller, and `open_house_invitations.rsvp_response` — which the
+        // listing's Marketing tab reads and reports on — was NULL for every
+        // invitee this product has ever mailed.
+        //
+        // The insert above already refuses to continue without `invitation.id`,
+        // so this is always a real row id by the time the send runs.
+        invitationId: invitation.id,
+      })
+
+      if (sendRes.success) {
+        // ── message_id IS THE CORRELATION KEY, and it was never stored ───────
+        // This row carries opened_at and clicked_at, both read by the listing's
+        // Marketing tab (app/actions/seller-open-house.ts:130) and neither ever
+        // written — because the ONLY way an open can find its way back to an
+        // invitation is the provider id, and `message_id` sat NULL on every
+        // invitation ever mailed. The SendGrid webhook now stamps those two
+        // columns by matching this exact value
+        // (lib/outcomes/provider-event-fanout.ts), so an unstamped id here is
+        // the difference between a live engagement number and a permanent zero.
+        //
+        // Email wins over SMS on a "both" send: SendGrid is the channel whose
+        // opens and clicks this OS actually receives.
+        const providerMessageId = sendRes.email?.messageId ?? sendRes.sms?.messageId ?? null
+        const { error: inviteSentErr } = await supabase
+          .from("open_house_invitations")
+          .update({ status: "sent", sent_at: new Date().toISOString(), message_id: providerMessageId })
+          .eq("id", invitation.id)
+        if (inviteSentErr) console.error(`[open-house] invitation sent but NOT marked sent (reach under-reports): ${inviteSentErr.message}`)
+      }
+
+      results.push({
+        contactId,
+        status: sendRes.success ? "sent" : "failed",
+        error: sendRes.success ? undefined : sendRes.error,
+        invitationId: invitation.id,
+      })
     } catch (error) {
       results.push({ contactId, status: "failed", error: String(error) })
     }
   }
 
-  // Update marketing reach
-  await supabase
+  // MARKETING REACH IS WHO WAS REACHED, not who was considered. This used to be
+  // params.contactIds.length — the size of the input list — so a run in which
+  // every single send was refused still reported full reach.
+  const delivered = results.filter((r) => r.status === "sent").length
+  await bestEffort(supabase
     .from("open_house_events")
-    .update({ marketing_reach: params.contactIds.length })
-    .eq("id", params.eventId)
+    .update({ marketing_reach: delivered })
+    .eq("id", params.eventId), "reach counter; the per-invitation results are returned")
 
   revalidatePath("/dashboard/open-house")
-  return { success: true, results }
+  // success means at least one invitation actually left the building. A run
+  // where every contact was suppressed is not a success with a nice list.
+  return {
+    success: delivered > 0,
+    delivered,
+    attempted: results.length,
+    error: delivered > 0 ? undefined : (results.find((r) => r.error)?.error ?? "No invitation was delivered"),
+    results,
+  }
 }
 
 // ============================================
 // RSVP HANDLING
 // ============================================
 
-export async function handleRSVP(params: { eventId: string; invitationId: string; response: "yes" | "maybe" | "no" }) {
+/**
+ * RSVP from an emailed invitation link.
+ *
+ * CREDENTIAL MODEL — read this before touching the client below. The invitee is
+ * an ANONYMOUS visitor: they hold an invitation link, not a platform login, and
+ * most of them never will (they are contacts, not users). The unguessable pair
+ * (eventId, invitationId) IS the credential — both must be supplied and the
+ * invitation must actually belong to that event, which is checked below.
+ *
+ * This ran on `createClient()` (the caller's RLS session). Verified live: the
+ * `open_house_invitations` policy is
+ * `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()`, and the
+ * rows `inviteContacts` writes carry the contact's real `brokerage_id` — so for
+ * an anonymous invitee `current_user_brokerage_id()` is NULL, the predicate is
+ * false, and the SELECT was REFUSED. The function's own honest error path then
+ * told every invitee "Could not look up that invitation". **No RSVP from an
+ * emailed link could ever have succeeded.** The service client is the door this
+ * lane needs; the id pair, not a session, is what authorizes it.
+ */
+export async function handleRSVP(params: { eventId: string; invitationId: string; response: "yes" | "maybe" | "no" }): Promise<{ success: boolean; error?: string; message?: string }> {
   if (!isValidUUID(params.eventId) || !isValidUUID(params.invitationId)) {
     return { success: false, error: "Invalid IDs" }
   }
+  // A "use server" export is a public endpoint: the response union is a compile-time promise, not a runtime one.
+  if (params.response !== "yes" && params.response !== "maybe" && params.response !== "no") {
+    return { success: false, error: "Please choose yes, maybe or no." }
+  }
 
-  const supabase = await createClient()
+  const supabase = createServiceClient()
 
   try {
-    const { data: invitation } = await supabase
-      .from("open_house_invitations")
-      .select("*")
-      .eq("id", params.invitationId)
-      .maybeSingle()
-
-    if (!invitation) {
+    // WAVE 155 (lane 155R23 — G10, P1): THE DECISION before any write — decidePublicDoor (lib/security/public-rate-limit.ts):
+    // the per-connection cap first, then the TENANT'S OWN OPT-IN, which is the invitation row the tenant's invite email was
+    // minted for (the unguessable (eventId, invitationId) pair is the sealed credential) and the brokerage THAT row proves —
+    // never a body field. No login wall: an invitee is a contact, not a user. Each refusal keeps its honest sentence; nothing
+    // is written on a refusal. Same shape as submitFeedback below (lane 155R21).
+    // Destructure `error` (wave 4 slice 2). supabase-js RESOLVES a refused
+    // query, so `const { data: invitation }` alone turned an RLS refusal into
+    // the same "Invitation not found" as a bad id — and this path then went on
+    // to write.
+    const { decidePublicDoor, publicCallerIp } = await import("@/lib/security/public-rate-limit")
+    const seenInvite: { invitation: any; error: boolean } = { invitation: null, error: false }
+    const rsvpDoor = await decidePublicDoor({
+      surface: "open-house-rsvp", callerKey: await publicCallerIp(), cap: { limit: 10, windowMs: 10 * 60_000 },
+      optIn: async () => {
+        const { data: row, error: invErr } = await supabase
+          .from("open_house_invitations")
+          .select("*")
+          .eq("id", params.invitationId)
+          .maybeSingle()
+        if (invErr) { seenInvite.error = true; return null }
+        // The invitation must actually belong to the event named in the link.
+        // Without this, an invitation id and an event id from two different
+        // brokerages could be combined into one tracking row.
+        if (!row || row.event_id !== params.eventId) return null
+        seenInvite.invitation = row
+        // brokerage_id is STAMPED from the invitation (open_house_rsvp_tracking's RLS admits untenanted rows to everyone —
+        // verified live); a row with no resolvable tenant is refused rather than written world-open.
+        const tenant = (row as { brokerage_id?: string | null }).brokerage_id ?? null
+        return tenant ? { brokerageId: tenant, basis: "open_house_invitations row the tenant's invite link was minted for" } : null
+      },
+    })
+    if (!rsvpDoor.allowed) {
+      if (rsvpDoor.reason === "rate_limited") return { success: false, error: "Too many responses from this connection — your RSVP was not recorded. Please try again in a few minutes." }
+      if (seenInvite.error) return { success: false, error: "Could not look up that invitation — your RSVP was not recorded." }
+      if (seenInvite.invitation) return { success: false, error: "This invitation is not linked to a brokerage — your RSVP was not recorded." }
       return { success: false, error: "Invitation not found" }
     }
+    const invitation = seenInvite.invitation
+    const rsvpBrokerageId = rsvpDoor.brokerageId as string
 
-    // Update invitation
-    await supabase
+    // LAW 5: ONE receipt for the RSVP — tenant = the one the door PROVED, actor `system` (an anonymous invitee holding a link),
+    // subject the invitation. No key: a changed answer ("maybe" → "yes") is a new answer and must run.
+    const { withActionLedger, doorTrust } = await import("@/lib/kernel/action-ledger")
+    type Rsvp = { success: boolean; error?: string; message?: string }
+    return await withActionLedger<Rsvp>({
+      brokerageId: rsvpBrokerageId, action: "marketing.open_house_rsvp.record", actor: { type: "system", userId: null }, ...doorTrust("anonymous_public_request"),
+      subject: { type: "open_house_invitation", id: params.invitationId }, riskClass: "LOW_RISK_WRITE", reasonCode: "CONVERSATION_RESPONSE",
+      reasonDetail: "invitee answered an open-house invitation", channel: "web", systemSource: "open_house_rsvp_link",
+      detail: { response: params.response, event_id: params.eventId, door: rsvpDoor.basis },
+    }, async (): Promise<Rsvp> => {
+
+    // Update invitation — refuse a zero-row write instead of thanking the
+    // invitee for an RSVP that was never recorded.
+    const { data: updated, error: updErr } = await supabase
       .from("open_house_invitations")
       .update({
         rsvp_response: params.response,
         rsvp_updated_at: new Date().toISOString(),
       })
       .eq("id", params.invitationId)
+      .select("id")
 
-    // Track RSVP
-    await supabase.from("open_house_rsvp_tracking").insert({
+    if (updErr) return { success: false, error: "Your RSVP could not be saved. Please try again." }
+    if (!updated || updated.length === 0) {
+      return { success: false, error: "Your RSVP could not be saved. Please try again." }
+    }
+
+    // Track RSVP.
+    // brokerage_id is STAMPED from the invitation. It was omitted entirely, and
+    // open_house_rsvp_tracking's RLS policy is
+    // `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()` with
+    // a NULLABLE brokerage_id (both verified live) — so every row this endpoint
+    // wrote was untenanted, which under that policy means readable AND writable
+    // by every user of every tenant, and by anonymous callers. Stamping the
+    // tenant closes it; a row with no resolvable tenant is refused rather than
+    // written world-open. (Since lane 155R23 the refusal is the door's above: rsvpBrokerageId is the tenant it proved.)
+    const { error: trackErr } = await supabase.from("open_house_rsvp_tracking").insert({
+      brokerage_id: rsvpBrokerageId,
       event_id: params.eventId,
       contact_id: invitation.contact_id,
       rsvp_status: params.response,
       rsvp_updated_at: new Date().toISOString(),
     })
+    if (trackErr) {
+      // The RSVP itself landed on the invitation above — say what did and did
+      // not happen rather than reporting a clean success or a clean failure.
+      console.error("[handleRSVP] rsvp tracking insert failed:", trackErr.message)
+    }
 
     revalidatePath("/dashboard/open-house")
 
@@ -584,6 +823,10 @@ export async function handleRSVP(params: { eventId: string; invitationId: string
     }[params.response]
 
     return { success: true, message }
+    }, {
+      settle: (r) => r.success ? { status: "executed", outcome: `rsvp_${params.response}` } : { status: "failed", outcome: "rsvp_not_saved", error: r.error ?? null },
+      replay: (claim) => ({ success: false, error: claim.kind === "refused" ? "Your RSVP could not be recorded just now — please try again." : "That RSVP is already being recorded." }),
+    })
   } catch (error) {
     console.error("Handle RSVP error:", error)
     return { success: false, error: "Failed to record RSVP" }
@@ -595,25 +838,37 @@ export async function handleRSVP(params: { eventId: string; invitationId: string
 // ============================================
 
 export async function predictAttendance(eventId: string) {
+  // WAVE 155 (integrator, census row G12): three things were wrong at this door.
+  //   · An id that is not a UUID was answered with an INVENTED forecast (12 / 18 / 24 attendees, "confidence 0.78", 5 serious
+  //     buyers) — the screen rendered it as a prediction for an open house that does not exist. It is refused now.
+  //   · No session was read: the event was found by id alone, row security the only fence. The tenant is the SESSION's and the
+  //     event is read with that tenant's predicate, so another tenant's event id finds nothing.
+  //   · The paid model call and the write of open_house_events.attendance_prediction left no receipt. They run inside ONE
+  //     ledgerSessionAction receipt (lib/kernel/action-ledger.ts); no idempotency key — a second request is a second forecast.
+  // @proofSeam scripts/wave155-ungated-deal-guard.ts
   if (!isValidUUID(eventId)) {
-    return {
-      predicted_attendance_low: 12,
-      predicted_attendance_mid: 18,
-      predicted_attendance_high: 24,
-      confidence_level: 0.78,
-      serious_buyers_expected: 5,
-    }
+    return { success: false, error: "Invalid event ID" }
   }
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const forecastSession = await getAgentContext()
+  if (!forecastSession.isAuthenticated || !forecastSession.brokerageId || !forecastSession.userId) {
+    return { success: false, error: "Unauthorized" }
+  }
+  const forecastTenant = forecastSession.brokerageId
 
   const supabase = await createClient()
 
   try {
-    const { data: event } = await supabase
+    const { data: event, error: eventError } = await supabase
       .from("open_house_events")
       .select("*, property:listings(*)")
       .eq("id", eventId)
+      .eq("brokerage_id", forecastTenant)
       .maybeSingle()
 
+    if (eventError) {
+      return { success: false, error: "Could not read that open house" }
+    }
     if (!event) {
       return { success: false, error: "Event not found" }
     }
@@ -677,22 +932,27 @@ OUTPUT FORMAT (JSON):
   "recommendation": "Good turnout expected."
 }`
 
-    const { text } = await generateText({
-      model: "openai/gpt-4o",
-      prompt,
-    })
-
-    const prediction = parseAIJsonResponse(text)
-
-    // Store prediction
-    await supabase
-      .from("open_house_events")
-      .update({
-        attendance_prediction: prediction.predicted_attendance_mid,
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: forecastTenant, action: "open_house.attendance.predict", actor: { type: "user", userId: forecastSession.userId, agentId: forecastSession.agentId ?? null }, subject: { type: "open_house_event", id: eventId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
+      const { text } = await generateText({
+        brokerageId: forecastTenant,
+        model: "openai/gpt-4o",
+        prompt,
       })
-      .eq("id", eventId)
 
-    return prediction
+      const prediction = parseAIJsonResponse(text)
+
+      // Store prediction
+      await bestEffort(supabase
+        .from("open_house_events")
+        .update({
+          attendance_prediction: prediction.predicted_attendance_mid,
+        })
+        .eq("id", eventId)
+        .eq("brokerage_id", forecastTenant), "prediction cache; the prediction is returned")
+
+      return prediction
+    })
   } catch (error) {
     console.error("Predict attendance error:", error)
     return { error: "Failed to predict attendance" }
@@ -713,8 +973,39 @@ export async function processEventFollowups(eventId: string, client?: any) {
   const supabase = client ?? await createClient()
 
   try {
-    // Mark event as completed
-    await supabase.from("open_house_events").update({ status: "completed" }).eq("id", eventId)
+    // WAVE 155 (lane 155C — owner R2): mark the event held through THE ONE HELD WRITER. At base this was an unconditional
+    // `update({ status: "completed" })` and the post-event cron selects every event that is not yet completed — so a CANCELLED
+    // or DRAFT open house dated yesterday was flipped to completed. Now cancelled / draft are refused (and get no follow-ups),
+    // and the sweep counts an open house as held only with a sign-in or verified attendance on it.
+    const { recordOpenHouseHeld } = await import("@/lib/gamification/lifecycle-awards")
+    // The tenant is the EVENT ROW's, read through the client this call already holds: the session client is bound by row
+    // security to the caller's tenant; the post-event cron passes the service client. It is never a parameter.
+    const { data: heldTenant, error: heldTenantErr } = await supabase.from("open_house_events").select("brokerage_id").eq("id", eventId).maybeSingle()
+    if (heldTenantErr) console.error(`[open-house] event ${eventId} tenant read refused: ${heldTenantErr.message}`)
+    const held = await recordOpenHouseHeld(supabase, { eventId, brokerageId: (heldTenant as { brokerage_id?: string | null } | null)?.brokerage_id ?? null, via: "post_event_sweep" })
+    if (!held.ok) {
+      console.error(`[open-house] event ${eventId} not marked held: ${held.error}`)
+      if (/cancelled|draft/i.test(held.error)) return { success: false, error: held.error }
+    }
+
+    // C22 (wave 148, lane 148H): an ONLINE event's attendance is settled before anyone is followed up — still-open Zoom sessions
+    // closed at the meeting's end, the VERIFIED attendees filed as attendees (so the hand-off below sees them), registrants of a
+    // verifiable event marked no_show (never on an unverifiable host), the outcome stored, and the promised replay delivered once
+    // it exists. An in-person event returns at once (its sign-ins already are its attendance).
+    try {
+      const { finalizeEventAttendance, deliverEventReplay, deliverEventHandout } = await import("@/lib/open-house/event-attendance")
+      const fin = await finalizeEventAttendance(supabase, eventId)
+      if (fin.finalized) await deliverEventReplay(supabase, eventId)
+      // Wave 149 (149F): the promised handout (once it exists), then the ARBITER's no-show decision (C29 — no fixed nudge).
+      await deliverEventHandout(supabase, eventId)
+      if (fin.finalized) {
+        const { arbitrateEventTouches } = await import("@/lib/open-house/event-touches")
+        const t = await arbitrateEventTouches(supabase, eventId)
+        if (t.phase === "after" && t.asked > 0) console.info(`[open-house] no-show decisions: ${t.asked} asked, ${t.handedToHost} handed to the host`)
+      }
+    } catch (err) {
+      console.warn("[open-house] event attendance not finalized (follow-up continues):", err instanceof Error ? err.message : err)
+    }
 
     // Get all attendees
     const { data: attendees } = await supabase.from("open_house_attendees").select("*").eq("event_id", eventId)
@@ -727,7 +1018,7 @@ export async function processEventFollowups(eventId: string, client?: any) {
     for (const attendee of attendees) {
       const leadScore = calculateAttendeeLeadScore(attendee)
       attendee.ai_lead_score = leadScore // keep the in-memory copy fresh for the handoff below
-      await supabase.from("open_house_attendees").update({ ai_lead_score: leadScore }).eq("id", attendee.id)
+      await bestEffort(supabase.from("open_house_attendees").update({ ai_lead_score: leadScore }).eq("id", attendee.id), "attendee score cache; the in-memory score drives the follow-ups below")
     }
 
     // Segment and trigger follow-ups
@@ -761,8 +1052,12 @@ export async function processEventFollowups(eventId: string, client?: any) {
       console.warn("[open-house] hot-lead handoff failed:", err)
     }
 
-    // Generate analytics
-    await generateEventAnalytics(eventId)
+    // Generate analytics — on the SAME client this run holds (lane 86E). The
+    // helper built its own cookie client, so when the post-event cron filled
+    // the seam above with the service client, this last step still read the
+    // event, attendees and invitations through an EMPTY session and wrote an
+    // all-zero open_house_analytics row. Found by the sessionless census.
+    await generateEventAnalytics(eventId, supabase)
 
     revalidatePath("/dashboard/open-house")
     return {
@@ -809,8 +1104,9 @@ function calculateAttendeeLeadScore(attendee: any): number {
   return Math.min(score, 100)
 }
 
-async function generateEventAnalytics(eventId: string) {
-  const supabase = await createClient()
+async function generateEventAnalytics(eventId: string, client?: any) {
+  // client seam, same as processEventFollowups: the caller's client wins.
+  const supabase = client ?? await createClient()
 
   const { data: event } = await supabase.from("open_house_events").select("*").eq("id", eventId).maybeSingle()
 
@@ -840,7 +1136,7 @@ async function generateEventAnalytics(eventId: string) {
         : 0,
   }
 
-  await supabase.from("open_house_analytics").insert(analytics)
+  await bestEffort(supabase.from("open_house_analytics").insert(analytics), "analytics snapshot; returned to the caller")
 
   return analytics
 }
@@ -850,39 +1146,25 @@ async function generateEventAnalytics(eventId: string) {
 // ============================================
 
 export async function createOpenHouseEvent(params: {
-  agentId: string
+  /** @deprecated ignored — the host is the SESSION's agent (CLAUDE.md §4). */
+  agentId?: string
   propertyId: string
   eventDate: string
   startTime: string
   endTime: string
   description?: string
 }) {
-  if (!isValidUUID(params.agentId) || !isValidUUID(params.propertyId)) {
+  if (!isValidUUID(params.propertyId)) {
     return { success: false, error: "Invalid IDs" }
   }
-
-  const supabase = await createClient()
-
+  // WAVE 149 (149F — lane 148H Still open 4): ONE PRODUCER. TOMBSTONE: the acquisition card's own insert (tenant from the listing,
+  // host from the BODY) stood here. SURVIVOR: app/actions/open-house.ts createOpenHouse → lib/kernel/open-house.ts.
   try {
-    const { data: event, error } = await supabase
-      .from("open_house_events")
-      .insert({
-        agent_id: params.agentId,
-        listing_id: params.propertyId,
-        event_date: params.eventDate,
-        start_time: params.startTime,
-        end_time: params.endTime,
-        description: params.description,
-        status: "scheduled",
-      })
-      .select()
-      .maybeSingle()
-
-    if (error) throw error
-    if (!event) throw new Error("Failed to create open house event")
-
+    const { createOpenHouse } = await import("@/app/actions/open-house")
+    const r = await createOpenHouse({ listingId: params.propertyId, date: params.eventDate, startTime: params.startTime, endTime: params.endTime, publicDescription: params.description })
+    if (!r.success) return { success: false, error: r.error ?? "Failed to create event" }
     revalidatePath(`/dashboard/listings/${params.propertyId}/open-house`)
-    return { success: true, data: event }
+    return { success: true, data: r.event }
   } catch (error) {
     console.error("Create event error:", error)
     return { success: false, error: "Failed to create event" }
@@ -950,19 +1232,42 @@ export async function fetchWeatherForEvent(eventId: string) {
     // the property's coordinates. Honest failure when the date is outside the
     // provider's ~16-day forecast window or the fetch fails — never mock data.
     const eventDate = String(event.event_date ?? new Date().toISOString()).slice(0, 10)
-    const url =
-      `https://api.open-meteo.com/v1/forecast` +
-      `?latitude=${encodeURIComponent(event.property.latitude)}` +
-      `&longitude=${encodeURIComponent(event.property.longitude)}` +
-      `&daily=weather_code,temperature_2m_max,precipitation_probability_max,wind_speed_10m_max` +
-      `&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=auto` +
-      `&start_date=${eventDate}&end_date=${eventDate}`
-
-    const res = await fetch(url, { cache: "no-store" })
-    if (!res.ok) {
-      return { error: `Weather provider error (${res.status}) — forecast unavailable for ${eventDate}` }
+    // Through the ONE egress (wave 139, lane 139B: was a raw fetch — a provider no census saw because
+    // it needs no key). Keyless + free; the gateway's outcome row is the usage + health record, and
+    // the tenant is the RLS-read event row's brokerage (never the caller's input).
+    // Wave 140 (140I) — COMMERCIAL LICENSE (open-meteo.com/en/pricing, 2026-10-11): the keyless host is
+    // for NON-commercial use only; a subscription issues OPEN_METEO_API_KEY for customer-api.open-meteo.com
+    // ("only the domain and key parameter differ"). Production without the key REFUSES, naming the remedy
+    // (fail closed — a release blocker stays a release blocker); development may use the free host.
+    const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
+    const { VENDOR_CONTRACTS } = await import("@/lib/agentic-os/connector-registry")
+    const openMeteoKey = process.env.OPEN_METEO_API_KEY?.trim() || null
+    if (!openMeteoKey && process.env.NODE_ENV === "production") {
+      return { error: "Weather forecast unavailable: OPEN_METEO_API_KEY is not set — the keyless Open-Meteo tier is licensed for non-commercial use only; an API subscription (customer-api.open-meteo.com) is required in production" }
     }
-    const forecast = await res.json()
+    const openMeteo = openMeteoKey ? VENDOR_CONTRACTS.open_meteo_commercial : VENDOR_CONTRACTS.open_meteo
+    const eventBrokerageId = (event as { brokerage_id?: string | null }).brokerage_id ?? null
+    const res = await callConnector<any>({
+      connector: "open_meteo", brokerageId: eventBrokerageId,
+      baseUrl: openMeteo.baseUrl, path: "forecast",
+      query: {
+        latitude: String(event.property.latitude), longitude: String(event.property.longitude),
+        daily: "weather_code,temperature_2m_max,precipitation_probability_max,wind_speed_10m_max",
+        temperature_unit: "fahrenheit", wind_speed_unit: "mph", timezone: "auto",
+        start_date: eventDate, end_date: eventDate,
+      },
+      ...(openMeteoKey ? { auth: { style: "query" as const, name: "apikey", value: openMeteoKey } } : {}),
+    })
+    if (!res.ok) {
+      return { error: `Weather provider error (${res.status ?? res.error}) — forecast unavailable for ${eventDate}` }
+    }
+    // A subscribed forecast is a PAID unit (fixed monthly plan — price UNKNOWN, VENDOR_PRICING.open_meteo):
+    // book it, platform-covered, once per executed call (no unmetered paid capability).
+    if (openMeteoKey) {
+      const { meterVendorSpend } = await import("@/lib/vendor-governance/meter-vendor")
+      await meterVendorSpend({ vendorName: "open_meteo", usageType: "forecast", cost: 0, unitCount: 1, priceState: "unknown", costBasis: "estimated", coverage: "platform_covered", brokerageId: eventBrokerageId, systemSource: "open_house_weather" })
+    }
+    const forecast = res.data
     const daily = forecast?.daily
     const temperature = Number(daily?.temperature_2m_max?.[0])
     if (!daily || !Number.isFinite(temperature)) {
@@ -997,11 +1302,18 @@ export async function fetchWeatherForEvent(eventId: string) {
     if (weather.quality_score < 50) {
       console.log(`[v0] Weather warning for event ${eventId}: score ${weather.quality_score}`)
       if (event.agent_id) {
-        await sendWeatherAlertToAgent({
+        // event.agent_id is an agents.id; the alert resolves it to the agent's
+        // users row for a mailbox. Non-fatal, but no longer silent — the result
+        // used to be discarded entirely, so a failed alert looked identical to
+        // a delivered one from here.
+        const alert = await sendWeatherAlertToAgent({
           eventId,
           agentId: event.agent_id,
-          weatherData: weather
+          weatherData: weather,
         })
+        if (!alert.success) {
+          console.error(`[open-house] Weather alert not delivered for event ${eventId}: ${alert.error}`)
+        }
       }
     }
 
@@ -1035,44 +1347,55 @@ function calculateWeatherScore(weather: any): number {
 // ============================================
 
 export async function generatePerformanceInsights(eventId: string) {
+  // WAVE 155 (lane 155S2): TRUTH — an invalid id used to return an INVENTED report card ("overall_grade: B+", "Above
+  // average event with strong attendance…") for an event that was never read. Unmeasured is unknown: it is a refusal in
+  // the `{ error }` shape both callers already render (analytics-tab.tsx, intelligence-tab.tsx toast it).
   if (!isValidUUID(eventId)) {
-    return {
-      overall_grade: "B+",
-      performance_summary: "Above average event with strong attendance and good lead quality.",
-      strengths: ["High RSVP conversion", "Quality leads generated"],
-      weaknesses: ["Could improve follow-up speed"],
-      recommendations: ["Schedule next open house on Saturday afternoon", "Focus on hot leads within 24 hours"],
-    }
+    return { error: "Invalid event id — no performance was measured." }
   }
+  // THE GATE, before the reads and the model: a session with a tenant; the event is read INSIDE that tenant first.
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const insightSession = await getAgentContext()
+  if (!insightSession.isAuthenticated || !insightSession.brokerageId) return { error: "Not authenticated" }
+  const insightBrokerageId = insightSession.brokerageId
+  return ledgered("session", { action: "marketing.open_house_insights.generate", subject: { type: "open_house_event", id: eventId }, riskClass: "LOW_RISK_WRITE" }, async () => {
 
   const supabase = await createClient()
 
   try {
-    const { data: analytics } = await supabase.from("open_house_analytics").select("*").eq("event_id", eventId).maybeSingle()
-
-    const { data: event } = await supabase.from("open_house_events").select("*").eq("id", eventId).maybeSingle()
-
-    if (!analytics || !event) {
+    const { data: event } = await supabase.from("open_house_events").select("*").eq("id", eventId).eq("brokerage_id", insightBrokerageId).maybeSingle()
+    if (!event) {
       return { error: "Analytics data not found" }
     }
+
+    const { data: analytics } = await supabase.from("open_house_analytics").select("*").eq("event_id", eventId).maybeSingle()
+
+    if (!analytics) {
+      return { error: "Analytics data not found" }
+    }
+    // A rate whose denominator is absent or zero is UNKNOWN — it used to print "NaN%" / "Infinity%" into the prompt the
+    // model then graded from.
+    const pct = (n: unknown, d: unknown): string =>
+      typeof n === "number" && typeof d === "number" && d > 0 ? `${((n / d) * 100).toFixed(1)}%` : "unknown"
+    const fixed = (v: unknown): string => (typeof v === "number" && Number.isFinite(v) ? v.toFixed(1) : "unknown")
 
     const prompt = `Analyze open house performance and provide actionable insights.
 
 EVENT METRICS:
 Invitations:
-- Sent: ${analytics.total_invites_sent}
-- RSVP Yes: ${analytics.rsvp_yes_count}
-- RSVP Rate: ${((analytics.rsvp_yes_count / analytics.total_invites_sent) * 100).toFixed(1)}%
+- Sent: ${analytics.total_invites_sent ?? "unknown"}
+- RSVP Yes: ${analytics.rsvp_yes_count ?? "unknown"}
+- RSVP Rate: ${pct(analytics.rsvp_yes_count, analytics.total_invites_sent)}
 
 Attendance:
-- Predicted: ${event.attendance_prediction}
-- Actual: ${analytics.total_attendance}
-- Accuracy: ${((analytics.total_attendance / event.attendance_prediction) * 100).toFixed(1)}%
+- Predicted: ${event.attendance_prediction ?? "unknown"}
+- Actual: ${analytics.total_attendance ?? "unknown"}
+- Accuracy: ${pct(analytics.total_attendance, event.attendance_prediction)}
 
 Lead Quality:
-- Serious Buyers: ${analytics.serious_buyers_count}
-- Average Lead Score: ${analytics.avg_lead_score?.toFixed(1)}/100
-- Average Time Spent: ${analytics.avg_time_spent_minutes?.toFixed(1)} minutes
+- Serious Buyers: ${analytics.serious_buyers_count ?? "unknown"}
+- Average Lead Score: ${fixed(analytics.avg_lead_score)}/100
+- Average Time Spent: ${fixed(analytics.avg_time_spent_minutes)} minutes
 
 TASK: Provide performance analysis with letter grade (A+, A, A-, B+, B, etc.) and recommendations.
 
@@ -1091,25 +1414,31 @@ OUTPUT FORMAT (JSON):
 }`
 
     const { text } = await generateText({
+      brokerageId: insightBrokerageId,
       model: "openai/gpt-4o",
       prompt,
     })
 
     const insights = parseAIJsonResponse(text)
+    // A reply with no grade is not a report: refuse it (callers toast `error`) rather than store and render a blank card.
+    if (!insights || typeof insights !== "object" || typeof (insights as { overall_grade?: unknown }).overall_grade !== "string") {
+      return { error: "The model returned no performance report." }
+    }
 
     // Store insights
-    await supabase
+    await bestEffort(supabase
       .from("open_house_analytics")
       .update({
         performance_insights: insights,
       })
-      .eq("event_id", eventId)
+      .eq("event_id", eventId), "AI insights annotation; returned to the caller")
 
     return insights
   } catch (error) {
     console.error("Generate insights error:", error)
     return { error: "Failed to generate insights" }
   }
+  })
 }
 
 // ============================================
@@ -1137,16 +1466,27 @@ export async function sendFeedbackRequestToAttendee(attendeeId: string) {
       .maybeSingle()
 
     const feedbackUrl = `${process.env.NEXT_PUBLIC_APP_URL || ""}/open-house/feedback/${attendeeId}`
-  
-    // Send feedback request via email and SMS
-    if (attendee.contact_id) {
-      await sendFeedbackRequest({
-        contactId: attendee.contact_id,
-        eventId: attendee.event_id,
-        feedbackUrl
-      })
+
+    // An attendee with no linked contact has nowhere to send to. Saying so beats
+    // returning success for a request that was never addressed to anyone — the
+    // analytics tab marks the attendee "sent" and stops offering the button.
+    if (!attendee.contact_id) {
+      return { success: false, error: "This attendee has no linked contact record to reach" }
     }
-  
+
+    // sendFeedbackRequest RETURNS { success:false, error } on a refusal and does
+    // not throw. This used to return { success: true } unconditionally, so the
+    // tab reported "Feedback request sent" for a function that sent nothing.
+    const res = await sendFeedbackRequest({
+      contactId: attendee.contact_id,
+      eventId: attendee.event_id,
+      feedbackUrl,
+    })
+
+    if (!res.success) {
+      return { success: false, error: res.error ?? "The feedback request was not delivered" }
+    }
+
     return { success: true, feedbackUrl }
   } catch (error) {
     console.error("Send feedback request error:", error)
@@ -1168,17 +1508,70 @@ export async function submitFeedback(params: {
     return { success: false, error: "Invalid attendee ID" }
   }
 
-  const supabase = await createClient()
+  // CREDENTIAL MODEL: identical to handleRSVP above. The person filling this in
+  // is an open-house visitor following the link `sendFeedbackRequestToAttendee`
+  // emails them (`/open-house/feedback/<attendeeId>`); the unguessable attendee
+  // id is the credential. On the RLS session client the
+  // `open_house_attendees` policy
+  // (`brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()`)
+  // refused every anonymous read, so this endpoint could only ever answer
+  // "Could not look up that visit" to the very people it was built for.
+  const supabase = createServiceClient()
 
   try {
-    const { data: attendee } = await supabase.from("open_house_attendees").select("*").eq("id", params.attendeeId).maybeSingle()
+    // WAVE 155 (lane 155R21 — G10, P0): THE DECISION before any write — decidePublicDoor (lib/security/public-rate-limit.ts): the
+    // per-connection cap first, then the TENANT'S OWN OPT-IN, which is the attendee row the tenant's feedback email was minted for
+    // (the unguessable attendee id is the sealed credential) and the tenant that row proves. No login wall: a visitor must reach
+    // this page. Each refusal keeps its honest sentence; nothing is written on a refusal.
+    // Destructure `error` — a refusal must not read as "Attendee not found"
+    // and must never fall through to a write. (wave 4 slice 2)
+    const { decidePublicDoor, publicCallerIp } = await import("@/lib/security/public-rate-limit")
+    const seenVisit: { attendee: any; error: boolean; tenant: string | null } = { attendee: null, error: false, tenant: null }
+    const feedbackDoor = await decidePublicDoor({
+      surface: "open-house-feedback", callerKey: await publicCallerIp(), cap: { limit: 10, windowMs: 10 * 60_000 },
+      optIn: async () => {
+        const { data: row, error: attErr } = await supabase
+          .from("open_house_attendees").select("*").eq("id", params.attendeeId).maybeSingle()
+        if (attErr) { seenVisit.error = true; return null }
+        if (!row) return null
+        seenVisit.attendee = row
+        // open_house_feedback carries a buyer's price opinion, their concerns and
+        // their contact link. Its RLS policy is
+        // `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()` and
+        // brokerage_id is NULLABLE (both verified live), so a row written with a
+        // null tenant is readable by every user of every tenant AND by anonymous
+        // callers. Resolve from the event as a fallback and REFUSE rather than
+        // write the feedback world-open.
+        let tenant: string | null = (row as { brokerage_id?: string | null }).brokerage_id ?? null
+        if (!tenant && row.event_id) {
+          const { data: ev } = await supabase
+            .from("open_house_events").select("brokerage_id").eq("id", row.event_id).maybeSingle()
+          tenant = (ev as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+        }
+        seenVisit.tenant = tenant
+        return tenant ? { brokerageId: tenant, basis: "open_house_attendees row the tenant's feedback link was minted for" } : null
+      },
+    })
+    if (!feedbackDoor.allowed) {
+      if (feedbackDoor.reason === "rate_limited") return { success: false, error: "Too many submissions from this connection — your feedback was not saved. Please try again in a few minutes." }
+      if (seenVisit.error) return { success: false, error: "Could not look up that visit — your feedback was not saved." }
+      if (!seenVisit.attendee) return { success: false, error: "Attendee not found" }
+    }
+    const attendee = seenVisit.attendee
 
-    if (!attendee) {
-      return { success: false, error: "Attendee not found" }
+    // (The tenant resolution that stood here now runs INSIDE the door's opt-in read above — same rule, same refusal.)
+    // `attendee.brokerage_id ?? null` used to write feedback world-open whenever the attendee row had drifted untenanted.
+    const feedbackBrokerageId: string | null = feedbackDoor.allowed ? feedbackDoor.brokerageId : null
+    if (!feedbackBrokerageId) {
+      return {
+        success: false,
+        error: "This visit is not linked to a brokerage — your feedback was not saved.",
+      }
     }
 
-    // Update attendee record
-    await supabase
+    // Update attendee record — refuse a zero-row write rather than thanking the
+    // visitor for feedback that was never stored.
+    const { data: attUpdated, error: attUpdErr } = await supabase
       .from("open_house_attendees")
       .update({
         feedback_rating: params.overallRating,
@@ -1186,13 +1579,18 @@ export async function submitFeedback(params: {
         feedback_collected_at: new Date().toISOString(),
       })
       .eq("id", params.attendeeId)
+      .select("id")
+
+    if (attUpdErr || !attUpdated || attUpdated.length === 0) {
+      return { success: false, error: "Your feedback could not be saved. Please try again." }
+    }
 
     // Store detailed feedback in the correct table with correct column names
-    await supabase.from("open_house_feedback").insert({
+    const { error: fbErr } = await supabase.from("open_house_feedback").insert({
       attendee_id: params.attendeeId,
       event_id: attendee.event_id,
       contact_id: attendee.contact_id ?? null,
-      brokerage_id: attendee.brokerage_id ?? null,
+      brokerage_id: feedbackBrokerageId,
       rating: params.overallRating,
       price_opinion: params.pricingFeedback ?? null,
       liked_most: params.whatLikedMost ?? null,
@@ -1200,6 +1598,12 @@ export async function submitFeedback(params: {
       interested_in_offer: params.wouldMakeOffer === "yes",
       has_own_agent: attendee.working_with_agent ?? false,
     })
+    if (fbErr) {
+      return {
+        success: false,
+        error: "Your rating was recorded but the detailed feedback could not be saved. Please try again.",
+      }
+    }
 
     // Update lead score based on feedback
     let scoreAdjustment = 0
@@ -1207,12 +1611,12 @@ export async function submitFeedback(params: {
     if (params.overallRating >= 4) scoreAdjustment += 10
 
     if (scoreAdjustment > 0) {
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from("open_house_attendees")
         .update({
           ai_lead_score: (attendee.ai_lead_score || 0) + scoreAdjustment,
         })
-        .eq("id", params.attendeeId)
+        .eq("id", params.attendeeId), { table: "open_house_attendees", flow: "open_house_attendees_write", reason: "attendee score bump from an engagement signal" })
     }
 
     revalidatePath("/dashboard/open-house")
@@ -1231,6 +1635,14 @@ export async function monitorCompetingEvents(eventId: string) {
   if (!isValidUUID(eventId)) {
     return { competing_count: 0, same_time_conflicts: 0 }
   }
+  // WAVE 155 (lane 155R21): THE GATE — this "use server" export is a public endpoint and had none: any caller could name an event
+  // id and overwrite its competing_events_data. Now a session with a tenant first; the event is read and written INSIDE that
+  // tenant (CLAUDE.md §4); one receipt per scan through the module's `ledgered` door below (no key — a re-scan is a new scan).
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const competitionSession = await getAgentContext()
+  if (!competitionSession.isAuthenticated || !competitionSession.brokerageId) return { error: "Not authenticated" }
+  const competitionTenant = competitionSession.brokerageId
+  return ledgered("session", { action: "marketing.open_house_competition.scan", subject: { type: "open_house_event", id: eventId }, riskClass: "LOW_RISK_WRITE" }, async () => {
 
   const supabase = await createClient()
 
@@ -1239,6 +1651,7 @@ export async function monitorCompetingEvents(eventId: string) {
       .from("open_house_events")
       .select("*, property:listings(*)")
       .eq("id", eventId)
+      .eq("brokerage_id", competitionTenant)
       .maybeSingle()
 
     if (!event) {
@@ -1278,18 +1691,20 @@ export async function monitorCompetingEvents(eventId: string) {
     }
 
     // Store competing events data
-    await supabase
+    await bestEffort(supabase
       .from("open_house_events")
       .update({
         competing_events_data: competingData,
       })
       .eq("id", eventId)
+      .eq("brokerage_id", competitionTenant), "competing-events cache; returned to the caller")
 
     return competingData
   } catch (error) {
     console.error("Monitor competing events error:", error)
     return { error: "Failed to monitor competition" }
   }
+  })
 }
 
 function parseTime(timeStr: string): number {
@@ -1301,56 +1716,37 @@ function parseTime(timeStr: string): number {
 // DIGITAL CHECK-IN
 // ============================================
 
-export async function checkInAttendee(params: {
-  eventId: string
-  contactEmail: string
-  contactName: string
-  contactPhone?: string
-  interestLevel?: string
-  specificQuestions?: string[]
-  optInFollowUp?: boolean
-}) {
-  if (!isValidUUID(params.eventId)) {
-    return { success: false, error: "Invalid event ID" }
-  }
+// TOMBSTONE (wave 146, lane 146G — owner ruling 15; eight-step proof row `checkInAttendee` in
+// scripts/manager-duplicate-proof-guard.ts): checkInAttendee DELETED here → survivor
+// app/actions/seller-open-house.ts:661 checkInAttendee — the kiosk check-in the event-day tab calls: event-derived
+// brokerage, refuses a completed / cancelled event, REQUIRES TCPA consent, dedupes on (event, email), records the
+// consent on contact_consent_events and emits OPEN_HOUSE_ATTENDEE_CAPTURED. This twin had no importer. Its only
+// behaviours the survivor lacks were not merged, on purpose: it DEFAULTED tcpa_consent to true when optInFollowUp was
+// omitted (consent without an affirmative act — the survivor refuses that), and it stamped an interest level at
+// sign-in, which the survivor deliberately leaves NULL ("at sign-in we have not assessed them yet"; the follow-up
+// path scores interest). mapInterestLevelText stays — recordVisitor above still uses it.
 
-  const supabase = await createClient()
-
-  try {
-    // Check if attendee already checked in
-    const { data: existing } = await supabase
-      .from("open_house_attendees")
-      .select("id")
-      .eq("event_id", params.eventId)
-      .eq("email", params.contactEmail)
-      .maybeSingle()
-
-    if (existing) {
-      return { success: false, error: "Already checked in" }
-    }
-
-    // Create attendee record
-    const { data: attendee } = await supabase
-      .from("open_house_attendees")
-      .insert({
-        event_id: params.eventId,
-        email: params.contactEmail,
-        name: params.contactName,
-        phone: params.contactPhone ?? null,
-        interest_level: mapInterestLevelText(params.interestLevel),
-        check_in_time: new Date().toISOString(),
-        arrival_time: new Date().toISOString(),
-        working_with_agent: false,
-        tcpa_consent: params.optInFollowUp !== false,
-        ai_lead_score: 0,
-      })
-      .select()
-      .maybeSingle()
-
-    revalidatePath("/dashboard/open-house")
-    return { success: true, data: attendee }
-  } catch (error) {
-    console.error("Check-in attendee error:", error)
-    return { success: false, error: "Failed to check in" }
-  }
+/**
+ * WAVE 155 (lane 155R9, G12): ONE agent_action_ledger receipt per session write — ledgerSessionAction
+ * (lib/kernel/action-ledger.ts) does the claim → run → settle. Who and which tenant come from the SESSION (CLAUDE.md §4);
+ * "session" resolves them through getAgentContext. NO idempotency key: a person's second save runs again and leaves a
+ * second receipt. The export's value comes back unchanged; a refused claim (only a malformed action name, caught by
+ * test:action-ledger §14) throws instead of returning a value of another shape. No session tenant → the write runs exactly
+ * as before, unrecorded (agent_action_ledger.brokerage_id is NOT NULL — there is no valid row to write).
+ * @proofSeam scripts/ledger-receipts-transaction2-guard.ts
+ */
+async function ledgered<T>(
+  who: { userId?: string | null; brokerageId?: string | null; agentId?: string | null } | null | undefined | "session",
+  what: { action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> },
+  run: () => Promise<T>,
+): Promise<T> {
+  const seat = who === "session" ? await (await import("@/lib/identity/get-agent-context")).getAgentContext() : who
+  if (!seat?.userId || !seat.brokerageId) return run()
+  const id = what.subject.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(what.subject.id) ? what.subject.id : null
+  const subject = { type: what.subject.type, id, ref: id ? what.subject.ref ?? null : what.subject.ref ?? what.subject.id ?? null }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const r = await ledgerSessionAction({ brokerageId: seat.brokerageId, action: what.action, actor: { type: "user", userId: seat.userId, agentId: seat.agentId ?? null }, subject, riskClass: what.riskClass, reasonCode: "HUMAN_REQUESTED", detail: what.detail ?? null }, async () => { ran = true; return run() })
+  if (!ran) throw new Error((r as { error?: string }).error ?? "action ledger refused the claim")
+  return r as T
 }

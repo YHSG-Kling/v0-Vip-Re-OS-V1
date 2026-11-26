@@ -1,5 +1,5 @@
 import { createServiceClient } from '@/lib/supabase/service'
-import { TransactionStage } from '@/lib/transactions/transaction-stages'
+import type { TransactionStage } from '@/lib/transactions/transaction-stages'
 
 const STAGE_AUTO_TASKS: Record<string, Array<{
   title: string

@@ -1,4 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
+// The ONE way a notifications row gets its tenant — the recipient's
+// users.brokerage_id, the exact value badge-counts compares against.
+import { resolveRecipientBrokerageIds } from "@/lib/notifications/recipient-tenant"
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
@@ -38,6 +41,27 @@ export async function findStuckAgentsAndNotify(): Promise<void> {
   }
 
   console.log(`[onboarding-reminders] Processing ${inProgressRows.length} in_progress agents.`)
+
+  // TENANT — resolved ONCE FOR THE WHOLE RUN, not once per row: one `users` read
+  // for every recipient this sweep might notify.
+  //
+  // The value is each RECIPIENT's `users.brokerage_id`, the exact expression
+  // app/api/dashboard/badge-counts/route.ts:62 compares against. Unstamped, a
+  // reminder is written, the cooldown is stamped as though it were delivered,
+  // and the badge never counts it — so the agent is told nothing AND is not told
+  // again for 24 hours. `agent_onboarding.brokerage_id` exists and is NOT used:
+  // it is not the value the reader computes, and using it would be a second
+  // resolver that can silently disagree with the first.
+  const reminderTenants = await resolveRecipientBrokerageIds(
+    supabase,
+    inProgressRows.map((r) => r.user_id as string | null),
+  )
+  if (!reminderTenants.ok) {
+    // A refused users read is NOT "these agents have no brokerage". Fail closed
+    // for the whole run rather than writing a sweep of invisible reminders and
+    // burning every cooldown behind them.
+    throw new Error(`[onboarding-reminders] ${reminderTenants.reason}`)
+  }
 
   for (const row of inProgressRows) {
     try {
@@ -79,10 +103,22 @@ export async function findStuckAgentsAndNotify(): Promise<void> {
       }
 
       // 4) Insert in_app notification for the agent
+      const reminderBrokerageId = reminderTenants.brokerageIds.get(userId) ?? null
+      if (!reminderBrokerageId) {
+        // No tenant resolves for this recipient, so the row would be written
+        // where the bell cannot count it — and the cooldown below would then
+        // suppress the next 24 hours of real attempts. Skip WITHOUT stamping the
+        // cooldown, and name the reason.
+        console.error(
+          `[onboarding-reminders] No brokerage resolves for recipient ${userId} (agent ${agentId}) — reminder NOT written and the cooldown NOT stamped.`,
+        )
+        continue
+      }
       const { error: notifError } = await supabase
         .from("notifications")
         .insert({
           user_id: userId,
+          brokerage_id: reminderBrokerageId,
           type: "onboarding_reminder",
           title: "Onboarding Reminder",
           body: "Complete your next onboarding step to unlock full access.",

@@ -2,11 +2,11 @@ import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getReferralNetwork } from "@/app/actions/referrals/agent-referral-actions"
-import { ReferralNetworkClient } from "./referral-network-client"
+import { ReferralNetworkClient } from "./referral-network-client"; import { resolveSessionSeatWords } from "@/lib/kernel/resolve-user-office"
 
 export const metadata = {
   title: "Referral Network",
-  description: "Refer a client to an agent elsewhere in your brokerage and earn a referral fee when it closes.",
+  description: "Refer a client to another agent on your network and earn a referral fee when it closes.",
 }
 
 /**
@@ -23,7 +23,7 @@ export default async function ReferralNetworkPage() {
   const { data: agent } = await svc.from("agents").select("id, brokerage_id").eq("user_id", user.id).maybeSingle()
   if (!agent?.brokerage_id) redirect("/dashboard/onboarding")
 
-  const network = await getReferralNetwork()
+  const [network, words] = await Promise.all([getReferralNetwork(), resolveSessionSeatWords()])
   if (!network.ok) redirect("/dashboard/agent")
 
   // The agent's own contacts, for the "refer this client" picker.
@@ -37,7 +37,7 @@ export default async function ReferralNetworkPage() {
       agents={network.agents ?? []}
       outbound={network.outbound ?? []}
       earnedTotal={network.earnedTotal ?? 0}
-      contacts={contactOptions}
+      contacts={contactOptions} words={words}
     />
   )
 }

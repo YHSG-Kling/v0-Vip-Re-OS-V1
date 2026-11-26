@@ -22,13 +22,27 @@
  * preferred-phrase rules flow through to the AI prompt.
  */
 import "server-only"
+import type { VoiceSourceStamp } from "@/lib/kernel/brand-voice"
 import { generateTextRouted } from "@/lib/ai/models"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { runWithComplianceRedraft } from "@/lib/kernel/compliance-redraft"
 import { resolveBrandContext } from "@/lib/branding/resolve-brand-context"
 import type { Persona } from "@/lib/kernel/types"
 
-export type DirectMailCopyShape = "postcard" | "letter"
+// TOMBSTONE (§1.3, 2026-08-31, lane M4): `DirectMailCopyShape` deleted — the
+// postcard/letter distinction lives as two named functions (draftPostcardCopy
+// / draftLetterCopy below), each with its own prompt and copy shape; no caller
+// ever carried the union as a value.
+
+/** The client the compliance gate reads and audits through (lane 86C). Mail copy is drafted
+ *  from send orchestration and manager reactors with NO cookie session, so the default cookie
+ *  client read no brand voice and the compliance_events row was refused (findRecentComplianceEventId
+ *  below then found nothing). ctx.brokerageId comes from the caller's verified row or session
+ *  (render-postcard / render-letter / manager-signals / the session-gated preview action). */
+async function tenantGateClient() {
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  return createServiceClient()
+}
 
 /** Map any incoming persona string to the canonical Persona union.
  *  Anything unrecognized falls to "other" so we never narrow off a
@@ -37,7 +51,7 @@ function normalizePersona(p: string): Persona {
   const KNOWN: Persona[] = [
     "first_time", "relocated", "luxury", "fsbo", "probate",
     "upsize", "downsize", "military", "divorce", "senior",
-    "expired", "foreclosure", "other",
+    "expired", "foreclosure", "investor", "other",
   ]
   return (KNOWN as string[]).includes(p) ? (p as Persona) : "other"
 }
@@ -96,6 +110,100 @@ export interface DirectMailCopyContext {
    *  this the bandit rotated labels but not real creative; with it,
    *  each arm renders a structurally different piece. */
   copyStyle?: string
+  /** Wave 151 (151H / 151I seam): THE SENDER'S VOICE, conditioning the FIRST draft (owner: copy is written in the sender's
+   *  voice from the first draft — never "generate generic then let the human rewrite"). Read once by the orchestrator
+   *  (readSenderVoiceBrief below) and carried here so both shapes draft from it. */
+  senderVoice?: SenderVoiceBrief | null
+  /** Wave 151 (151H): the PRINT format the copy is for. `personal_letter` is the handwriting-style printed note — a short
+   *  body in the note's layout (a length constraint of the layout, not a different writer). */
+  format?: "letter" | "personal_letter" | "postcard" | "handwritten_card"
+}
+
+// ─── WAVE 151 — THE SENDER-VOICE BRIEF (lane 151H owns the shape and the hook; lane 151I owns the reader) ────────────
+//
+// 151I HOOK. Lane 151I (sender-voice copy) builds the brief from the user's settings — words, tagline, tone, signature,
+// example sentences — in its own module and plugs it in HERE: replace the body of `readSenderVoiceBrief` with (or have the
+// integrator import) 151I's reader, keeping this SHAPE. Everything downstream (both prompts, the orchestrator, the
+// renderers) already consumes the brief through `DirectMailCopyContext.senderVoice`, so the plug is one function body and
+// no caller changes. Until 151I lands, the brief is read from the data the tree already holds: brand_voice_profile (tone,
+// preferred / prohibited words, tone_examples) and the brand cascade (display name, tagline, legal brokerage).
+export interface SenderVoiceBrief {
+  /** The person or team whose voice this is — the name the signature carries. */
+  senderDisplayName: string
+  /** The legal brokerage of record (printed by the layout, never typed into the copy). */
+  legalBrokerageName: string
+  tagline: string | null
+  tone: string | null
+  /** The sender's own words (used), and the words the sender never uses (avoided). */
+  preferredWords: readonly string[]
+  prohibitedWords: readonly string[]
+  /** Sentences from the sender's prior writing — the output should SOUND like these. */
+  exampleSentences: readonly string[]
+  /** How the sender signs off ("— Maya", "Warmly, Luis"), or null to let the format decide. */
+  signature: string | null
+  /** Where the brief came from, for the audit trail. */
+  source: "brand_voice_profile+brand_cascade" | "brand_cascade_only" | "lane_151I_reader"
+  /** The ONE reader's versioned stamp (lib/kernel/brand-voice.ts voiceSourceStamp) — the piece records it as voice_source. */
+  voiceSource?: VoiceSourceStamp | null
+}
+
+/**
+ * Read the sender's voice brief for ONE copy context — THE ONE reader (lane 151I; LAW 2): lib/kernel/brand-voice.ts
+ * loadSenderVoiceBrief compiles the VERSIONED brief from the sender's settings and authorized examples at agent → team →
+ * brokerage scope; this function folds it into the direct-mail shape (the legal brokerage of record comes from the brand
+ * cascade, which the layout prints). A refused compile falls through to the cascade alone and is said in the source.
+ * TOMBSTONE (wave 151, 151H ← 151I Outside-lane 1): the private brand_voice_profile(tone_examples) read that lived here is
+ * DELETED — SURVIVOR: lib/kernel/brand-voice.ts loadSenderVoiceBrief. Never throws.
+ */
+export async function readSenderVoiceBrief(ctx: Pick<DirectMailCopyContext, "brokerageId" | "teamId" | "agentUserId">): Promise<SenderVoiceBrief> {
+  const brand = await resolveBrandContext({ brokerageId: ctx.brokerageId, teamId: ctx.teamId ?? null, agentUserId: ctx.agentUserId ?? null })
+  const base: SenderVoiceBrief = {
+    senderDisplayName: brand.agentName ?? brand.displayName,
+    legalBrokerageName: brand.brokerageName,
+    tagline: brand.display.tagline ?? null,
+    tone: null, preferredWords: [], prohibitedWords: [], exampleSentences: [],
+    signature: brand.agentName ? `— ${brand.agentName.split(" ")[0] ?? brand.agentName}` : null,
+    source: "brand_cascade_only",
+    voiceSource: null,
+  }
+  try {
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const { loadSenderVoiceBrief, voiceSourceStamp } = await import("@/lib/kernel/brand-voice")
+    const brief = await loadSenderVoiceBrief(createServiceClient() as never, { brokerageId: ctx.brokerageId, teamId: ctx.teamId ?? null, agentUserId: ctx.agentUserId ?? null })
+    const tone = [brief.tone ? `tone: ${brief.tone}` : null, brief.formality ? `formality: ${brief.formality}` : null, brief.personality ? `personality: ${brief.personality}` : null, brief.style ? `style: ${brief.style}` : null].filter(Boolean).join(" · ") || null
+    const signatureLine = brief.signature.text?.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? null
+    return {
+      ...base,
+      senderDisplayName: brief.sender.name ?? base.senderDisplayName,
+      tagline: brief.tagline ?? base.tagline,
+      tone,
+      preferredWords: brief.preferredWords.slice(0, 8),
+      prohibitedWords: brief.prohibitedWords.slice(0, 6),
+      exampleSentences: brief.writingSamples.map((s) => s.text).slice(0, 4),
+      signature: signatureLine ?? base.signature,
+      source: "lane_151I_reader",
+      voiceSource: voiceSourceStamp(brief),
+    }
+  } catch (e) {
+    console.error(`[draft-copy] sender-voice brief unavailable — the piece is drafted from the brand cascade alone: ${e instanceof Error ? e.message : String(e)}`)
+    return base
+  }
+}
+
+/** PURE — the prompt block the brief becomes. The FIRST draft is written in this voice; nothing here is a post-hoc rewrite. */
+function renderSenderVoiceBlock(brief: SenderVoiceBrief | null | undefined): string {
+  if (!brief) return ""
+  const lines: string[] = [`\n\n──── THE SENDER'S VOICE (write the FIRST draft in it) ────`, `Sender: ${brief.senderDisplayName} (under ${brief.legalBrokerageName})`]
+  if (brief.tagline) lines.push(`Tagline (the layout prints it; do not type it into the copy): ${brief.tagline}`)
+  if (brief.tone) lines.push(`TONE: ${brief.tone}`)
+  if (brief.preferredWords.length) lines.push(`Words this sender uses: ${brief.preferredWords.join(", ")}`)
+  if (brief.prohibitedWords.length) lines.push(`Words this sender NEVER uses: ${brief.prohibitedWords.join(", ")}`)
+  if (brief.exampleSentences.length) {
+    lines.push(`EXAMPLE SENTENCES from this sender's prior writing (the output should SOUND like these):`)
+    for (const ex of brief.exampleSentences) lines.push(`  · "${ex}"`)
+  }
+  if (brief.signature) lines.push(`Sign-off the sender uses: ${brief.signature}`)
+  return lines.join("\n")
 }
 
 export interface PostcardCopy {
@@ -208,6 +316,11 @@ const POSTCARD_COPY_STYLE_OVERLAYS: Record<string, string> = {
 
 const LETTER_COPY_STYLE_OVERLAYS: Record<string, string> = {
   "default": "",
+  // Wave 151 (151H): the handwriting-style PRINTED note's LAYOUT holds a short body — a length constraint of the
+  // personal-note layout (piece-type.ts MAIL_LAYOUT_LIBRARY.personal_letter), not a second writer. The words come from
+  // the sender's voice brief like every other shape.
+  "personal-note":
+    `\n\nLAYOUT: HANDWRITING-STYLE PRINTED NOTE\n- body: 60-110 words in ONE or TWO short paragraphs — the layout is a note card set in a handwriting-style typeface and PRINTED; if the piece describes itself, it says "handwriting-style, printed", never that a person wrote it by hand.\n- greeting is the first name only; signoff is the sender's own sign-off, one line.\n- one specific, personal fact; one gentle next step; nothing promotional.\n`,
   "intro-warm":
     `\n\nCOPY STYLE: INTRO-WARM\n- Greeting + first paragraph introduce the sender, second paragraph proves competence with one specific fact, third paragraph invites a low-commitment next step.\n`,
   "intro-credibility":
@@ -305,8 +418,9 @@ export async function draftPostcardCopy(
   // only knew abstract tone tags ("warm", "direct") — the examples
   // make the AI's output actually SOUND like the agent's writing.
   const voiceBlock = await buildVoiceExamplesBlock(ctx)
+  // 151I: the sender's voice LEADS the prompt (the first draft is written in it), then the format rules and the style overlay.
   const promptHead =
-    `${POSTCARD_PROMPT}${styleOverlay}${voiceBlock}\n\n` +
+    `${voiceBlock ? `${voiceBlock.trim()}\n\n` : ""}${POSTCARD_PROMPT}${styleOverlay}\n\n` +
     `Sender: ${brand.displayName} (under ${brand.brokerageName})\n` +
     `Persona: ${ctx.persona}\n` +
     `QR destination: ${ctx.qrDestinationType ?? "landing_page"}\n` +
@@ -323,7 +437,7 @@ export async function draftPostcardCopy(
         journeyType:  ctx.persona.includes("seller") || ctx.persona === "fsbo" || ctx.persona === "expired" ? "seller" : "buyer",
         persona:      normalizePersona(ctx.persona),
         content:      extractCopyForGate(script),
-      })
+      }, { client: await tenantGateClient() })
       return { allowed: r.allowed, violations: r.violations }
     },
   })
@@ -344,7 +458,9 @@ export async function draftPostcardCopy(
   if (!parsed || !parsed.headline || !parsed.body || !parsed.cta) {
     return { ok: false, violations: ["model returned non-JSON or missing required keys"], complianceEventId }
   }
-  return { ok: true, copy: parsed, complianceEventId }
+  const finalBody = await finalizeMailText(ctx, parsed.body)
+  if (!finalBody.ok) return { ok: false, violations: finalBody.violations, complianceEventId }
+  return { ok: true, copy: { ...parsed, body: finalBody.text }, complianceEventId }
 }
 
 /** Wave 36.5 — pull the agent-tier distilled voice profile and format
@@ -354,42 +470,12 @@ export async function draftPostcardCopy(
  *  voice RULES the gate enforces. Returns "" when no distilled row
  *  exists. */
 async function buildVoiceExamplesBlock(ctx: DirectMailCopyContext): Promise<string> {
-  if (!ctx.agentUserId) return ""
-  try {
-    const { createServiceClient } = await import("@/lib/supabase/service")
-    const svc = createServiceClient()
-    const { data } = await svc
-      .from("brand_voice_profile")
-      .select("tone_examples, tone, preferred_words, prohibited_words")
-      .eq("brokerage_id", ctx.brokerageId)
-      .eq("agent_id", ctx.agentUserId)
-      .eq("is_active", true)
-      .maybeSingle()
-    const row = data as {
-      tone_examples: string[] | null
-      tone: string | null
-      preferred_words: string[] | null
-      prohibited_words: string[] | null
-    } | null
-    if (!row) return ""
-    const lines: string[] = []
-    if (row.tone) lines.push(`\nAGENT VOICE TONE: ${row.tone}`)
-    if (row.preferred_words && row.preferred_words.length > 0) {
-      lines.push(`Preferred words this agent uses: ${row.preferred_words.slice(0, 8).join(", ")}`)
-    }
-    if (row.prohibited_words && row.prohibited_words.length > 0) {
-      lines.push(`Words to AVOID (the agent never uses these): ${row.prohibited_words.slice(0, 6).join(", ")}`)
-    }
-    if (row.tone_examples && row.tone_examples.length > 0) {
-      lines.push(`\nEXAMPLE SENTENCES from this agent's prior writing (your output should SOUND like these):`)
-      for (const ex of row.tone_examples.slice(0, 4)) {
-        lines.push(`  · "${ex}"`)
-      }
-    }
-    return lines.length === 0 ? "" : `\n\n──── PER-AGENT VOICE ANCHORS (Wave 36.5) ────${lines.join("\n")}`
-  } catch {
-    return ""
-  }
+  // Wave 151 (151H): ONE brief shape. The orchestrator stamps ctx.senderVoice (readSenderVoiceBrief — 151I's plug point);
+  // a caller that did not is read here, so the first draft is always in the sender's voice. TOMBSTONE: the inline
+  // brand_voice_profile read + ad-hoc block that lived here MERGED onto readSenderVoiceBrief / renderSenderVoiceBlock above.
+  const brief = ctx.senderVoice ?? (await readSenderVoiceBrief(ctx))
+  if (!ctx.senderVoice) ctx.senderVoice = brief
+  return renderSenderVoiceBlock(brief)
 }
 
 async function findRecentComplianceEventId(brokerageId: string, sinceIso: string): Promise<string | null> {
@@ -423,11 +509,13 @@ export async function draftLetterCopy(
     agentUserId: ctx.agentUserId ?? null,
   })
   const hookLine = buildHookContextLine(ctx)
-  const styleOverlay = LETTER_COPY_STYLE_OVERLAYS[ctx.copyStyle ?? "default"]
+  // The handwriting-style printed note takes the personal-note layout overlay unless the bandit chose a style (151H).
+  const styleOverlay = LETTER_COPY_STYLE_OVERLAYS[ctx.copyStyle ?? (ctx.format === "personal_letter" ? "personal-note" : "default")]
     ?? LETTER_COPY_STYLE_OVERLAYS["default"]
   const voiceBlock = await buildVoiceExamplesBlock(ctx)
+  // 151I: the sender's voice LEADS the prompt (the first draft is written in it), then the format rules and the style overlay.
   const promptHead =
-    `${LETTER_PROMPT}${styleOverlay}${voiceBlock}\n\n` +
+    `${voiceBlock ? `${voiceBlock.trim()}\n\n` : ""}${LETTER_PROMPT}${styleOverlay}\n\n` +
     `Sender: ${brand.displayName} (under ${brand.brokerageName})\n` +
     `Persona: ${ctx.persona}\n` +
     `QR destination: ${ctx.qrDestinationType ?? "landing_page"}\n` +
@@ -444,7 +532,7 @@ export async function draftLetterCopy(
         journeyType:  ctx.persona.includes("seller") || ctx.persona === "fsbo" || ctx.persona === "expired" ? "seller" : "buyer",
         persona:      normalizePersona(ctx.persona),
         content:      extractCopyForGate(script),
-      })
+      }, { client: await tenantGateClient() })
       return { allowed: r.allowed, violations: r.violations }
     },
   })
@@ -455,7 +543,32 @@ export async function draftLetterCopy(
   if (!parsed || !parsed.body) {
     return { ok: false, violations: ["model returned non-JSON or missing required keys"], complianceEventId }
   }
-  return { ok: true, copy: parsed, complianceEventId }
+  const finalBody = await finalizeMailText(ctx, parsed.body)
+  if (!finalBody.ok) return { ok: false, violations: finalBody.violations, complianceEventId }
+  return { ok: true, copy: { ...parsed, body: finalBody.text }, complianceEventId }
+}
+
+/**
+ * THE FINAL PERSONALIZATION PHASE ON MAIL (owner ruling 20 / contract C4 — wave 145, lane 145Z; lane 145G Outside-lane 3): the
+ * AI-drafted body passes lib/marketing/humanize-final.ts finalizeForDistribution (assetKind direct_mail) — machine phrasing
+ * removed, facts kept; the tagline and logo are PLACED by the renderer (the kind's profile is "render"), never typed into the
+ * copy. A final that still carries what no approval waives (a hard fair-housing finding, a brand-prohibited word) refuses the AI
+ * copy — the caller falls back to the brokerage's static template, exactly as on a compliance failure. A phase that cannot run
+ * (the brand unreadable) keeps the gated draft and says so — the draft already passed the outbound compliance gate.
+ */
+async function finalizeMailText(ctx: DirectMailCopyContext, body: string): Promise<{ ok: true; text: string } | { ok: false; violations: string[] }> {
+  try {
+    const { finalizeForDistribution, resolveTenantBrandForFinal } = await import("@/lib/marketing/humanize-final")
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const brand = await resolveTenantBrandForFinal(createServiceClient(), { brokerageId: ctx.brokerageId, teamId: ctx.teamId ?? null, agentUserId: ctx.agentUserId ?? null })
+    const final = await finalizeForDistribution({ assetKind: "direct_mail", text: body, tenantBrand: brand.brand })
+    const hard = [...final.fairHousing.map((f) => `fair housing: ${f}`), ...final.brandVoice.prohibited.map((w) => `prohibited by the brand voice: "${w}"`)]
+    if (hard.length) return { ok: false, violations: hard }
+    return { ok: true, text: final.text }
+  } catch (err) {
+    console.error(`[draft-copy] the final personalization phase could not run (the gated draft is kept): ${(err as Error)?.message ?? err}`)
+    return { ok: true, text: body }
+  }
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────

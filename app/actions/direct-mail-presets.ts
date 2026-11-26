@@ -255,10 +255,16 @@ export async function deactivatePreset(presetId: string): Promise<{ success: boo
     (r.scope_type === "brokerage" && access.canEditBrokerage && r.scope_id === access.brokerageScopeId)
   if (!canEditScope) return { success: false, error: "scope_forbidden" }
 
+  // WAVE 155 (155R14): the receipt — the SESSION's user (the identity resolvePolicyScopeAccess read) and its brokerage scope.
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const { userId } = await getAgentContext()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: access.brokerageScopeId, action: "marketing.direct_mail_preset.deactivate", actor: { type: "user", userId: userId || null }, subject: { type: "direct_mail_preset", id: presetId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { scope_type: r.scope_type } }, async () => {
   const { error } = await svc.from("direct_mail_presets")
     .update({ is_active: false })
     .eq("id", presetId)
   if (error) return { success: false, error: error.message }
   revalidatePath("/settings/direct-mail/presets")
   return { success: true }
+  })
 }

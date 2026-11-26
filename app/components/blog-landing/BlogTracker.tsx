@@ -15,12 +15,10 @@ import { useEffect } from "react"
 export function BlogTracker({
   blogPostId,
   personaSnapshot,
-  contactId,
   utmSource,
 }: {
   blogPostId:       string
   personaSnapshot:  string | null
-  contactId:        string | null
   utmSource:        string | null
 }) {
   useEffect(() => {
@@ -32,7 +30,6 @@ export function BlogTracker({
         blog_post_id:     blogPostId,
         source,
         referrer:         typeof document !== "undefined" ? document.referrer || null : null,
-        contact_id:       contactId,
         persona_snapshot: personaSnapshot,
       }),
       keepalive: true,

@@ -38,6 +38,20 @@ export interface SMSProviderCredentials {
 
 // ─── TWILIO ──────────────────────────────────────────────────────────────────
 
+/**
+ * The public URL Twilio posts delivery status to. Null when the app has no public
+ * origin configured — a callback URL Twilio cannot reach is worse than none, because
+ * every message would look permanently pending with no way to tell why.
+ */
+function statusCallbackUrl(): string | null {
+  const base =
+    process.env.NEXT_PUBLIC_APP_URL ||
+    (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : "") ||
+    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "")
+  if (!base || /localhost|127\.0\.0\.1/.test(base)) return null
+  return `${base.replace(/\/$/, "")}/api/webhooks/twilio-sms-status`
+}
+
 export async function sendViaTwilio(
   input: SMSAdapterInput,
   creds: SMSProviderCredentials,
@@ -61,12 +75,49 @@ export async function sendViaTwilio(
     method: "POST",
     auth: { style: "basic", username: accountSid, password: authToken },
     bodyType: "form",
-    body: { To: input.to, From: fromNumber, Body: input.message },
+    body: {
+      To: input.to, From: fromNumber, Body: input.message,
+      // ── THE TRUTH CHANNEL FOR SMS ────────────────────────────────────────
+      // Without a StatusCallback, Twilio's response is the LAST thing this OS
+      // ever hears about the message — and that response says "queued", not
+      // "delivered". Carrier rejection (bad number, landline, blocked,
+      // spam-filtered) arrives ONLY here, minutes later. Registered so
+      // outcome reconciliation has something to reconcile against; omitted when
+      // no public URL is configured, because pointing Twilio at localhost would
+      // silently drop every callback rather than fail loudly.
+      ...(statusCallbackUrl() ? { StatusCallback: statusCallbackUrl()! } : {}),
+    },
   })
   if (!res.ok) {
     return { success: false, provider: "twilio", error: res.error ?? `Twilio API error (${res.status})` }
   }
+  // The status is RETURNED to the caller now (it was discarded): "queued" is not
+  // delivery, and the dispatcher records it as a pending claim rather than a fact.
   return { success: true, provider: "twilio", messageId: res.data?.sid, status: res.data?.status }
+}
+
+/**
+ * READ-ONLY (wave 153, lane 153S — crash-mid-send recovery): the account's Message log for one recipient, newest first
+ * (Twilio "Read multiple Message resources", filter `To`). Sends nothing. Asked by lib/outcomes/reconciliation-ledger.ts
+ * recoverOutcomeUnknownSends when a send's process died between the claim and Twilio's answer: did Twilio take it?
+ */
+export async function listTwilioMessagesTo(
+  creds: SMSProviderCredentials,
+  to: string,
+): Promise<{ ok: boolean; status: number | null; data: { messages?: Array<{ sid: string; body: string | null; date_created: string | null }> } | null; error: string | null }> {
+  const accountSid = creds.apiKey
+  const authToken = creds.apiSecret
+  if (!accountSid || !authToken) return { ok: false, status: null, data: null, error: "Twilio credentials incomplete" }
+  const res = await callConnector<{ messages?: Array<{ sid: string; body: string | null; date_created: string | null }> }>({
+    connector: "twilio",
+    baseUrl: "https://api.twilio.com",
+    path: `/2010-04-01/Accounts/${encodeURIComponent(accountSid)}/Messages.json`,
+    method: "GET",
+    query: { To: to, PageSize: "50" },
+    auth: { style: "basic", username: accountSid, password: authToken },
+    timeoutMs: 15_000,
+  })
+  return { ok: res.ok, status: res.status, data: res.data, error: res.error }
 }
 
 // ─── TELNYX ──────────────────────────────────────────────────────────────────

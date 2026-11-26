@@ -19,6 +19,14 @@
 import { generationalCohortFromAge, type GenerationalCohort } from "@/lib/kernel/education"
 
 export type ReengagementAngle = "life_context" | "market_timing" | "expertise" | "soft_close"
+/** WAVE 149 (lane 149C, owner ruling 7 / C29): every angle, offered to the ARBITER as options (followup-arbiter.ts
+ *  arbitrateCadence proposals.angles). reengagementAngleForAttempt below is the planner's SUGGESTION — the fallback when the
+ *  model does not answer — never the order: which opening serves this person now is the arbiter's call. */
+export const REENGAGEMENT_ANGLES: readonly ReengagementAngle[] = Object.freeze(["life_context", "market_timing", "expertise", "soft_close"])
+/** PURE. A stored / arbiter-returned angle spelling → the angle, or null (never a guess). */
+export function asReengagementAngle(v: unknown): ReengagementAngle | null {
+  return typeof v === "string" && (REENGAGEMENT_ANGLES as readonly string[]).includes(v) ? (v as ReengagementAngle) : null
+}
 
 /** PURE. The angle for a given re-engagement attempt (1-based). A non-responder gets a
  *  DIFFERENT approach each touch, escalating from a gentle personal hook toward a soft
@@ -75,12 +83,14 @@ export function buildAdaptiveReengagementHook(cohort: GenerationalCohort, angle:
   return `${style.lead} ${ANGLE_CORE[angle]}. ${style.close}`
 }
 
-/** Convenience: resolve cohort + angle and build the hook in one call. */
+/** Convenience: resolve cohort + angle and build the hook in one call. `angle` = the ARBITER's choice when it made one (C29);
+ *  else the attempt's suggestion. */
 export function adaptiveReengagementHook(params: {
   attempt: number
   enrichment: { age?: number | null; age_range?: string | null } | null | undefined
+  angle?: ReengagementAngle | null
 }): { cohort: GenerationalCohort; angle: ReengagementAngle; hook: string } {
   const cohort = cohortFromEnrichment(params.enrichment)
-  const angle = reengagementAngleForAttempt(params.attempt)
+  const angle = params.angle ?? reengagementAngleForAttempt(params.attempt)
   return { cohort, angle, hook: buildAdaptiveReengagementHook(cohort, angle) }
 }

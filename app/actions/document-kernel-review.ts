@@ -37,10 +37,12 @@ async function loadActor(allowed: Set<string>): Promise<
   if (!user) return { ok: false, error: "Not authenticated" }
   const { data: row } = await supabase
     .from("users")
-    .select("brokerage_id, user_type, role")
+    .select("brokerage_id, user_type")
     .eq("id", user.id)
     .maybeSingle()
-  const role = String((row as any)?.role ?? (row as any)?.user_type ?? "")
+  // user_type, never legacy users.role — both the local sets and the principal
+  // gate are user_type vocabulary; live users.role holds title-cased junk.
+  const role = String((row as any)?.user_type ?? "")
   if (!row?.brokerage_id) return { ok: false, error: "No brokerage" }
   if (allowed.has(role)) return { ok: true, userId: user.id, brokerageId: (row as any).brokerage_id }
 
@@ -64,7 +66,9 @@ export async function resolveDeadlineConflictAction(input: {
 }): Promise<{ ok: boolean; message?: string; error?: string }> {
   const actor = await loadActor(REVIEW_ROLES)
   if (!actor.ok) return { ok: false, error: actor.error }
+  return ledgered(actor, { action: "transaction.deadline_conflict.resolve", subject: { type: "manager_signal", id: input.signalId }, riskClass: "LEGAL", detail: { adopt: input.adopt } }, async () => {
   return resolveDeadlineConflictCore(createServiceClient() as any, actor, input)
+  })
 }
 
 export async function approveStageAdvanceAction(input: {
@@ -80,7 +84,9 @@ export async function dismissStageCandidateAction(input: {
 }): Promise<{ ok: boolean; message?: string; error?: string }> {
   const actor = await loadActor(REVIEW_ROLES)
   if (!actor.ok) return { ok: false, error: actor.error }
+  return ledgered(actor, { action: "transaction.stage_candidate.dismiss", subject: { type: "manager_signal", id: input.signalId }, riskClass: "LOW_RISK_WRITE" }, async () => {
   return dismissStageCandidateCore(createServiceClient() as any, actor, input)
+  })
 }
 
 export async function resolveAutonomyRatchetAction(input: {
@@ -89,7 +95,9 @@ export async function resolveAutonomyRatchetAction(input: {
 }): Promise<{ ok: boolean; message?: string; error?: string }> {
   const actor = await loadActor(GRANT_ROLES)
   if (!actor.ok) return { ok: false, error: actor.error }
+  return ledgered(actor, { action: "document.autonomy_ratchet.resolve", subject: { type: "manager_signal", id: input.signalId }, riskClass: "LOW_RISK_WRITE", detail: { grant: input.grant } }, async () => {
   return resolveAutonomyRatchetCore(createServiceClient() as any, actor, input)
+  })
 }
 
 // ── THE EARNED AUTONOMY LEDGER — what the broker granted, with the evidence
@@ -179,11 +187,120 @@ export async function listEarnedAutonomyAction(): Promise<{
   }
 }
 
+// ── THE POLICY-DECISION LEDGER — every amber/red verdict the kernel recorded,
+//    grouped by deal, with the reasons and who has to approve. READ-ONLY on
+//    purpose: resolve buttons live on the Command Center signals feed, which is
+//    keyed by manager_signals ids — a policy_decisions.id is a ledger entry,
+//    not a resolvable signal, so a button here would have nothing to act on. ──
+
+export interface PolicyDecisionRow {
+  id: string
+  createdAt: string
+  transactionId: string | null
+  documentId: string | null
+  targetType: string
+  targetId: string
+  decision: string
+  reasons: string[]
+  recommendedAction: string | null
+  /** null renders "No approval required" — only 'tc'/'agent' are ever written. */
+  requiredApproverRole: string | null
+  /** batched resolution — documents(document_type, created_at). */
+  documentType: string | null
+  documentCreatedAt: string | null
+}
+
+export interface PolicyDecisionGroup {
+  /** null = the unattached / marketing & policy bucket (newsletter /
+   *  social_post / autonomy_grant / ai_identity rows carry no transaction). */
+  transactionId: string | null
+  label: string
+  rows: PolicyDecisionRow[]
+}
+
+export async function listPolicyDecisionsAction(): Promise<{
+  ok: boolean
+  groups?: PolicyDecisionGroup[]
+  error?: string
+}> {
+  // REVIEW_ROLES, not GRANT_ROLES: the TC named in required_approver_role must
+  // be able to see their own queue, and 'tc' is only in the review set.
+  const actor = await loadActor(REVIEW_ROLES)
+  if (!actor.ok) return { ok: false, error: actor.error }
+  const svc = createServiceClient()
+
+  const { data: rows, error } = await svc
+    .from("policy_decisions")
+    .select("id, created_at, transaction_id, document_id, target_type, target_id, decision, reasons_json, recommended_action, required_approver_role")
+    .eq("brokerage_id", actor.brokerageId)
+    .in("decision", ["amber", "red"])
+    .order("created_at", { ascending: false })
+    .limit(100)
+  // §3 — a refused read is a refusal, never an empty ledger.
+  if (error) return { ok: false, error: error.message }
+
+  const list = (rows ?? []) as any[]
+
+  // Batched, tenant-anchored resolution (the command-center name-map pattern).
+  const txIds = Array.from(new Set(list.map((r) => r.transaction_id).filter(Boolean)))
+  const docIds = Array.from(new Set(list.map((r) => r.document_id).filter(Boolean)))
+  const [{ data: txs }, { data: docs }] = await Promise.all([
+    txIds.length > 0
+      ? svc.from("transactions").select("id, property_address").eq("brokerage_id", actor.brokerageId).in("id", txIds)
+      : Promise.resolve({ data: [] as any[] }),
+    docIds.length > 0
+      ? svc.from("documents").select("id, document_type, created_at").eq("brokerage_id", actor.brokerageId).in("id", docIds)
+      : Promise.resolve({ data: [] as any[] }),
+  ])
+  const txAddr = new Map(((txs ?? []) as any[]).map((t) => [t.id, t.property_address ?? null]))
+  const docById = new Map(((docs ?? []) as any[]).map((d) => [d.id, d]))
+
+  const toRow = (r: any): PolicyDecisionRow => {
+    const doc = r.document_id ? docById.get(r.document_id) : null
+    return {
+      id: r.id,
+      createdAt: r.created_at,
+      transactionId: r.transaction_id ?? null,
+      documentId: r.document_id ?? null,
+      targetType: String(r.target_type ?? ""),
+      targetId: String(r.target_id ?? ""),
+      decision: String(r.decision ?? ""),
+      // reasons_json is jsonb holding a FLAT string[] — coerce before mapping,
+      // a scalar or object there must not crash the ledger.
+      reasons: Array.isArray(r.reasons_json) ? r.reasons_json.map((x: unknown) => String(x)) : [],
+      recommendedAction: r.recommended_action ?? null,
+      requiredApproverRole: r.required_approver_role ?? null,
+      documentType: doc?.document_type ?? null,
+      documentCreatedAt: doc?.created_at ?? null,
+    }
+  }
+
+  // Group by transaction, newest-first within the group order of arrival;
+  // no-transaction rows share one bucket.
+  const groupMap = new Map<string, PolicyDecisionGroup>()
+  for (const r of list) {
+    const key = r.transaction_id ?? "__unattached__"
+    if (!groupMap.has(key)) {
+      groupMap.set(key, {
+        transactionId: r.transaction_id ?? null,
+        label: r.transaction_id
+          ? txAddr.get(r.transaction_id) ?? "Transaction"
+          : "Unattached — marketing & policy",
+        rows: [],
+      })
+    }
+    groupMap.get(key)!.rows.push(toRow(r))
+  }
+
+  return { ok: true, groups: Array.from(groupMap.values()) }
+}
+
 export async function revokeAutonomyGrantAction(input: {
   shape: string
 }): Promise<{ ok: boolean; message?: string; error?: string }> {
   const actor = await loadActor(GRANT_ROLES)
   if (!actor.ok) return { ok: false, error: actor.error }
+  return ledgered(actor, { action: "document.autonomy_grant.revoke", subject: { type: "autonomy_grant", ref: input.shape }, riskClass: "LOW_RISK_WRITE", detail: { shape: input.shape } }, async () => {
   const svc = createServiceClient()
 
   const { writeAutonomyGrant } = await import("@/lib/documents/autonomy-ratchet")
@@ -204,4 +321,30 @@ export async function revokeAutonomyGrantAction(input: {
     evidence: { revoked_by_user_id: actor.userId, shape: input.shape },
   })
   return { ok: true, message: `Revoked — ${input.shape.replace(/_/g, " ")} is back to human approval.` }
+  })
+}
+
+/**
+ * WAVE 155 (lane 155R9, G12): ONE agent_action_ledger receipt per session write — ledgerSessionAction
+ * (lib/kernel/action-ledger.ts) does the claim → run → settle. Who and which tenant come from the SESSION (CLAUDE.md §4);
+ * "session" resolves them through getAgentContext. NO idempotency key: a person's second save runs again and leaves a
+ * second receipt. The export's value comes back unchanged; a refused claim (only a malformed action name, caught by
+ * test:action-ledger §14) throws instead of returning a value of another shape. No session tenant → the write runs exactly
+ * as before, unrecorded (agent_action_ledger.brokerage_id is NOT NULL — there is no valid row to write).
+ * @proofSeam scripts/ledger-receipts-transaction2-guard.ts
+ */
+async function ledgered<T>(
+  who: { userId?: string | null; brokerageId?: string | null; agentId?: string | null } | null | undefined | "session",
+  what: { action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> },
+  run: () => Promise<T>,
+): Promise<T> {
+  const seat = who === "session" ? await (await import("@/lib/identity/get-agent-context")).getAgentContext() : who
+  if (!seat?.userId || !seat.brokerageId) return run()
+  const id = what.subject.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(what.subject.id) ? what.subject.id : null
+  const subject = { type: what.subject.type, id, ref: id ? what.subject.ref ?? null : what.subject.ref ?? what.subject.id ?? null }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const r = await ledgerSessionAction({ brokerageId: seat.brokerageId, action: what.action, actor: { type: "user", userId: seat.userId, agentId: seat.agentId ?? null }, subject, riskClass: what.riskClass, reasonCode: "HUMAN_REQUESTED", detail: what.detail ?? null }, async () => { ran = true; return run() })
+  if (!ran) throw new Error((r as { error?: string }).error ?? "action ledger refused the claim")
+  return r as T
 }

@@ -61,7 +61,7 @@ export function RelocatedClientCard({
             <p className="font-medium text-sm">Moving somewhere new?</p>
           </div>
           {done ? (
-            <p className="text-sm text-emerald-600 flex items-center gap-1.5 mt-2">
+            <p className="text-sm text-emerald-700 flex items-center gap-1.5 mt-2">
               <CheckCircle2 className="h-4 w-4" />
               {agentFirstName ? `${agentFirstName} will` : "Your agent will"} personally connect you with a trusted agent there.
             </p>

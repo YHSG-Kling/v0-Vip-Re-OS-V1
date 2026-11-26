@@ -217,7 +217,7 @@ export function MarketInsightWidget() {
       <CardContent className="space-y-4">
         {/* Key Insight */}
         <div className="flex items-start gap-2.5 p-3 rounded-lg bg-muted/50 border border-border/50">
-          <Lightbulb className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
+          <Lightbulb className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
           <p className="text-sm text-foreground leading-relaxed">{insights.keyInsight}</p>
         </div>
 

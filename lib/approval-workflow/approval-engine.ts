@@ -182,6 +182,13 @@ export function determineApprovalDecision(
 }
 
 /**
+ * The channels a team lead must sign off on. ONE list (CLAUDE.md §6): the decision
+ * and its preview both read it, so a channel added here cannot be enforced in one
+ * and invisible in the other.
+ */
+const HIGH_VALUE_CHANNELS: readonly string[] = ["google_ads", "meta_ads", "email", "newsletter"]
+
+/**
  * Determine who has authority to approve
  * Based on content type, channel, scope, and policy
  */
@@ -204,6 +211,32 @@ export function determineRequiredApprovers(
     approvers.push("team_lead")
   }
 
+  // MERGED HERE 2026-08-24 from previewApprovalDecision, which had re-implemented
+  // the approver rules inline and had TWO this function did not carry. Both are
+  // now on the survivor, and the preview delegates to it (see its note below).
+  //
+  //   · "Compliance review required" — the preview keyed on the STATUS while this
+  //     keyed only on the SEVERITY. A verdict that says review_required without a
+  //     medium finding was previewed as needing a team lead and actually needed
+  //     nobody.
+  //   · "AI-generated content requires human validation" — CLAUDE.md §5. This is
+  //     the sharper of the two: `determineApprovalDecision` RULE 4 already writes
+  //     that sentence into its NOTES for ai_generated content, then called this
+  //     function, which added no approver for it at all. Private AI-generated
+  //     content therefore came back with ["agent"] — the agent approving the
+  //     model's own output, while the preview screen promised a team lead.
+  if (complianceVerdict.compliance_status === "review_required") {
+    if (!approvers.includes("team_lead")) {
+      approvers.push("team_lead")
+    }
+  }
+
+  if (context.content_origin === "ai_generated") {
+    if (!approvers.includes("team_lead")) {
+      approvers.push("team_lead")
+    }
+  }
+
   // Public content requires broker/admin approval
   if (context.audience_scope === "public") {
     if (!approvers.includes("broker")) {
@@ -212,8 +245,7 @@ export function determineRequiredApprovers(
   }
 
   // High-value channels require team leader
-  const highValueChannels = ["google_ads", "meta_ads", "email", "newsletter"]
-  if (highValueChannels.includes(draft.channel_intent)) {
+  if (HIGH_VALUE_CHANNELS.includes(draft.channel_intent)) {
     if (!approvers.includes("team_lead")) {
       approvers.push("team_lead")
     }
@@ -280,6 +312,26 @@ export function batchDetermineApprovalDecisions(
 /**
  * Simulate approval decision for preview (without executing)
  */
+/**
+ * `contentType` and `channelIntent` WERE ACCEPTED AND READ BY NOTHING until
+ * 2026-08-24 — and that is why this preview could disagree with the decision it
+ * previews. It had re-implemented the approver rules inline, and the inline copy
+ * had drifted from `determineRequiredApprovers` in BOTH directions:
+ *
+ *   · the copy did not know about high-value CHANNELS (google_ads, meta_ads,
+ *     email, newsletter → team_lead), about `brokerage_policy_level: "strict"`
+ *     (→ broker) or about `is_new_campaign` (→ team_lead). An email campaign was
+ *     previewed as "Standard agent approval sufficient" and then really required a
+ *     team lead — the exact drift §6 says two spellings of one idea produce.
+ *   · the copy DID know two rules the real function lacked. Those two have been
+ *     MERGED ONTO THE SURVIVOR first (determineRequiredApprovers, above), which is
+ *     the order §1 requires.
+ *
+ * TOMBSTONE — the inline approver ladder that stood here is DELETED. Survivor:
+ * lib/approval-workflow/approval-engine.ts::determineRequiredApprovers. This now
+ * asks the same function the real decision asks, with the same context, so the two
+ * cannot drift again.
+ */
 export function previewApprovalDecision(
   contentType: string,
   channelIntent: string,
@@ -297,7 +349,7 @@ export function previewApprovalDecision(
     return {
       likely_status: "rejected",
       likely_approvers: [],
-      reasoning: ["Compliance failure will result in automatic rejection"],
+      reasoning: [`Compliance failure on this ${contentType} will result in automatic rejection`],
     }
   }
 
@@ -314,31 +366,48 @@ export function previewApprovalDecision(
     }
   }
 
-  // Determine likely approvers
-  const likely_approvers: ApproverRole[] = []
+  // The preview's two inputs are exactly the two fields `determineRequiredApprovers`
+  // reads off a draft, so a draft-shaped stand-in is enough to ask the real rule —
+  // no second ladder, no second chance to drift.
+  const previewDraft = {
+    content_type: contentType,
+    channel_intent: channelIntent,
+  } as unknown as ContentGenerationOutput
+
+  // "review_required" is the status the real engine emits alongside MEDIUM-severity
+  // findings (see determineApprovalDecision RULE 4's own note); "pass" carries none.
+  // A "fail" never reaches here — it returned above.
+  const previewVerdict = {
+    compliance_status: complianceStatus,
+    summary: {
+      highest_severity: complianceStatus === "review_required" ? "medium" : null,
+      total_violations: 0,
+    },
+    required_actions: [],
+  } as unknown as ComplianceVerdict
+
+  const likely_approvers = determineRequiredApprovers(previewDraft, previewVerdict, context)
 
   if (context.audience_scope === "public") {
-    likely_approvers.push("broker")
     reasoning.push("Public content requires broker/admin approval")
   }
-
   if (context.content_origin === "ai_generated") {
-    if (!likely_approvers.includes("team_lead")) {
-      likely_approvers.push("team_lead")
-    }
     reasoning.push("AI-generated content requires human validation")
   }
-
   if (complianceStatus === "review_required") {
-    if (!likely_approvers.includes("team_lead")) {
-      likely_approvers.push("team_lead")
-    }
     reasoning.push("Compliance review required")
   }
-
-  if (likely_approvers.length === 0) {
-    likely_approvers.push("agent")
-    reasoning.push("Standard agent approval sufficient")
+  if (HIGH_VALUE_CHANNELS.includes(channelIntent)) {
+    reasoning.push(`${channelIntent} is a high-value channel and requires team-lead approval`)
+  }
+  if (context.brokerage_policy_level === "strict") {
+    reasoning.push("Brokerage policy level is strict — broker approval required")
+  }
+  if (context.is_new_campaign) {
+    reasoning.push("New campaign type requires initial approval")
+  }
+  if (reasoning.length === 0) {
+    reasoning.push(`Standard agent approval sufficient for this ${contentType}`)
   }
 
   return {

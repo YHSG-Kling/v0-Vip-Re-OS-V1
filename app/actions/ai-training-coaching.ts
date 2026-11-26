@@ -1,11 +1,21 @@
 "use server"
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
-import { generateObject } from "@/lib/ai/generate"
+import { bookedGenerateObject } from "@/lib/ai/generate"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
+// THE SPEND ACTOR. This is a "use server" file, so `params.agentId` is whatever
+// the caller typed and can never be the tenant the AI ledger bills (§4). The
+// brokerage comes from the SESSION and nowhere else.
+import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { decideClaimedTenant } from "@/lib/platform/acting-context"
 import { z } from "zod"
+import { authorizeForAgent } from "@/lib/auth/require-caller"
+
+// Wave 98 (98C): every model call in this file is BOOKED to the SESSION tenant (lib/ai/generate.ts::bookedGenerateObject).
+const generateObject = bookedGenerateObject("ai_training_coaching")
 
 // ============================================================================
 // AI TRAINING & COACHING SYSTEM
@@ -24,7 +34,14 @@ export async function analyzeAgentPerformance(params: {
     return { success: false, error: "Invalid agent ID" }
   }
 
+  // WAVE 155 (lane 155S2): THE GATE, before any read or spend — the agent named is the caller's own, or (tenant roster)
+  // an agent of the SESSION's tenant (authorizeForAgent). The only callers (app/academy) pass the session's own agents.id.
+  const agentAuth = await authorizeForAgent(params.agentId)
+  if (!agentAuth.ok) return { success: false, error: agentAuth.error }
+  // Tenant for the AI cost ledger — SESSION, never `params.agentId` (§4).
+  const spendActor = await getAgentContext()
   const supabase = await createClient()
+  return ledgered(spendActor, { action: "coaching.agent_performance.analyze", subject: { type: "agent", id: params.agentId }, riskClass: "LOW_RISK_WRITE", detail: { timeframe: params.timeframe ?? null } }, async () => {
 
   try {
     // Get agent's transactions
@@ -35,12 +52,28 @@ export async function analyzeAgentPerformance(params: {
       .order("created_at", { ascending: false })
       .limit(100)
 
-    // Get agent's contacts and lead conversion
-    const { data: contacts } = await supabase
+    // Get agent's contacts and lead conversion.
+    //
+    // `interactions(*)` embedded a table that DOES NOT EXIST in the live database (no
+    // public.interactions, and `interactions` is not an FK column on contacts). PostgREST
+    // rejects the ENTIRE query on an unknown relation, so this read always errored and,
+    // with `error` undestructured, `contacts` came back null — the coaching prompt below
+    // has always reported "Contacts: 0" and `metrics.contactCount` has always been 0.
+    // The embed is DROPPED rather than repointed to `activities`: nothing in this function
+    // (or its caller, app/academy/components/os/readiness-radar.tsx) ever read
+    // `c.interactions` — only `contacts.length` is consumed — and the agent's activity
+    // volume is already counted by the separate `activities` query directly below.
+    // For the same reason only `id` is selected; the rest of the row was never read.
+    const { data: contacts, error: contactsError } = await supabase
       .from("contacts")
-      .select("*, interactions(*)")
+      .select("id")
       .eq("agent_id", params.agentId)
       .limit(200)
+
+    if (contactsError) {
+      console.error("[analyzeAgentPerformance] contacts read failed:", contactsError.message)
+      return { success: false, error: contactsError.message }
+    }
 
     // Get agent's activities
     const { data: activities } = await supabase
@@ -51,6 +84,8 @@ export async function analyzeAgentPerformance(params: {
       .limit(200)
 
     const { text: analysis } = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       prompt: `Analyze this agent's performance and provide coaching insights:
 
 Transactions: ${transactions?.length || 0}
@@ -78,6 +113,7 @@ Provide insights on:
     console.error("[v0] Analyze agent performance error:", error)
     return handleError(error, "analyzeAgentPerformance")
   }
+  })
 }
 
 /**
@@ -93,6 +129,16 @@ export async function generateCoachingScenario(params: {
     return { success: false, error: "Invalid agent or brokerage ID" }
   }
 
+  // WAVE 155 (lane 155S2): THE GATE, before the model — this export read a brand voice and billed a model to the BODY's
+  // brokerage with no session. The agent is the caller's own (or, tenant roster, an agent of the session tenant); the
+  // tenant is the SESSION's, and a body brokerageId naming another tenant is refused (decideClaimedTenant).
+  const agentAuth = await authorizeForAgent(params.agentId)
+  if (!agentAuth.ok) return { success: false, error: agentAuth.error }
+  if (!decideClaimedTenant({ actingBrokerageId: agentAuth.brokerageId, claimedBrokerageId: params.brokerageId }).ok) {
+    return { success: false, error: "Forbidden: that brokerage is not yours." }
+  }
+  const sessionBrokerageId = agentAuth.brokerageId
+
   const supabase = await createClient()
 
   try {
@@ -100,7 +146,7 @@ export async function generateCoachingScenario(params: {
     const { data: brandVoice } = await supabase
       .from("brand_voice_profile")
       .select("*")
-      .eq("brokerage_id", params.brokerageId)
+      .eq("brokerage_id", sessionBrokerageId)
       .eq("agent_id", null) // Get brokerage-level profile
       .maybeSingle()
 
@@ -157,21 +203,19 @@ Generate a detailed role-play scenario including:
     })
 
     // Log scenario generation for audit trail
-    await supabase
+    await bestEffort(supabase
       .from("audit_log")
       .insert({
         action: "coaching_scenario_generated",
         entity_type: "training_scenario",
         entity_id: params.agentId,
-        user_id: params.agentId,
+        // audit_log.user_id → users (scripts/schema-fk-map.ts); an agents.id here was refused by the FK (§3).
+        user_id: agentAuth.userId,
         after: {
           scenario_type: params.scenarioType,
           difficulty: params.difficulty || "medium"
         }
-      })
-      .then(() => {}, (err) => {
-        console.error("[v0] Failed to log scenario generation:", err)
-      })
+      }), "audit of a generated coaching scenario already returned")
 
     return {
       success: true,
@@ -183,8 +227,8 @@ Generate a detailed role-play scenario including:
       const { text } = await generateText({
         prompt: `Generate a brief real estate coaching scenario for a ${params.scenarioType.replace(/_/g, " ")} situation at ${params.difficulty || "medium"} difficulty. Include a client name, background, main objection, and 2 suggested responses. Keep it concise.`,
         maxTokens: 400,
-        userId: params.agentId,
-        brokerageId: params.brokerageId,
+        userId: agentAuth.userId,
+        brokerageId: sessionBrokerageId,
         feature: "coaching_scenario",
       })
       return {
@@ -219,15 +263,52 @@ export async function generateLearningPath(params: {
     return { success: false, error: "Invalid agent ID", steps: [] }
   }
 
+  // WAVE 155 (lane 155S2): THE GATE, before the model (same rule as its siblings: own agent, or tenant roster for an agent
+  // of the session tenant; a body brokerageId naming another tenant is refused).
+  const agentAuth = await authorizeForAgent(params.agentId)
+  if (!agentAuth.ok) return { success: false, error: agentAuth.error, steps: [] }
+  if (!decideClaimedTenant({ actingBrokerageId: agentAuth.brokerageId, claimedBrokerageId: params.brokerageId }).ok) {
+    return { success: false, error: "Forbidden: that brokerage is not yours.", steps: [] }
+  }
+
   const supabase = await createClient()
 
+  // The profile below is a USERS row, and every caller passes an agents.id (app/academy → getAcademyViewer().agentId):
+  // `.eq("id", params.agentId)` compared disjoint ids (CLAUDE.md §3) and always found nothing. Cross via agents.user_id —
+  // the session's own users.id when the agent is the caller's, else the named agent's user (already proven in-tenant).
+  let profileUserId: string | null = agentAuth.isSelf ? agentAuth.userId : null
+  if (!profileUserId) {
+    const { data: agentRow, error: agentRowError } = await supabase
+      .from("agents").select("user_id").eq("id", agentAuth.agentId).eq("brokerage_id", agentAuth.brokerageId).maybeSingle()
+    if (agentRowError) return { success: false, error: agentRowError.message, steps: [] }
+    profileUserId = (agentRow as { user_id?: string | null } | null)?.user_id ?? null
+  }
+
   try {
-    // Get agent's profile for personalization
-    const { data: agent } = await supabase
-      .from("users")
-      .select("*, profile:user_profile(*)")
-      .eq("id", params.agentId)
-      .maybeSingle()
+    // Get agent's profile for personalization.
+    //
+    // `profile:user_profile(*)` embedded a table that DOES NOT EXIST — the name is
+    // SINGULAR and the real table is `user_profiles` (plural), joined by
+    // user_profiles.user_id → users.id (UNIQUE, so this embed resolves to a single object,
+    // not an array — `agent.profile` stays object-shaped for the JSON.stringify below).
+    // PostgREST rejects the whole query on an unknown relation, so with `error`
+    // undestructured `agent` was always null and the "Agent Profile:" line was always
+    // omitted from the prompt — every learning path generated so far was generic.
+    // Only the human-meaningful profile columns are named; `*` inside an embed hides
+    // drift from the schema guard (defect #214), and the verification flags/ids on
+    // user_profiles are noise in a coaching prompt.
+    const { data: agent, error: agentError } = profileUserId
+      ? await supabase
+          .from("users")
+          .select("*, profile:user_profiles(bio, avatar_url)")
+          .eq("id", profileUserId)
+          .maybeSingle()
+      : { data: null, error: null }
+
+    if (agentError) {
+      console.error("[generateLearningPath] agent profile read failed:", agentError.message)
+      return { success: false, error: agentError.message, steps: [] }
+    }
 
     const { object: learningPath } = await generateObject({
       model: "openai/gpt-4o",
@@ -277,6 +358,13 @@ export async function evaluatePracticeSession(params: {
     return { success: false, error: "Invalid agent or brokerage ID" }
   }
 
+  // WAVE 155 (lane 155S2): THE GATE, before the model (same rule as generateCoachingScenario above).
+  const agentAuth = await authorizeForAgent(params.agentId)
+  if (!agentAuth.ok) return { success: false, error: agentAuth.error }
+  if (!decideClaimedTenant({ actingBrokerageId: agentAuth.brokerageId, claimedBrokerageId: params.brokerageId }).ok) {
+    return { success: false, error: "Forbidden: that brokerage is not yours." }
+  }
+
   const supabase = await createClient()
 
   try {
@@ -284,7 +372,7 @@ export async function evaluatePracticeSession(params: {
     const { data: evaluationStandards } = await supabase
       .from("brand_voice_profile")
       .select("*")
-      .eq("brokerage_id", params.brokerageId)
+      .eq("brokerage_id", agentAuth.brokerageId)
       .eq("agent_id", null)
       .maybeSingle()
 
@@ -311,20 +399,18 @@ Provide evaluation including:
     })
 
     // Log evaluation for audit trail
-    await supabase
+    await bestEffort(supabase
       .from("audit_log")
       .insert({
         action: "practice_session_evaluated",
         entity_type: "training_evaluation",
         entity_id: params.agentId,
-        user_id: params.agentId,
+        // audit_log.user_id → users (scripts/schema-fk-map.ts); an agents.id here was refused by the FK (§3).
+        user_id: agentAuth.userId,
         after: {
           score: evaluation.score
         }
-      })
-      .then(() => {}, (err) => {
-        console.error("[v0] Failed to log evaluation:", err)
-      })
+      }), "audit of a practice evaluation already returned")
 
     return {
       success: true,
@@ -338,4 +424,29 @@ Provide evaluation including:
     console.error("[v0] Evaluate practice session error:", error)
     return handleError(error, "evaluatePracticeSession")
   }
+}
+
+/**
+ * WAVE 155 (lane 155R9, G12): ONE agent_action_ledger receipt per session write — ledgerSessionAction
+ * (lib/kernel/action-ledger.ts) does the claim → run → settle. Who and which tenant come from the SESSION (CLAUDE.md §4);
+ * "session" resolves them through getAgentContext. NO idempotency key: a person's second save runs again and leaves a
+ * second receipt. The export's value comes back unchanged; a refused claim (only a malformed action name, caught by
+ * test:action-ledger §14) throws instead of returning a value of another shape. No session tenant → the write runs exactly
+ * as before, unrecorded (agent_action_ledger.brokerage_id is NOT NULL — there is no valid row to write).
+ * @proofSeam scripts/ledger-receipts-transaction2-guard.ts
+ */
+async function ledgered<T>(
+  who: { userId?: string | null; brokerageId?: string | null; agentId?: string | null } | null | undefined | "session",
+  what: { action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> },
+  run: () => Promise<T>,
+): Promise<T> {
+  const seat = who === "session" ? await (await import("@/lib/identity/get-agent-context")).getAgentContext() : who
+  if (!seat?.userId || !seat.brokerageId) return run()
+  const id = what.subject.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(what.subject.id) ? what.subject.id : null
+  const subject = { type: what.subject.type, id, ref: id ? what.subject.ref ?? null : what.subject.ref ?? what.subject.id ?? null }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const r = await ledgerSessionAction({ brokerageId: seat.brokerageId, action: what.action, actor: { type: "user", userId: seat.userId, agentId: seat.agentId ?? null }, subject, riskClass: what.riskClass, reasonCode: "HUMAN_REQUESTED", detail: what.detail ?? null }, async () => { ran = true; return run() })
+  if (!ran) throw new Error((r as { error?: string }).error ?? "action ledger refused the claim")
+  return r as T
 }

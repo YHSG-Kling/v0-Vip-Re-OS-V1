@@ -24,7 +24,6 @@
  *   ✓ app/components/VideosDashboard, VoiceAssistant (root components/)
  *   ✓ app/dashboard/page + videos/* (library, create, board, analytics)
  *   ✓ hooks/use-contact-dashboard.ts
- *   ✓ hooks/usePermissions.ts, hooks/useDataAccess.ts
  *   ✓ app/crm/page.tsx
  *
  * This file can be deleted once lib/auth/client.ts inlines AuthProvider directly.

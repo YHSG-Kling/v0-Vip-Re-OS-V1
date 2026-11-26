@@ -12,6 +12,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/hooks/use-toast"
 import { compareHomes, type ComparisonHomeInput } from "@/lib/buyer-offers/home-comparison"
+// Wave 156 (156H round 2): payments are compared only on the buyer's OWN loan figures (no default rate).
+import { LoanAssumptionsFields, useLoanAssumptions } from "@/app/components/calculators/LoanAssumptionsFields"
 import { requestComparisonReview } from "@/app/actions/buyer-offer-tools"
 
 const money = (n: number) => `$${Math.round(n).toLocaleString()}`
@@ -50,15 +52,18 @@ export function CompareHomesCard({ contactId, savedHomes }: { contactId: string;
       id: h.id, address: h.property_address ?? "Saved home", price: h.list_price as number,
       bedrooms: h.bedrooms ?? null, bathrooms: h.bathrooms ?? null, sqft: h.sqft ?? null, matchScore: h.ai_match_score ?? null,
     }))
-  const comparison = useMemo(() => compareHomes(inputs), [JSON.stringify(inputs)])
+  const loan = useLoanAssumptions()
+  const comparison = useMemo(() => compareHomes(inputs, loan.values), [JSON.stringify(inputs), loan.values])
 
   function getAgentTake() {
     const addresses = comparison.homes.map((h) => h.address)
     start(async () => {
       const r = await requestComparisonReview({ contactId, addresses })
+      // "Your agent will weigh in" used to print whether or not the alert was delivered. r.success
+      // now MEANS it landed; the refusal is the server's own sentence and names the next move.
       toast(r.success
         ? { title: "Your agent will weigh in", description: "They'll help you choose between your finalists." }
-        : { title: "Couldn't send", description: r.error ?? "Pick at least two homes", variant: "destructive" })
+        : { title: "Your agent wasn't reached", description: r.error ?? "Pick at least two homes", variant: "destructive" })
     })
   }
 
@@ -78,7 +83,7 @@ export function CompareHomesCard({ contactId, savedHomes }: { contactId: string;
               <button
                 key={h.id}
                 onClick={() => toggle(h.id)}
-                className={`text-xs rounded-full px-3 py-1 border transition ${on ? "bg-teal-600 text-white border-teal-600" : "bg-background text-muted-foreground border-input hover:border-teal-300"}`}
+                className={`text-xs rounded-full px-3 py-1 border transition ${on ? "bg-teal-700 text-white border-teal-600" : "bg-background text-muted-foreground border-input hover:border-teal-300"}`}
               >
                 {h.property_address ?? "Saved home"}
               </button>
@@ -86,6 +91,10 @@ export function CompareHomesCard({ contactId, savedHomes }: { contactId: string;
           })}
         </div>
         <p className="text-[11px] text-muted-foreground">Pick 2–4 homes to line them up. Estimates only — your agent and lender confirm the real numbers.</p>
+        <LoanAssumptionsFields values={loan.values} set={loan.set} idPrefix="compare" />
+        {comparison.paymentNeeds.length > 0 && comparison.homes.length > 0 && (
+          <p className="text-[11px] text-muted-foreground">To compare monthly payments: {comparison.paymentNeeds.join("; ")}</p>
+        )}
 
         {/* Side-by-side */}
         <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${Math.max(1, comparison.homes.length)}, minmax(0, 1fr))` }}>
@@ -94,7 +103,7 @@ export function CompareHomesCard({ contactId, savedHomes }: { contactId: string;
               <p className="text-sm font-medium truncate" title={h.address}>{h.address}</p>
               <div className="space-y-1 text-xs">
                 <Row label="Price" value={money(h.price)} />
-                <Row label="Est. /mo" value={money(h.monthlyPayment)} />
+                <Row label="Est. /mo" value={h.monthlyPayment != null ? money(h.monthlyPayment) : "—"} />
                 <Row label="$/sq ft" value={h.pricePerSqft != null ? money(h.pricePerSqft) : "—"} />
                 <Row label="Beds / baths" value={`${h.bedrooms ?? "—"} / ${h.bathrooms ?? "—"}`} />
                 <Row label="Sq ft" value={h.sqft ? h.sqft.toLocaleString() : "—"} />
@@ -113,7 +122,7 @@ export function CompareHomesCard({ contactId, savedHomes }: { contactId: string;
           ))}
         </div>
 
-        <Button className="w-full bg-teal-600 hover:bg-teal-700 text-white" onClick={getAgentTake} disabled={pending || comparison.homes.length < 2}>
+        <Button className="w-full bg-teal-700 hover:bg-teal-800 text-white" onClick={getAgentTake} disabled={pending || comparison.homes.length < 2}>
           <Users className="h-4 w-4 mr-1" />{pending ? "Sending…" : "Get my agent's take on these"}
         </Button>
       </CardContent>

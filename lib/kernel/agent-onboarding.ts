@@ -5,6 +5,8 @@
 // admin/broker/superadmin can access any agent within their brokerage.
 
 import { createClient } from "@/lib/supabase/server"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { requireUserRowContext as requireUserContext } from "@/lib/auth/require-caller"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -51,19 +53,9 @@ export type StepCompletionRow = {
 
 // ─── INTERNAL HELPERS ─────────────────────────────────────────────────────────
 
-async function requireUserContext(
-  userId: string
-): Promise<{ brokerageId: string; userType: string }> {
-  const supabase = await createClient()
-  const { data: user, error } = await supabase
-    .from("users")
-    .select("brokerage_id, user_type")
-    .eq("id", userId)
-    .single()
-
-  if (error || !user) throw new Error("User not found")
-  return { brokerageId: user.brokerage_id, userType: user.user_type }
-}
+// TOMBSTONE: local requireUserContext merged onto lib/auth/require-caller.ts
+// requireUserRowContext (imported above as `requireUserContext`) — §1/§6
+// SAME BODY census round 3, 2026-09-09.
 
 async function assertCanAccessAgent(params: {
   userId: string
@@ -82,7 +74,7 @@ async function assertCanAccessAgent(params: {
     if (agent.user_id !== params.userId) {
       throw new Error("Forbidden: cannot access other agents' onboarding")
     }
-  } else if (!["admin", "broker", "superadmin"].includes(userType)) {
+  } else if (!isAdminOrBroker({ user_type: userType })) {
     throw new Error("Forbidden: insufficient permissions")
   }
   return { brokerageId }
@@ -283,6 +275,10 @@ export async function completeAISessionStep(params: {
   const { completionPercentage, nextCurrentDay } = computeProgress({ steps, completions })
 
   const isComplete = completionPercentage === 100
+  // The PRIOR value, read before the update below — this is what makes the
+  // award a one-time transition rather than a per-call top-up (see the award
+  // block at the end of this function).
+  const wasAlreadyComplete = onboarding.certification_achieved === true
 
   const { error: updateError } = await supabase
     .from("agent_onboarding")
@@ -299,6 +295,55 @@ export async function completeAISessionStep(params: {
 
   if (updateError) {
     throw new Error(`Failed to update onboarding progress: ${updateError.message}`)
+  }
+
+  // ── GAMIFICATION AWARD ON COMPLETION ──────────────────────────────────────
+  // Merged onto this survivor from the deleted legacy twin
+  // (app/actions/ai-agent-onboarding.ts:completeAISessionStep, tombstone at
+  // that file). The legacy copy awarded POINT_VALUES.ONBOARDING_COMPLETED
+  // atomically when its session hit 100%; this canonical copy reached 100% and
+  // awarded NOTHING, which left `ONBOARDING_COMPLETED: 100`
+  // (lib/gamification/award-points.ts:56) a constant with no writer anywhere in
+  // the tree — an agent could finish the whole programme and the leaderboard
+  // would not move.
+  //
+  // NOT ported from the legacy copy: the `agents.is_active = true` +
+  // onboarding_status='completed' auto-activation. Activation is DELIBERATELY
+  // the exam-gated admin act (app/actions/ai-agent-onboarding.ts:certifyAgent,
+  // and lib/onboarding/certification-engine.ts which owns
+  // agents.onboarding_status). Flipping an agent live on mere step completion
+  // would walk straight around the exam gate.
+  //
+  // ONE-TIME. award_agent_points ADDS; it is not idempotent on
+  // referenceType/referenceId. Every step completion after the last one still
+  // computes 100%, so awarding on `isComplete` alone would top the agent up on
+  // every re-save. `wasAlreadyComplete` is the prior certification_achieved,
+  // so the award fires only on the false→true edge.
+  //
+  // WAVE 104 (lane 104E): the false→true edge now EMITS the canonical ONBOARDING_COMPLETED
+  // (entity agent_onboarding — the reactor's rule resolves agent_onboarding.agent_id and awards
+  // ONBOARDING_COMPLETED first-ever, lib/gamification/award-points.ts) instead of awarding here.
+  // KernelEvent.ONBOARDING_COMPLETED had NO emitter in the tree (only the lifecycle.ts string map)
+  // — so the reactor's manager signal and the award both now have their moment. TOMBSTONE: the
+  // awardAgentPoints call that stood here — survivor lib/gamification/lifecycle-awards.ts via
+  // lib/kernel/event-reactor.ts '(L6)'. Activation stays the exam-gated admin act (above).
+  if (isComplete && !wasAlreadyComplete) {
+    try {
+      const { emitKernelEvent } = await import("@/lib/kernel/emit")
+      const { KernelEvent } = await import("@/lib/kernel/events")
+      const res = await emitKernelEvent({
+        event: KernelEvent.ONBOARDING_COMPLETED,
+        brokerageId,
+        entityType: "agent_onboarding",
+        entityId: onboarding.id,
+        actorUserId: params.userId,
+        agentId: params.agentId,
+        metadata: { agent_id: params.agentId, completion_percentage: completionPercentage, certification: "pending_admin_certify" },
+      })
+      if (res.error) console.error(`[completeAISessionStep] ONBOARDING_COMPLETED did not emit for agent ${params.agentId} (the step completion already landed): ${res.error}`)
+    } catch (err) {
+      console.error(`[completeAISessionStep] ONBOARDING_COMPLETED emit threw for agent ${params.agentId} (the step completion already landed):`, err instanceof Error ? err.message : String(err))
+    }
   }
 }
 
@@ -318,7 +363,7 @@ export async function createOnboardingStepForBrokerage(params: {
 }): Promise<{ id: string }> {
   const { brokerageId, userType } = await requireUserContext(params.userId)
 
-  if (!["admin", "broker", "superadmin"].includes(userType)) {
+  if (!isAdminOrBroker({ user_type: userType })) {
     throw new Error("Forbidden: insufficient permissions to create onboarding steps")
   }
 
@@ -367,7 +412,7 @@ export async function updateOnboardingStepForBrokerage(params: {
 }): Promise<void> {
   const { brokerageId, userType } = await requireUserContext(params.userId)
 
-  if (!["admin", "broker", "superadmin"].includes(userType)) {
+  if (!isAdminOrBroker({ user_type: userType })) {
     throw new Error("Forbidden: insufficient permissions to update onboarding steps")
   }
 
@@ -403,7 +448,7 @@ export async function deleteOnboardingStepForBrokerage(params: {
 }): Promise<void> {
   const { brokerageId, userType } = await requireUserContext(params.userId)
 
-  if (!["admin", "broker", "superadmin"].includes(userType)) {
+  if (!isAdminOrBroker({ user_type: userType })) {
     throw new Error("Forbidden: insufficient permissions to delete onboarding steps")
   }
 
@@ -438,7 +483,7 @@ export async function listOnboardingSteps(params: {
 }): Promise<OnboardingStepRow[]> {
   const { brokerageId, userType } = await requireUserContext(params.userId)
 
-  if (!["admin", "broker", "superadmin"].includes(userType)) {
+  if (!isAdminOrBroker({ user_type: userType })) {
     throw new Error("Forbidden: insufficient permissions to list onboarding steps")
   }
 
@@ -470,6 +515,20 @@ type QuizQuestion = {
   id: string
   correctAnswer: unknown
   [key: string]: unknown
+}
+
+/**
+ * PURE — the SHAPE ADAPTER onto the one grader (lib/academy/quiz.ts gradeQuiz). Each onboarding question becomes a one-choice
+ * module question whose correct index is 0; the learner's answer becomes 0 when it is `===` the stored correct answer (the
+ * comparison this file always used), else -1 (wrong). A missing answer is wrong. Nothing about which answer is right is inferred.
+ */
+export function onboardingQuizAsModuleQuiz(questions: readonly QuizQuestion[], answers: Record<string, unknown>): { questions: Array<{ q: string; choices: string[]; correct_idx: number }>; answers: Record<number, number> } {
+  const out: Record<number, number> = {}
+  const qs = questions.map((question, i) => {
+    out[i] = Object.prototype.hasOwnProperty.call(answers, question.id) && answers[question.id] === question.correctAnswer ? 0 : -1
+    return { q: String(question.id), choices: ["correct"], correct_idx: 0 }
+  })
+  return { questions: qs, answers: out }
 }
 
 type QuizRow = {
@@ -521,7 +580,15 @@ export async function submitQuizAttempt(params: {
   agentId: string
   quizId: string
   answers: Record<string, unknown>
-}): Promise<{ score: number; passed: boolean }> {
+}): Promise<{
+  score: number
+  passed: boolean
+  correctCount: number
+  totalQuestions: number
+  attemptNumber: number
+  passingScore: number
+  message: string
+}> {
   const { brokerageId } = await assertCanAccessAgent({
     userId: params.userId,
     agentId: params.agentId,
@@ -542,26 +609,50 @@ export async function submitQuizAttempt(params: {
 
   const questions = (quiz.questions as QuizQuestion[]) ?? []
 
-  // Score: count correct answers
-  let correctCount = 0
-  for (const question of questions) {
-    if (params.answers[question.id] === question.correctAnswer) {
-      correctCount++
-    }
-  }
-  const score = questions.length > 0
-    ? Math.round((correctCount / questions.length) * 100)
-    : 0
-  const passed = score >= quiz.passing_score
+  // ONE GRADER (wave 155, lane 155K — carry-in from 155C; CLAUDE.md §6). TOMBSTONE: this file's own scorer
+  // (`answers[q.id] === q.correctAnswer`, counted here, `score >= quiz.passing_score`) is GONE. SURVIVOR: lib/academy/quiz.ts
+  // gradeQuiz, through onboardingQuizAsModuleQuiz below (the shape adapter: an onboarding question is keyed by id and its
+  // correct answer is any value; the adapter keeps that exact `===` comparison per question and hands gradeQuiz the result),
+  // with the threshold from resolveCoursePassingScore (the quiz row's own passing_score when it is a real rule, else 80).
+  // Two behaviors move, both STRICTER: a quiz with no questions never passes (it passed before when passing_score <= 0), and an
+  // out-of-range passing_score (≤ 0, > 100) no longer passes everything — it falls back to the canonical 80.
+  const { gradeQuiz, resolveCoursePassingScore } = await import("@/lib/academy/quiz")
+  const adapted = onboardingQuizAsModuleQuiz(questions, params.answers)
+  const passingScore = resolveCoursePassingScore(quiz)
+  const grade = gradeQuiz(adapted.questions, adapted.answers, passingScore)
+  const correctCount = grade.correct
+  const score = grade.score
+  const passed = grade.passed
 
-  // Count existing attempts for attempt_number
-  const { count: prevAttempts } = await supabase
+  // THE STORED LEDGER IS THE SURVIVOR (§1.1 merge-then-tombstone, w26 lane C8).
+  //
+  // TOMBSTONE: the `count: "exact", head: true` re-derivation that stood here is GONE.
+  // SURVIVOR: `agent_quiz_attempts.attempt_number` — this file's own column at :637
+  // below, written on every attempt and, until now, read by nothing. Two spellings of
+  // "which attempt is this" (§6) that could disagree: a COUNT answers "how many rows
+  // survive", the ledger answers "how far the sequence got". They diverge the moment a
+  // row is deleted or a retention sweep trims history — the count then reissues an
+  // attempt_number the agent has already been shown, and the ledger silently holds two
+  // rows claiming to be attempt 3. Reading MAX and adding one cannot reissue.
+  const { data: lastAttempt, error: attemptReadError } = await supabase
     .from("agent_quiz_attempts")
-    .select("id", { count: "exact", head: true })
+    .select("attempt_number")
     .eq("agent_id", params.agentId)
     .eq("quiz_id", params.quizId)
+    .order("attempt_number", { ascending: false })
+    .limit(1)
+    .maybeSingle()
 
-  const attemptNumber = (prevAttempts ?? 0) + 1
+  // supabase-js RESOLVES a failed query, so a bare `{ data }` turns "permission denied"
+  // into null — which would both stamp attempt_number 1 on every retry (violating the
+  // attempt ledger) and report "attempt 1" back to the agent forever. attemptNumber is
+  // user-visible, so this must throw.
+  if (attemptReadError) {
+    throw new Error(`Failed to read prior quiz attempts: ${attemptReadError.message}`)
+  }
+
+  const priorAttemptNumber = Number((lastAttempt as { attempt_number: number | null } | null)?.attempt_number ?? 0)
+  const attemptNumber = (Number.isFinite(priorAttemptNumber) ? priorAttemptNumber : 0) + 1
 
   // Insert attempt record
   const { error: insertError } = await supabase
@@ -592,5 +683,15 @@ export async function submitQuizAttempt(params: {
     }
   }
 
-  return { score, passed }
+  return {
+    score,
+    passed,
+    correctCount,
+    totalQuestions: questions.length,
+    attemptNumber,
+    passingScore,
+    message: passed
+      ? `Congratulations! You passed with ${score}%`
+      : `Score: ${score}%. Need ${passingScore}% to pass. Review and try again.`,
+  }
 }

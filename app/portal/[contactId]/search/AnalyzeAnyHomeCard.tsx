@@ -13,7 +13,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/hooks/use-toast"
-import { estimateMonthlyPayment, affordabilityRead, clientAffordabilityFraming, preApprovalStatus } from "@/lib/buyer-offers/affordability"
+import { affordabilityRead, clientAffordabilityFraming, preApprovalStatus } from "@/lib/buyer-offers/affordability"
+// Wave 156 (156H round 2): the payment is the ONE engine's over the buyer's own figures (no default rate) — lib/calculators/buyer-payment.ts.
+import { buyerPaymentFor, calculatorNeeds } from "@/lib/calculators/buyer-payment"
+import { LoanAssumptionsFields, useLoanAssumptions } from "@/app/components/calculators/LoanAssumptionsFields"
 import type { AddressAnalysis } from "@/lib/buyer-offers/address-analysis"
 import { analyzeAddressForBuyer, signalAffordabilityChecked } from "@/app/actions/buyer-offer-tools"
 
@@ -31,22 +34,24 @@ export function AnalyzeAnyHomeCard({
   const [sending, startSend] = useTransition()
   const [address, setAddress] = useState("")
   const [analysis, setAnalysis] = useState<AddressAnalysis | null>(null)
+  const loan = useLoanAssumptions()
 
   const usablePreApproval = useMemo(() => {
     const s = preApprovalStatus(preApprovalAmount, preApprovalExpiresAt, new Date())
     return s.state === "expired" ? null : s.amount
   }, [preApprovalAmount, preApprovalExpiresAt])
 
-  const payment = useMemo(
-    () => (analysis?.estimatedValue ? estimateMonthlyPayment({ price: analysis.estimatedValue }) : null),
-    [analysis?.estimatedValue],
+  const outcome = useMemo(
+    () => (analysis?.estimatedValue ? buyerPaymentFor(analysis.estimatedValue, loan.values) : null),
+    [analysis?.estimatedValue, loan.values],
   )
+  const payment = outcome?.ok ? { total: Number(outcome.outputs.monthlyTotal) } : null
   const framing = useMemo(() => {
     if (!analysis?.estimatedValue || !payment) return null
     return clientAffordabilityFraming(
       affordabilityRead({ price: analysis.estimatedValue, monthlyTotal: payment.total, preApprovalAmount: usablePreApproval }).verdict,
     )
-  }, [analysis?.estimatedValue, payment, usablePreApproval])
+  }, [analysis?.estimatedValue, payment?.total, usablePreApproval])
 
   function analyze() {
     if (address.trim().length < 5) return
@@ -65,9 +70,11 @@ export function AnalyzeAnyHomeCard({
         price: analysis.estimatedValue ?? 0, monthlyEstimate: payment?.total ?? 0,
         verdict: framing ? framing.label : "researching",
       })
+      // r.success now MEANS the agent's alert was written. When it wasn't, the server's sentence
+      // names the route that does not depend on the rail that just failed — never a bare "Try again".
       toast(r.success
         ? { title: "Your agent has been notified", description: "They'll follow up on this home with you." }
-        : { title: "Couldn't notify your agent", description: r.error ?? "Try again", variant: "destructive" })
+        : { title: "Your agent wasn't notified", description: r.error ?? "Try again", variant: "destructive" })
     })
   }
 
@@ -88,7 +95,7 @@ export function AnalyzeAnyHomeCard({
             onChange={(e) => setAddress(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && analyze()}
           />
-          <Button onClick={analyze} disabled={analyzing || address.trim().length < 5} className="bg-teal-600 hover:bg-teal-700 text-white shrink-0">
+          <Button onClick={analyze} disabled={analyzing || address.trim().length < 5} className="bg-teal-700 hover:bg-teal-800 text-white shrink-0">
             <Search className="h-4 w-4 mr-1" />{analyzing ? "Checking…" : "Check"}
           </Button>
         </div>
@@ -112,6 +119,9 @@ export function AnalyzeAnyHomeCard({
               {payment && <span className="font-medium text-foreground">~{money(payment.total)}/mo</span>}
             </div>
             {framing && <p className="text-xs text-muted-foreground">{framing.line}</p>}
+            <LoanAssumptionsFields values={loan.values} set={loan.set} idPrefix="aah" />
+            {outcome && !outcome.ok && <ul className="list-disc pl-5 text-xs text-muted-foreground">{calculatorNeeds(outcome).map((n) => <li key={n}>{n}</li>)}</ul>}
+            {outcome?.ok && outcome.disclaimers.map((d) => <p key={d} className="text-[11px] text-muted-foreground">{d}</p>)}
             <p className="text-[11px] text-muted-foreground">{analysis.estimateNote}</p>
 
             <div className="flex flex-col sm:flex-row gap-2 pt-1">
@@ -120,7 +130,7 @@ export function AnalyzeAnyHomeCard({
               </Button>
               {/* Vendor marketplace: route a buyer who's getting serious to the agent's preferred lender. */}
               <Link href={`/portal/${contactId}/vendors`} className="flex-1">
-                <Button className="w-full bg-teal-600 hover:bg-teal-700 text-white">
+                <Button className="w-full bg-teal-700 hover:bg-teal-800 text-white">
                   <Landmark className="h-4 w-4 mr-1" />Get pre-approved
                 </Button>
               </Link>
@@ -128,6 +138,7 @@ export function AnalyzeAnyHomeCard({
           </div>
         )}
         <p className="text-[11px] text-muted-foreground">Estimates from public data — your agent confirms the real value, the right offer, and connects you with a trusted lender.</p>
+        <p className="text-xs"><Link className="underline" href={`/portal/${contactId}/calculators`}>Open your payment and affordability calculators</Link></p>
       </CardContent>
     </Card>
   )

@@ -2,16 +2,14 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { mergeBrokerageSettings } from "@/lib/settings/brokerage-settings-merge"
 import {
   isCeProviderConnected,
   availableCourses,
   ceProgress,
   buildLaunchUrl,
-  normalizeCeCompletion,
-  sumCeHours,
   type CeProviderConfig,
   type CeCourse,
-  type CeCompletionPayload,
   type CeProgress,
 } from "@/lib/education/ce-provider"
 
@@ -67,46 +65,74 @@ export async function launchCeCourse(courseId: string): Promise<{ url: string } 
   return { url }
 }
 
+/**
+ * The user_types allowed to configure the brokerage's CE provider.
+ *
+ * LIVE VOCABULARY (verified against `users_user_type_check`): the constraint admits
+ * exactly admin, agent, broker, broker_owner, compliance_officer, contact, isa,
+ * lender, superadmin, support, system, tc, team_lead, vendor.
+ *
+ * The previous allowlist listed `broker_admin`, which the CHECK **cannot store** —
+ * a dead branch — and omitted `broker_owner`, which it can, so **the owner of a
+ * brokerage was locked out of connecting their own CE provider**. It also fell back
+ * to `users.role`, which is RETIRED (mostly NULL, the rest title-cased), i.e. a
+ * second door keyed on a column that no longer carries the answer.
+ */
+// 'superadmin' removed (task #211): dead as users.user_type — 0 live rows store
+// it; the platform superadmin is user_type='admin' and already passes.
+const CE_ADMIN_USER_TYPES = new Set(["broker", "broker_owner", "admin"])
+
 /** Admin connects/updates the brokerage's accredited CE provider (name, launch URL, course catalog). */
 export async function connectCeProvider(config: CeProviderConfig): Promise<{ ok: true }> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) throw new Error("Not authenticated")
   const svc = createServiceClient()
-  const { data: profile } = await svc.from("users").select("brokerage_id, user_type, role").eq("id", user.id).maybeSingle()
-  const brokerageId = (profile as any)?.brokerage_id
-  const isAdmin = ["broker", "admin", "broker_admin", "superadmin"].includes(String((profile as any)?.user_type)) || ["broker", "admin", "owner"].includes(String((profile as any)?.role))
-  if (!brokerageId || !isAdmin) throw new Error("Not authorized — CE provider setup is broker/admin only")
+  // `error` destructured: supabase-js resolves a refused read, and reading that as
+  // "no profile" would have surfaced an authorization failure as an authorization
+  // *decision*. Both still fail closed, but for the stated reason.
+  const { data: profile, error: profileError } = await svc
+    .from("users")
+    .select("brokerage_id, user_type")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (profileError) throw new Error("Could not verify your account")
+  const brokerageId = (profile as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+  const userType = String((profile as { user_type?: string | null } | null)?.user_type ?? "")
+  if (!brokerageId || !CE_ADMIN_USER_TYPES.has(userType)) {
+    throw new Error("Not authorized — CE provider setup is broker/admin only")
+  }
 
-  const { data: row } = await svc.from("brokerage_settings").select("settings").eq("brokerage_id", brokerageId).maybeSingle()
-  const settings = (row as { settings?: Record<string, unknown> } | null)?.settings ?? {}
-  const next = { ...settings, ce_provider: { name: config.name, connected: !!config.connected, launchBaseUrl: config.launchBaseUrl ?? null, catalog: config.catalog ?? [] } }
-  const { error } = await svc.from("brokerage_settings").upsert({ brokerage_id: brokerageId, settings: next, updated_at: new Date().toISOString() }, { onConflict: "brokerage_id" })
-  if (error) throw new Error(`Failed to connect provider: ${error.message}`)
+  // Refuse a configuration that cannot work rather than storing a broken one:
+  // `isCeProviderConnected` requires a non-empty name, and `buildLaunchUrl`
+  // needs a base URL, so "connected" without either is a provider that shows as
+  // live and then fails on every course launch.
+  const name = String(config?.name ?? "").trim()
+  if (!name) throw new Error("A provider name is required")
+  const launchBaseUrl = config?.launchBaseUrl ? String(config.launchBaseUrl).trim() : null
+  if (config?.connected && !launchBaseUrl) {
+    throw new Error("A launch URL is required to mark the provider connected")
+  }
+  if (launchBaseUrl && !/^https:\/\//i.test(launchBaseUrl)) {
+    throw new Error("The launch URL must be https")
+  }
+
+  // 86C: merged BY KEY through the one settings writer — it fails closed on a refused read (the
+  // guard this site already had) AND carries every other key as the database holds it at write
+  // time (version-checked), so a concurrent save of another feature's key is never replaced.
+  const write = await mergeBrokerageSettings(svc, brokerageId, {
+    ce_provider: {
+      name,
+      connected: !!config.connected,
+      launchBaseUrl,
+      catalog: Array.isArray(config.catalog) ? config.catalog : [],
+    },
+  }, { policy: { type: "user", userId: user.id, reason: "CE provider connected / updated" } })
+  if (!write.ok) throw new Error(`Failed to connect provider: ${write.error}`)
   return { ok: true }
 }
 
-/**
- * Record a verified CE completion the accredited provider reported (called by the webhook). Inserts into
- * agent_ce_completions, then recomputes agents.ce_hours_completed from the full ledger (idempotent) so the
- * license-readiness engine sees the new credit. Never fabricates — only writes what the provider reported.
- */
-export async function recordCeCompletionFromProvider(
-  payload: CeCompletionPayload,
-  ctx: { agentId: string; brokerageId: string | null; providerName: string },
-): Promise<{ recorded: boolean; ceHoursCompleted: number }> {
-  const svc = createServiceClient()
-  const row = normalizeCeCompletion(payload, ctx)
-
-  // Idempotency: one completion per (agent, course, completed_on).
-  const { data: existing } = await svc.from("agent_ce_completions").select("id").eq("agent_id", ctx.agentId).eq("course_name", row.course_name).eq("completed_on", row.completed_on).limit(1).maybeSingle()
-  if (!existing) {
-    const { error } = await svc.from("agent_ce_completions").insert(row)
-    if (error) return { recorded: false, ceHoursCompleted: 0 }
-  }
-
-  const { data: all } = await svc.from("agent_ce_completions").select("hours").eq("agent_id", ctx.agentId).limit(500)
-  const total = sumCeHours((all ?? []) as Array<{ hours: number | null }>)
-  await svc.from("agents").update({ ce_hours_completed: total }).eq("id", ctx.agentId)
-  return { recorded: true, ceHoursCompleted: total }
-}
+// TOMBSTONE (orphan doctrine §1, wave 155 lane 155R5): recordCeCompletionFromProvider DELETED from this "use server" file —
+// as an export here it was a public HTTP endpoint that let any caller record accredited CE credit for any agent id without
+// the provider's HMAC signature (CLAUDE.md §4). SURVIVOR: app/api/webhooks/ce-provider/route.ts recordCeCompletionFromProvider
+// (non-exported, reached only after verifyCeSignature).

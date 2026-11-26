@@ -155,31 +155,73 @@ export class DocusignProvider implements ITransactionProvider {
     }
   }
 
+  /** Add the signers (with any placement tabs) to a DRAFT envelope. Shared by the direct
+   *  send below and the embedded-send path (prepareEmbeddedSend) so both place recipients
+   *  and tabs the same way. */
+  private async addRecipients(request: SendForSignatureRequest): Promise<SendForSignatureResponse> {
+    // Group any placement tags into DocuSign's per-recipient tab buckets (pure, tested helper).
+    const { docusignTabsByRecipient } = await import("@/lib/forms/esign-anchor-adapters")
+    const tabsByRole = docusignTabsByRecipient((request.tags ?? []) as any)
+    const signers = request.signers.map((s, i) => {
+      const tabs = tabsByRole[s.role]
+      return {
+        email:        s.email,
+        name:         s.name,
+        recipientId:  String(i + 1),
+        routingOrder: String(i + 1),
+        roleName:     s.role,
+        ...(tabs ? { tabs } : {}),
+      }
+    })
+    const recipientsRes = await this.request(`/envelopes/${request.externalTransactionId}/recipients`, {
+      method: "POST",
+      body: { signers },
+    })
+    if (!recipientsRes.ok) {
+      return { success: false, error: `DocuSign addRecipients ${recipientsRes.status}: ${recipientsRes.error}` }
+    }
+    return { success: true }
+  }
+
+  /**
+   * EMBEDDED SENDING (lane 88C — owner: "connect to their esign provider in an iframe … to
+   * send the forms that were just filled out"). Adds the recipients to the DRAFT envelope
+   * WITHOUT sending, then asks DocuSign for a one-time SENDER VIEW url
+   * (EnvelopeViews:createSender, viewAccess "envelope" — scoped to this one envelope;
+   * DocuSign documents the sender view as iframe-capable). The agent reviews tabs and
+   * presses Send inside the platform window; completion arrives on the existing DocuSign
+   * Connect webhook, keyed on the envelope id stamped at draft time.
+   * The envelope MUST still be in 'created' (draft) state — DocuSign refuses otherwise.
+   */
+  async prepareEmbeddedSend(
+    request: SendForSignatureRequest,
+    returnUrl: string,
+  ): Promise<{ success: boolean; senderViewUrl?: string; error?: string }> {
+    try {
+      const added = await this.addRecipients(request)
+      if (!added.success) return { success: false, error: added.error }
+      const view = await this.request<{ url?: string }>(`/envelopes/${request.externalTransactionId}/views/sender`, {
+        method: "POST",
+        body: {
+          returnUrl,
+          viewAccess: "envelope",
+          settings: { startingScreen: "Tagger", showBackButton: "false", showDiscardAction: "false" },
+        },
+      })
+      if (!view.ok || !view.data?.url) {
+        return { success: false, error: `DocuSign createSenderView ${view.status}: ${view.error ?? "no url returned"}` }
+      }
+      return { success: true, senderViewUrl: view.data.url }
+    } catch (err: any) {
+      return { success: false, error: err?.message ?? "DocuSign prepareEmbeddedSend failed" }
+    }
+  }
+
   async sendForSignature(request: SendForSignatureRequest): Promise<SendForSignatureResponse> {
     try {
-      // Group any placement tags into DocuSign's per-recipient tab buckets (pure, tested helper).
-      const { docusignTabsByRecipient } = await import("@/lib/forms/esign-anchor-adapters")
-      const tabsByRole = docusignTabsByRecipient((request.tags ?? []) as any)
-
       // 1. Add recipients (signers) — attach the matching tabs when placement tags were supplied.
-      const signers = request.signers.map((s, i) => {
-        const tabs = tabsByRole[s.role]
-        return {
-          email:        s.email,
-          name:         s.name,
-          recipientId:  String(i + 1),
-          routingOrder: String(i + 1),
-          roleName:     s.role,
-          ...(tabs ? { tabs } : {}),
-        }
-      })
-      const recipientsRes = await this.request(`/envelopes/${request.externalTransactionId}/recipients`, {
-        method: "POST",
-        body: { signers },
-      })
-      if (!recipientsRes.ok) {
-        return { success: false, error: `DocuSign addRecipients ${recipientsRes.status}: ${recipientsRes.error}` }
-      }
+      const added = await this.addRecipients(request)
+      if (!added.success) return added
 
       // 2. Flip status='sent' to actually email signers
       const sendRes = await this.request(`/envelopes/${request.externalTransactionId}`, {
@@ -270,12 +312,12 @@ export class DocusignProvider implements ITransactionProvider {
     try {
       // DocuSign's form library lives as Templates. /templates returns the
       // account's saved templates which can be reused as offer/listing forms.
-      const query: Record<string, string> = { count: String(request.pageSize ?? 100), order_by: "name" }
+      const query: Record<string, string> = { count: String(request.pageSize ?? 100), order_by: "name", start_position: String(Number(request.cursor ?? 0) || 0) }
       if (request.query) query.search_text = request.query
 
-      const res = await this.request<{ envelopeTemplates?: any[] }>("/templates", { query })
+      const res = await this.request<{ envelopeTemplates?: any[]; totalSetSize?: string; endPosition?: string }>("/templates", { query })
       if (!res.ok) {
-        return { success: false, error: `DocuSign listTemplates ${res.status}: ${res.error}` }
+        return { success: false, status: res.status, error: `DocuSign listTemplates ${res.status}: ${res.error}` }
       }
       let forms: ProviderForm[] = (res.data?.envelopeTemplates ?? []).map((t: any) => {
         const name = String(t.name ?? "Template")
@@ -306,7 +348,7 @@ export class DocusignProvider implements ITransactionProvider {
       if (request.category) {
         forms = forms.filter(f => f.category === request.category)
       }
-      return { success: true, forms }
+      const total = Number(res.data?.totalSetSize), end = Number(res.data?.endPosition); return { success: true, forms, total: Number.isFinite(total) ? total : null, nextCursor: Number.isFinite(total) && Number.isFinite(end) && end + 1 < total ? String(end + 1) : null } // wave 156 (156C): pages by start_position until totalSetSize
     } catch (err: any) {
       return { success: false, error: err?.message ?? "DocuSign listForms failed" }
     }

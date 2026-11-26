@@ -267,7 +267,10 @@ export async function checkAllListingDurationLimits(
     .from("listings")
     .select("id")
     .eq("brokerage_id", brokerageId)
-    .neq("status", "closed")
+    // "closed" is not a listings status, so this exclusion excluded nothing and
+    // recovery limits were computed over finished listings too. "sold" is the
+    // real terminal status.
+    .neq("status", "sold")
   
   if (!listings) {
     return []

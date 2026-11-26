@@ -1,6 +1,9 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import type { UserRole } from "@/lib/security"
-import { toCanonicalRoleOrDefault } from "@/lib/security"
+// Imported from the defining modules, not the barrel (wave 144, lane 144Z — test:proxy-graph-budget: the barrel pulls every
+// sibling module into app/crm/page.tsx's graph; the same symbols, nothing else).
+import { toCanonicalRoleOrDefault } from "@/lib/security/types"
+import { stageTransitionTier } from "@/lib/auth/resolve-user-role"
 
 export type { UserRole }
 
@@ -21,74 +24,127 @@ function resolveRole(ctx: RoleContext): UserRole {
   return toCanonicalRoleOrDefault(ctx.role, 'contact')
 }
 
+/** Why the deal desk refused — a CODE, so each caller can word the refusal for its own act (a stage move, a milestone, an edit). */
+export type DealDeskRefusal =
+  | "role_none" | "no_transaction" | "no_session_tenant" | "deal_unreadable" | "deal_not_found"
+  | "no_assigned_agent" | "agent_unreadable" | "team_unreadable" | "not_your_deal"
+
+export type DealDeskDecision =
+  | { allowed: true; tier: "brokerage" | "deal"; via: "seat" | "own_deal" | "led_team" }
+  | { allowed: false; code: DealDeskRefusal; reason: string }
+
 /**
- * Check if user can transition transaction stage.
+ * THE DEAL DESK — who may WORK one deal (move its stage, complete or schedule a milestone, edit its details). ONE gate.
+ *
+ * It was written as the stage-transition gate (lane 93A: `canTransitionStage` below, which now only words this decision for a
+ * stage move) and is generalised here (wave 155) because two other deal gates had drifted from it:
+ *   · app/actions/transaction-milestones.ts took the tenant from the request BODY and proved the deal with a read on the
+ *     caller's row-security client. Any seat that could READ the deal passed — and the transactions SELECT policies admit a
+ *     vendor seat assigned to it, so an assigned lender / title / inspector seat could complete or reschedule its milestones.
+ *   · app/actions/transactions.ts requireTransactionActor admitted the agent on the deal or the tenant-admin roster. It refused
+ *     the coordinator (`tc`) who normally enters title, escrow and deadline details, and it admitted a team lead on every deal
+ *     of the brokerage rather than their own and their team's.
+ * Both now ask this. `context.role` is the caller's users.user_type from the SESSION, never a body value; the tenant is the
+ * session's and the deal must be in it.
+ *
+ * THE RULE (unchanged from lane 93A; the tiers are lib/auth/resolve-user-role.ts stageTransitionTier, derived from
+ * TENANT_ADMIN_USER_TYPES — never a retyped list):
+ *   "brokerage" — broker / broker_owner / broker_admin / admin / compliance_officer, and the coordinator (`tc`): any deal of
+ *                 the tenant.
+ *   "deal"      — an agent on the deal (any side — agents.id through agents.user_id, never users.id), and a team lead for their
+ *                 own deals and the deals of the team they LEAD (teams.team_lead_id).
+ *   refused     — every other seat (vendor, contact, isa, support, system) and a missing user_type. FAILS CLOSED.
+ *
+ * Every read is error-checked and a refused read REFUSES (§3/§4). Runs on the service client AFTER the session is known.
+ */
+export async function decideDealDesk(context: RoleContext): Promise<DealDeskDecision> {
+  const no = (code: DealDeskRefusal, reason: string): DealDeskDecision => ({ allowed: false, code, reason })
+  const tier = stageTransitionTier(context.role)
+  if (tier === "none") return no("role_none", "Your seat cannot work on transactions")
+  if (!context.transactionId) return no("no_transaction", "Transaction ID required")
+  if (!context.brokerageId || !context.userId) return no("no_session_tenant", "No session tenant")
+
+  const supabase = createServiceClient()
+  const { data: transaction, error: txError } = await supabase
+    .from('transactions')
+    .select('agent_id, buyer_agent_id, seller_agent_id')
+    .eq('id', context.transactionId)
+    .eq('brokerage_id', context.brokerageId)
+    .maybeSingle()
+  if (txError) return no("deal_unreadable", `Could not read the transaction: ${txError.message}`)
+  if (!transaction) return no("deal_not_found", "Transaction not found in your brokerage")
+
+  if (tier === "brokerage") return { allowed: true, tier, via: "seat" }
+
+  // "deal" tier — own deal first (agents.id via agents.user_id, never users.id).
+  const t = transaction as { agent_id: string | null; buyer_agent_id: string | null; seller_agent_id: string | null }
+  const dealAgentIds = agentsOnDeal(t)
+  if (dealAgentIds.length === 0) return no("no_assigned_agent", "This transaction has no assigned agent — a broker or coordinator works it")
+  const { data: ownAgents, error: agentError } = await supabase
+    .from('agents')
+    .select('id')
+    .eq('user_id', context.userId)
+    .eq('brokerage_id', context.brokerageId)
+  if (agentError) return no("agent_unreadable", `Could not resolve your agent record: ${agentError.message}`)
+  const own = new Set(((ownAgents ?? []) as Array<{ id: string }>).map((a) => a.id))
+  if (dealAgentIds.some((id) => own.has(id))) return { allowed: true, tier, via: "own_deal" }
+
+  // Team deal — the team the caller LEADS (teams.team_lead_id), resolved by the
+  // one team-scope survivor. A refused read refuses. (Imported lazily: that
+  // module is `server-only`, and this one is also loaded by pure proofs for
+  // stageTransitionTier.)
+  const { leadsAgentsTeam } = await import("@/lib/teams/team-scope")
+  for (const agentId of dealAgentIds) {
+    const led = await leadsAgentsTeam(supabase, context.userId, agentId)
+    if (!led.ok) return no("team_unreadable", led.error)
+    if (!led.ledTeamId) break // leads no team: no later agent can match
+    if (led.leads) return { allowed: true, tier, via: "led_team" }
+  }
+  return no("not_your_deal", "Not your deal — you can work on your own transactions and your team's")
+}
+
+/** The stage machine's own wording for the three refusals a person can act on; every other refusal is relayed as decided. */
+const STAGE_REFUSAL: Partial<Record<DealDeskRefusal, string>> = {
+  role_none: "Your role cannot move transaction stages",
+  no_assigned_agent: "This transaction has no assigned agent — a broker or coordinator moves it",
+  not_your_deal: "Not your deal — you can move your own transactions and your team's",
+}
+
+/**
+ * THE stage-transition gate — the one TransactionOrchestrator asks before it
+ * moves (or checks moving) a deal. `context.role` is the caller's users.user_type
+ * from the SESSION (requireCallerTenant), never a body value.
+ *
+ * Lane 93A merged the orchestrator's hard-coded `["admin","broker","tc","agent"]`
+ * list ONTO this survivor (see transaction-orchestrator.ts). That list dropped
+ * team_lead and compliance_officer, and — fed by the stage machine's private
+ * `role ?? user_type ?? "agent"` — graded broker_owner/broker_admin by the
+ * legacy free-form users.role column. This function, in turn, carried a
+ * DISJOINT-ID defect from its first day: it compared transactions.agent_id (an
+ * agents.id) to context.userId (a users.id), so no agent ever matched (§3,
+ * 23503). The own-deal check now crosses through agents.user_id.
+ *
+ * The decision itself is decideDealDesk above (wave 155) — the same rule, now also asked by the milestone doors and the
+ * deal-detail edits. This function words it for a stage move.
  */
 export async function canTransitionStage(
   context: RoleContext,
 ): Promise<{ allowed: boolean; reason?: string }> {
-  const role = resolveRole(context)
-
-  if (role === 'superadmin' || role === 'admin' || role === 'broker') {
-    return { allowed: true }
-  }
-
-  if (role === 'tc') {
-    return { allowed: true }
-  }
-
-  if (role === 'agent') {
-    if (!context.transactionId) {
-      return { allowed: false, reason: 'Transaction ID required' }
-    }
-
-    const supabase = createServiceClient()
-    const { data: transaction } = await supabase
-      .from('transactions')
-      .select('agent_id')
-      .eq('id', context.transactionId)
-      .eq('brokerage_id', context.brokerageId)
-      .maybeSingle()
-
-    if (transaction?.agent_id === context.userId) {
-      return { allowed: true }
-    }
-
-    return { allowed: false, reason: 'Not assigned to this transaction' }
-  }
-
-  return { allowed: false, reason: 'Insufficient permissions' }
+  const d = await decideDealDesk(context)
+  if (d.allowed) return { allowed: true }
+  return { allowed: false, reason: STAGE_REFUSAL[d.code] ?? d.reason }
 }
 
-/**
- * Check if user can override a milestone with a reason.
- */
-export async function canOverrideMilestone(
-  context: RoleContext,
-): Promise<{ allowed: boolean; reason?: string }> {
-  const role = resolveRole(context)
-
-  if (role === 'superadmin' || role === 'admin' || role === 'broker' || role === 'tc') {
-    return { allowed: true }
-  }
-
-  return { allowed: false, reason: 'Only broker / admin / TC can override milestones' }
-}
-
-/**
- * Check if user can edit milestone dates.
- */
-export async function canEditMilestoneDate(
-  context: RoleContext,
-): Promise<{ allowed: boolean; reason?: string }> {
-  const role = resolveRole(context)
-
-  if (['superadmin', 'admin', 'broker', 'tc', 'agent', 'team_lead'].includes(role)) {
-    return { allowed: true }
-  }
-
-  return { allowed: false, reason: 'Cannot edit milestone dates' }
-}
+// TOMBSTONE (wave 155 — CLAUDE.md §1 case 2 and §6, one vocabulary): canOverrideMilestone and canEditMilestoneDate are DELETED.
+// Both answered "may this seat touch a milestone?" from the ROLE STRING ALONE — no session, no tenant, no deal — and neither had
+// a caller (their one reference was the barrel re-export in lib/transactions/index.ts). They were two more spellings of the deal
+// desk, and each disagreed with the gate that actually runs:
+//   · canEditMilestoneDate (admin / broker / tc / agent / team_lead) → SURVIVOR decideDealDesk in THIS file — the same seats, with
+//     the deal proven in the session's tenant and an agent or team lead held to their own / led team's deals. Called by
+//     app/actions/transaction-milestones.ts (dealDeskFor) and app/actions/transactions.ts (requireTransactionActor).
+//   · canOverrideMilestone (admin / broker / tc) → SURVIVOR lib/kernel/portal-auth.ts:474 requireOverrideActor, called by
+//     app/actions/transaction-milestones.ts overrideMilestoneAction: broker / admin / compliance seats WITH a written reason. The
+//     coordinator is not on the override roster there, and this deletion does not add them.
 
 /**
  * Check if user can view financial details (CDA, commissions, etc.).
@@ -102,87 +158,112 @@ export function canViewFinancials(
     return { allowed: false, reason: 'Contacts cannot view internal financial details' }
   }
 
-  if (role === 'lender' || role === 'title_agent') {
+  // A lender or title company is a VENDOR CATEGORY on a user_type='vendor' seat (CLAUDE.md §4), so the
+  // stored role of every live lender/title user is 'vendor' — which used to fall through to allowed:true
+  // here (wave 153, lane 153Q). 'lender' / 'title_agent' stay as canonical permission roles.
+  if (role === 'vendor' || role === 'lender' || role === 'title_agent') {
     return { allowed: false, reason: 'External parties cannot view commission details' }
   }
 
   return { allowed: true }
 }
 
+// ─── TOMBSTONE: canActAsExternalParty — DELETED, FUNCTIONALITY LIVES ELSEWHERE ─
+//
+// It gated a lender / title agent updating a milestone, on a
+// `deal_team_members` row matched by `member_id` + member_type 'lender'/'title'.
+// It was a DOUBLE orphan and the two halves proved each other dead:
+//
+//  · NO CALLER. The only reference in the tree was the barrel re-export at
+//    lib/transactions/index.ts:39. Nothing ever invoked it.
+//  · NO DATA, AND NO WRITER FOR THE DATA. `deal_team_members.member_id` is
+//    written by nothing in the repository — the table's sole writer
+//    (lib/transactions/vendor-quote-workflow.ts:approveQuote) only ever creates
+//    'inspector' / 'insurance_provider' rows and never sets member_id. Measured
+//    2026-08-22 on hrvaqgvukzxfskkcrwbt: deal_team_members holds 0 rows, and
+//    the column carries no DEFAULT and no trigger. Every arm of this function
+//    therefore evaluated to `{ allowed: false }` for its whole life.
+//
+// THE SURVIVOR is the external-party rail that runs on identities that actually
+// exist and is called by the live portals:
+//
+//   lib/kernel/portal-auth.ts:61   requireLenderVendorActor(transactionId)
+//        lender identity via user_role_assignments → vendors (lender category),
+//        assignment proven through vendor_assignments for THIS transaction.
+//   lib/kernel/portal-auth.ts      requireTitleVendorActor(transactionId)
+//        title identity via user_role_assignments → vendors (title category),
+//        assignment proven through vendor_assignments for THIS transaction
+//        (lane 155T3 — it replaced requireTitleActor, which read the writer-less
+//        title_company_users table).
+
+//
+// THE MILESTONE ALLOW-LIST IS NOT LOST — it was made unnecessary rather than
+// dropped. This function existed to keep an external party away from milestones
+// that are not theirs, by filtering a caller-supplied `milestoneType`. The
+// surviving actions accept NO milestone parameter at all, which is the stronger
+// form of the same rule: app/actions/lender-portal-actions.ts:161
+// issueClearToClose writes only `clear_to_close_received`, and
+// app/actions/title-portal.ts:436 updateTitleStatus writes only
+// `closing_scheduled` / `closed`. The read-side visibility vocabularies are
+// app/actions/lender-portal.ts:4 LENDER_VISIBLE_MILESTONES and
+// lib/title-portal/constants.ts:8 TITLE_VISIBLE_MILESTONES.
+
+// TOMBSTONE (wave 93 integrator): assertUserHasRole — its one caller (TransactionOrchestrator.advanceToStage,
+// a retyped ["admin","broker","tc","agent"] list) moved to canTransitionStage in this file, which derives
+// the tiers from TENANT_ADMIN_USER_TYPES and scopes agents / team leads to their own / led team's deals.
+
+/** What requireDealDesk answers: the session's seat on an ADMITTED deal, or why not (a desk refusal code, or one of the two below). */
+export type DealDeskSession =
+  | { ok: true; userId: string; agentId: string | null; brokerageId: string; userType: string; transactionId: string }
+  | { ok: false; code: DealDeskRefusal | "invalid_transaction" | "no_session"; error: string }
+
+const DEAL_ID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 /**
- * Check if user can act as an external party (lender / title updating specific milestones).
+ * THE DEAL DESK FOR THE SESSION (wave 156, lane 156E) — the ONE way a door that names ONE deal asks decideDealDesk above.
+ *
+ * Every AI / assistant door that acts on one deal (a model call over its records, a retrieval of its confidential rows, a paid
+ * tool call, a write) asks this FIRST, before any of those. The seat and the tenant are the SESSION's (getAgentContext, the
+ * effective seat under an impersonation grant) — or, for a door that already resolved the write seam
+ * (lib/platform/acting-context.ts resolveWriteContextForTenant), that seam's seat, handed in as `seat`. Never a body value,
+ * never a model's output: the deal id is only the thing being asked about, and it must be a uuid.
+ *
+ * The answer carries the transaction id the desk ADMITTED — writers pin `transaction_id` to it and `brokerage_id` to the
+ * session tenant it returns. FAILS CLOSED: no session, no tenant, a malformed id, a refused read, an unreadable session (a throw)
+ * are each a refusal. The roster is the desk's (stageTransitionTier); this function carries none.
+ *
+ * The three older wrappers of the same question keep their own names in their files (they are pinned by test:deal-desk §B–§G):
+ * app/actions/ai-transaction-coordinator.ts scopeTransaction, app/actions/transaction-milestones.ts dealDeskFor and
+ * app/actions/transactions.ts requireTransactionActor. Each asks decideDealDesk with the same session seat — one decision.
  */
-export async function canActAsExternalParty(
-  context: RoleContext,
-  milestoneType: string,
-): Promise<{ allowed: boolean; reason?: string }> {
-  const role = resolveRole(context)
-  const { transactionId, userId, brokerageId } = context
-
-  if (!transactionId) {
-    return { allowed: false, reason: 'Transaction ID required' }
+export async function requireDealDesk(
+  transactionId: unknown,
+  seat?: { userId: string | null | undefined; userType: string | null | undefined; brokerageId: string | null | undefined; agentId?: string | null },
+): Promise<DealDeskSession> {
+  const id = typeof transactionId === "string" ? transactionId.trim() : ""
+  if (!DEAL_ID_SHAPE.test(id)) return { ok: false, code: "invalid_transaction", error: "Invalid transaction ID" }
+  try {
+    let s = seat
+    if (!s) {
+      const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+      const ctx = await getAgentContext()
+      if (!ctx.isAuthenticated) return { ok: false, code: "no_session", error: "Unauthorized" }
+      s = { userId: ctx.userId, userType: ctx.userType, brokerageId: ctx.brokerageId, agentId: ctx.agentId }
+    }
+    if (!s.userId || !s.brokerageId) return { ok: false, code: "no_session", error: "Unauthorized" }
+    const desk = await decideDealDesk({ userId: s.userId, role: s.userType ?? "", brokerageId: s.brokerageId, transactionId: id })
+    if (!desk.allowed) return { ok: false, code: desk.code, error: desk.reason }
+    return { ok: true, userId: s.userId, agentId: s.agentId ?? null, brokerageId: s.brokerageId, userType: String(s.userType ?? ""), transactionId: id }
+  } catch {
+    return { ok: false, code: "no_session", error: "Unauthorized" }
   }
-
-  if (role === 'lender') {
-    const allowedMilestones = ['clear_to_close_received', 'financing_deadline', 'conditional_approval']
-    if (!allowedMilestones.includes(milestoneType)) {
-      return { allowed: false, reason: 'Lender can only update financing milestones' }
-    }
-
-    const supabase = createServiceClient()
-    const { data: member } = await supabase
-      .from('deal_team_members')
-      .select('id')
-      .eq('transaction_id', transactionId)
-      .eq('brokerage_id', brokerageId)
-      .eq('member_id', userId)
-      .eq('member_type', 'lender')
-      .single()
-
-    if (!member) {
-      return { allowed: false, reason: 'Not assigned as lender for this transaction' }
-    }
-
-    return { allowed: true }
-  }
-
-  if (role === 'title_agent') {
-    const allowedMilestones = ['funding_confirmed', 'cda_delivered', 'cd_uploaded']
-    if (!allowedMilestones.includes(milestoneType)) {
-      return { allowed: false, reason: 'Title agent can only update closing milestones' }
-    }
-
-    const supabase = createServiceClient()
-    const { data: member } = await supabase
-      .from('deal_team_members')
-      .select('id')
-      .eq('transaction_id', transactionId)
-      .eq('brokerage_id', brokerageId)
-      .eq('member_id', userId)
-      .eq('member_type', 'title')
-      .single()
-
-    if (!member) {
-      return { allowed: false, reason: 'Not assigned as title agent for this transaction' }
-    }
-
-    return { allowed: true }
-  }
-
-  return { allowed: false, reason: 'Not an external party' }
 }
 
 /**
- * Assert that the user holds one of the required roles; throws if not.
+ * THE AGENTS ON A DEAL — every side (agent_id, buyer_agent_id, seller_agent_id), as agents.id values, deduplicated. ONE definition:
+ * decideDealDesk's "own deal" asks it, and so does lib/auth/deal-work-ownership.ts (the owning-agent fact) — wave 156, lane 156E,
+ * which made the deal-work roster stop admitting only agent_id. Compare against agents.id (via agents.user_id), never users.id.
  */
-export async function assertUserHasRole(
-  context: RoleContext,
-  requiredRoles: UserRole[],
-): Promise<void> {
-  const role = resolveRole(context)
-  if (!requiredRoles.includes(role)) {
-    throw new Error(
-      `[role-guard] User role '${role}' not authorised. Required: ${requiredRoles.join(', ')}`,
-    )
-  }
+export function agentsOnDeal(t: { agent_id?: string | null; buyer_agent_id?: string | null; seller_agent_id?: string | null }): string[] {
+  return [...new Set([t.agent_id, t.buyer_agent_id, t.seller_agent_id].filter((x): x is string => !!x))]
 }

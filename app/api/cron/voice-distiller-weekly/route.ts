@@ -17,23 +17,20 @@
  * raises through generateTextRouted which short-circuits cleanly).
  */
 import { NextResponse, type NextRequest } from "next/server"
+import { verifyCronAuth } from "@/lib/cron-auth"
+import { createCronRunContextAction, recordCronSuccessAction } from "@/app/actions/cron-kernel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { distillVoiceForAgent } from "@/lib/voice-distiller/per-agent-voice"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
 
-function unauthorized() {
-  return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-}
-
 export async function GET(req: NextRequest) {
-  const auth     = req.headers.get("authorization")?.replace("Bearer ", "")
   const url      = new URL(req.url)
-  const qs       = url.searchParams.get("secret")
-  const expected = process.env.CRON_SECRET
-  if (!expected) return NextResponse.json({ skipped: "CRON_SECRET not configured" })
-  if (auth !== expected && qs !== expected) return unauthorized()
+  const denied = verifyCronAuth(req)
+  if (denied) return denied
+  const cronRun = await createCronRunContextAction({ cron_name: "voice-distiller-weekly", cron_path: "/app/api/cron/voice-distiller-weekly/route.ts" }) // run row + cron decision door (155R1)
+  if (cronRun.data?.held) return NextResponse.json({ success: true, held: true, decision: cronRun.data.decision })
 
   const dryRun = url.searchParams.get("dry") === "1"
   const svc = createServiceClient()
@@ -74,6 +71,7 @@ export async function GET(req: NextRequest) {
   }
 
   if (dryRun) {
+    if (cronRun.data) await recordCronSuccessAction({ context_id: cronRun.data.context_id, records_processed: 0, metadata: { dry_run: true } })
     return NextResponse.json({
       ran_at: new Date().toISOString(),
       dry_run: true,
@@ -92,6 +90,7 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  if (cronRun.data) await recordCronSuccessAction({ context_id: cronRun.data.context_id, records_processed: pairs.size })
   return NextResponse.json({
     ran_at: new Date().toISOString(),
     eligible_pairs: pairs.size,

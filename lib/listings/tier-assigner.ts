@@ -15,9 +15,88 @@
 import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
-import { canAccessFeature } from "@/lib/kernel/0.1-feature-access"
+import { mayUseFeature } from "@/lib/billing/billing-access"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
+
+// ============================================
+// ACTOR RESOLUTION (w2s3)
+// ============================================
+//
+// SECURITY: every gate in this module was `canAccessFeature(actorUserId, …)`
+// where `actorUserId` arrives AS A PARAMETER FROM THE CALLER. That is an
+// authorization check against an identity the caller merely asserts — the
+// caller gets to name whose entitlement is checked. Since this file is
+// `"use server"`, each of those is a public endpoint, so anyone could pass the
+// user id of someone whose brokerage HAS the `listing_marketing_tiers`
+// feature and walk straight through the gate.
+//
+// Row-level security on the three tier tables (`brokerage_id =
+// current_user_brokerage_id()`, verified live) is what kept this from being a
+// cross-tenant write — but it does NOT stop the entitlement bypass: a user of
+// a brokerage without the feature could borrow an entitled id and then create
+// and delete tiers freely inside their OWN brokerage, which is exactly what
+// the paid-feature gate exists to prevent.
+//
+// The fix keeps every signature intact (so the existing callers in
+// marketing-tier-client.tsx and app/actions/listings.ts are untouched) and
+// simply refuses to accept an `actorUserId` that is not the session user.
+
+interface TierActor {
+  userId: string
+  brokerageId: string
+}
+
+/**
+ * Prove the claimed actor IS the caller, and return their real brokerage.
+ * Fails CLOSED — no session, a mismatch, or a refused profile read all refuse.
+ */
+async function resolveTierActor(
+  claimedUserId: string,
+): Promise<{ ok: true; actor: TierActor } | { ok: false; error: string }> {
+  if (!isValidUUID(claimedUserId)) return { ok: false, error: "Invalid actor ID" }
+
+  const supabase = await createClient()
+  const { data: auth, error: authError } = await supabase.auth.getUser()
+  if (authError || !auth?.user) return { ok: false, error: "Unauthorized" }
+
+  // The whole point: the asserted id must be the authenticated one.
+  if (auth.user.id !== claimedUserId) return { ok: false, error: "Unauthorized" }
+
+  const { data: profile, error: profileError } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", auth.user.id)
+    .maybeSingle()
+
+  if (profileError) return { ok: false, error: "Could not verify your account" }
+  if (!profile?.brokerage_id) return { ok: false, error: "No brokerage on your account" }
+
+  return { ok: true, actor: { userId: auth.user.id, brokerageId: profile.brokerage_id } }
+}
+
+/**
+ * Session-only actor resolution for the READ endpoints, which take no
+ * actorUserId. Same fail-closed contract.
+ */
+async function resolveTierReader(): Promise<
+  { ok: true; actor: TierActor } | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: auth, error: authError } = await supabase.auth.getUser()
+  if (authError || !auth?.user) return { ok: false, error: "Unauthorized" }
+
+  const { data: profile, error: profileError } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", auth.user.id)
+    .maybeSingle()
+
+  if (profileError) return { ok: false, error: "Could not verify your account" }
+  if (!profile?.brokerage_id) return { ok: false, error: "No brokerage on your account" }
+
+  return { ok: true, actor: { userId: auth.user.id, brokerageId: profile.brokerage_id } }
+}
 
 // ============================================
 // TYPES
@@ -81,7 +160,23 @@ export async function assignTierToListing(
     }
 
     // ── Kernel Gate: canAccessFeature ──
-    const access = await canAccessFeature(actorUserId, "listing_marketing_tiers")
+    // Prove the asserted actor IS the caller before trusting the entitlement.
+    const gate = await resolveTierActor(actorUserId)
+    if (!gate.ok) {
+      return { success: false, tierId: null, tierName: null, budgets: [], totalBudget: 0, error: gate.error }
+    }
+    // `brokerageId` is also caller-supplied and is used as the filter on both
+    // the listing read and the tier lookup below. Pin it to the actor's real
+    // tenant rather than letting the caller name the tenant it operates in.
+    // WAVE 155 (lane 155R19): the claimed tenant is decided by the ONE decision table, never a hand-written comparison (lesson 1).
+    const { decideClaimedTenant } = await import("@/lib/platform/acting-context")
+    if (!decideClaimedTenant({ actingBrokerageId: gate.actor.brokerageId, claimedBrokerageId: brokerageId }).ok) {
+      return { success: false, tierId: null, tierName: null, budgets: [], totalBudget: 0, error: "Unauthorized" }
+    }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const ledgered = await ledgerSessionAction({ brokerageId: gate.actor.brokerageId, action: "listing.marketing_tier.assign", actor: { type: "user", userId: gate.actor.userId }, subject: { type: "listing", id: listingId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<AssignTierResult> => {
+
+    const access = await mayUseFeature(gate.actor.userId, "listing_marketing_tiers")
     if (!access.allowed) {
       return {
         success: false,
@@ -201,6 +296,7 @@ export async function assignTierToListing(
       budgets,
       totalBudget,
     }
+    }); return "tierId" in ledgered ? ledgered : { success: false, tierId: null, tierName: null, budgets: [], totalBudget: 0, error: ledgered.error ?? "Tier assignment was not recorded" }
   } catch (error) {
     console.error("[Tier Assigner] Error:", error)
     return {
@@ -224,6 +320,9 @@ export async function getTierForListing(listingId: string) {
       return { success: false, error: "Invalid listing ID" }
     }
 
+    const reader = await resolveTierReader()
+    if (!reader.ok) return { success: false, error: reader.error }
+
     const supabase = await createClient()
 
     const { data: listing, error: listingError } = await supabase
@@ -243,9 +342,20 @@ export async function getTierForListing(listingId: string) {
         )
       `)
       .eq("id", listingId)
-      .single()
+      // Explicit tenant filter. RLS on `listings` already constrains this, but
+      // the filter must be visible in the query rather than assumed: this
+      // endpoint discloses list_price and marketing_budget, and the module has
+      // siblings that could later be switched to a service client.
+      .eq("brokerage_id", reader.actor.brokerageId)
+      .maybeSingle()
 
-    if (listingError || !listing) {
+    // `.single()` raised PGRST116 for the zero-row case and the old code
+    // flattened that into "Listing not found" — the same message a genuine
+    // read failure produced. `.maybeSingle()` separates the two.
+    if (listingError) {
+      return { success: false, error: "Could not read the listing" }
+    }
+    if (!listing) {
       return { success: false, error: "Listing not found" }
     }
 
@@ -265,33 +375,15 @@ export async function getTierForListing(listingId: string) {
 }
 
 // ============================================
-// 3. GET REQUIRED DISTRIBUTIONS FOR TIER
+// 3. GET REQUIRED DISTRIBUTIONS FOR TIER — DELETED
 // ============================================
-
-export async function getRequiredDistributions(tierId: string) {
-  try {
-    if (!isValidUUID(tierId)) {
-      return { success: false, error: "Invalid tier ID" }
-    }
-
-    const supabase = await createClient()
-
-    const { data, error } = await supabase
-      .from("tier_distributions")
-      .select("*")
-      .eq("tier_id", tierId)
-      .eq("is_required", true)
-
-    if (error) throw error
-
-    return {
-      success: true,
-      distributions: (data ?? []) as TierDistribution[],
-    }
-  } catch (error) {
-    return handleError(error, "getRequiredDistributions")
-  }
-}
+// TOMBSTONE (orphan tranche 4): getRequiredDistributions deleted. The one surface
+// that renders distributions (app/dashboard/listings/[id]/marketing-tier/page.tsx)
+// documented WHY it does not use this reader: it needs the FULL set and badges
+// each row required/optional, while this returned only `is_required = true` rows —
+// swapping it in would silently hide the optional distributions. That page's
+// tenant-scoped tier_distributions read is the survivor; a required-only view is
+// one `.eq("is_required", true)` (or an in-memory filter) on top of it.
 
 // ============================================
 // 4. GET TIER BUDGETS
@@ -303,12 +395,16 @@ export async function getTierBudgets(tierId: string) {
       return { success: false, error: "Invalid tier ID" }
     }
 
+    const reader = await resolveTierReader()
+    if (!reader.ok) return { success: false, error: reader.error }
+
     const supabase = await createClient()
 
     const { data, error } = await supabase
       .from("tier_budgets")
       .select("*")
       .eq("tier_id", tierId)
+      .eq("brokerage_id", reader.actor.brokerageId)
 
     if (error) throw error
 
@@ -335,12 +431,21 @@ export async function getTiersForBrokerage(brokerageId: string) {
       return { success: false, error: "Invalid brokerage ID" }
     }
 
+    const reader = await resolveTierReader()
+    if (!reader.ok) return { success: false, error: reader.error }
+    // The caller does NOT get to name the tenant whose tier configuration
+    // (price bands, budgets) is returned.
+    const { decideClaimedTenant } = await import("@/lib/platform/acting-context")
+    if (!decideClaimedTenant({ actingBrokerageId: reader.actor.brokerageId, claimedBrokerageId: brokerageId }).ok) {
+      return { success: false, error: "Unauthorized" }
+    }
+
     const supabase = await createClient()
 
     const { data, error } = await supabase
       .from("listing_marketing_tiers")
       .select("*")
-      .eq("brokerage_id", brokerageId)
+      .eq("brokerage_id", reader.actor.brokerageId)
       .order("min_price", { ascending: true, nullsFirst: true })
 
     if (error) throw error
@@ -372,17 +477,27 @@ export async function createTier(params: {
     }
 
     // ── Kernel Gate: canAccessFeature ──
-    const access = await canAccessFeature(params.actorUserId, "listing_marketing_tiers")
+    // Prove the asserted actor IS the caller before trusting the entitlement.
+    const gate = await resolveTierActor(params.actorUserId)
+    if (!gate.ok) return { success: false, error: gate.error }
+    // Caller-supplied tenant, pinned to the actor's real one.
+    if (gate.actor.brokerageId !== params.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+
+    const access = await mayUseFeature(gate.actor.userId, "listing_marketing_tiers")
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Feature not available" }
     }
+    const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+    return resultFamily(await ledgerSessionAction({ brokerageId: gate.actor.brokerageId, action: "listing.marketing_tier.create", actor: { type: "user", userId: gate.actor.userId }, subject: { type: "listing_marketing_tier", id: null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
     const supabase = await createClient()
 
     const { data, error } = await supabase
       .from("listing_marketing_tiers")
       .insert({
-        brokerage_id: params.brokerageId,
+        brokerage_id: gate.actor.brokerageId,
         tier_name: params.tierName,
         min_price: params.minPrice ?? null,
         max_price: params.maxPrice ?? null,
@@ -395,6 +510,7 @@ export async function createTier(params: {
     if (error) throw error
 
     return { success: true, tier: data }
+    }))
   } catch (error) {
     return handleError(error, "createTier")
   }
@@ -419,10 +535,16 @@ export async function updateTier(params: {
     }
 
     // ── Kernel Gate: canAccessFeature ──
-    const access = await canAccessFeature(params.actorUserId, "listing_marketing_tiers")
+    // Prove the asserted actor IS the caller before trusting the entitlement.
+    const gate = await resolveTierActor(params.actorUserId)
+    if (!gate.ok) return { success: false, error: gate.error }
+
+    const access = await mayUseFeature(gate.actor.userId, "listing_marketing_tiers")
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Feature not available" }
     }
+    const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+    return resultFamily(await ledgerSessionAction({ brokerageId: gate.actor.brokerageId, action: "listing.marketing_tier.update", actor: { type: "user", userId: gate.actor.userId }, subject: { type: "listing_marketing_tier", id: params.tierId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
     const supabase = await createClient()
 
@@ -437,12 +559,14 @@ export async function updateTier(params: {
       .from("listing_marketing_tiers")
       .update(updates)
       .eq("id", params.tierId)
+      .eq("brokerage_id", gate.actor.brokerageId)
       .select()
       .single()
 
     if (error) throw error
 
     return { success: true, tier: data }
+    }))
   } catch (error) {
     return handleError(error, "updateTier")
   }
@@ -465,10 +589,18 @@ export async function createTierBudget(params: {
     }
 
     // ── Kernel Gate: canAccessFeature ──
-    const access = await canAccessFeature(params.actorUserId, "listing_marketing_tiers")
+    // Prove the asserted actor IS the caller before trusting the entitlement.
+    const gate = await resolveTierActor(params.actorUserId)
+    if (!gate.ok) return { success: false, error: gate.error }
+    const { decideClaimedTenant } = await import("@/lib/platform/acting-context")
+    if (!decideClaimedTenant({ actingBrokerageId: gate.actor.brokerageId, claimedBrokerageId: params.brokerageId }).ok) return { success: false, error: "Unauthorized" }
+
+    const access = await mayUseFeature(gate.actor.userId, "listing_marketing_tiers")
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Feature not available" }
     }
+    const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+    return resultFamily(await ledgerSessionAction({ brokerageId: gate.actor.brokerageId, action: "listing.tier_budget.create", actor: { type: "user", userId: gate.actor.userId }, subject: { type: "listing_marketing_tier", id: params.tierId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
     const supabase = await createClient()
 
@@ -476,7 +608,7 @@ export async function createTierBudget(params: {
       .from("tier_budgets")
       .insert({
         tier_id: params.tierId,
-        brokerage_id: params.brokerageId,
+        brokerage_id: gate.actor.brokerageId,
         channel_type: params.channelType,
         default_budget: params.defaultBudget,
       })
@@ -486,6 +618,7 @@ export async function createTierBudget(params: {
     if (error) throw error
 
     return { success: true, budget: data }
+    }))
   } catch (error) {
     return handleError(error, "createTierBudget")
   }
@@ -509,10 +642,18 @@ export async function createTierDistribution(params: {
     }
 
     // ── Kernel Gate: canAccessFeature ──
-    const access = await canAccessFeature(params.actorUserId, "listing_marketing_tiers")
+    // Prove the asserted actor IS the caller before trusting the entitlement.
+    const gate = await resolveTierActor(params.actorUserId)
+    if (!gate.ok) return { success: false, error: gate.error }
+    const { decideClaimedTenant } = await import("@/lib/platform/acting-context")
+    if (!decideClaimedTenant({ actingBrokerageId: gate.actor.brokerageId, claimedBrokerageId: params.brokerageId }).ok) return { success: false, error: "Unauthorized" }
+
+    const access = await mayUseFeature(gate.actor.userId, "listing_marketing_tiers")
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Feature not available" }
     }
+    const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+    return resultFamily(await ledgerSessionAction({ brokerageId: gate.actor.brokerageId, action: "listing.tier_distribution.create", actor: { type: "user", userId: gate.actor.userId }, subject: { type: "listing_marketing_tier", id: params.tierId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
     const supabase = await createClient()
 
@@ -520,7 +661,7 @@ export async function createTierDistribution(params: {
       .from("tier_distributions")
       .insert({
         tier_id: params.tierId,
-        brokerage_id: params.brokerageId,
+        brokerage_id: gate.actor.brokerageId,
         asset_type: params.assetType,
         channel_type: params.channelType,
         is_required: params.isRequired,
@@ -531,6 +672,7 @@ export async function createTierDistribution(params: {
     if (error) throw error
 
     return { success: true, distribution: data }
+    }))
   } catch (error) {
     return handleError(error, "createTierDistribution")
   }
@@ -546,21 +688,37 @@ export async function deleteTierBudget(budgetId: string, actorUserId: string) {
       return { success: false, error: "Invalid IDs" }
     }
 
-    const access = await canAccessFeature(actorUserId, "listing_marketing_tiers")
+    // Prove the asserted actor IS the caller before trusting the entitlement.
+    const gate = await resolveTierActor(actorUserId)
+    if (!gate.ok) return { success: false, error: gate.error }
+
+    const access = await mayUseFeature(gate.actor.userId, "listing_marketing_tiers")
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Feature not available" }
     }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: gate.actor.brokerageId, action: "listing.tier_budget.delete", actor: { type: "user", userId: gate.actor.userId }, subject: { type: "tier_budget", id: budgetId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
     const supabase = await createClient()
 
-    const { error } = await supabase
+    // EXPLICIT tenant filter. This delete previously relied on RLS alone, and
+    // an RLS-filtered delete removes ZERO rows without raising — so a delete
+    // aimed at another brokerage's row was reported to the caller as
+    // `success: true`. `.select("id")` makes the no-op visible.
+    const { data: removed, error } = await supabase
       .from("tier_budgets")
       .delete()
       .eq("id", budgetId)
+      .eq("brokerage_id", gate.actor.brokerageId)
+      .select("id")
 
     if (error) throw error
+    if (!removed || removed.length === 0) {
+      return { success: false, error: "Not found in your brokerage" }
+    }
 
     return { success: true }
+    })
   } catch (error) {
     return handleError(error, "deleteTierBudget")
   }
@@ -576,21 +734,37 @@ export async function deleteTierDistribution(distributionId: string, actorUserId
       return { success: false, error: "Invalid IDs" }
     }
 
-    const access = await canAccessFeature(actorUserId, "listing_marketing_tiers")
+    // Prove the asserted actor IS the caller before trusting the entitlement.
+    const gate = await resolveTierActor(actorUserId)
+    if (!gate.ok) return { success: false, error: gate.error }
+
+    const access = await mayUseFeature(gate.actor.userId, "listing_marketing_tiers")
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Feature not available" }
     }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: gate.actor.brokerageId, action: "listing.tier_distribution.delete", actor: { type: "user", userId: gate.actor.userId }, subject: { type: "tier_distribution", id: distributionId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
     const supabase = await createClient()
 
-    const { error } = await supabase
+    // EXPLICIT tenant filter. This delete previously relied on RLS alone, and
+    // an RLS-filtered delete removes ZERO rows without raising — so a delete
+    // aimed at another brokerage's row was reported to the caller as
+    // `success: true`. `.select("id")` makes the no-op visible.
+    const { data: removed, error } = await supabase
       .from("tier_distributions")
       .delete()
       .eq("id", distributionId)
+      .eq("brokerage_id", gate.actor.brokerageId)
+      .select("id")
 
     if (error) throw error
+    if (!removed || removed.length === 0) {
+      return { success: false, error: "Not found in your brokerage" }
+    }
 
     return { success: true }
+    })
   } catch (error) {
     return handleError(error, "deleteTierDistribution")
   }

@@ -11,26 +11,50 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { determinePortalView } from '@/lib/kernel/portal'
+import { determinePortalView, resolvePortalLayouts } from '@/lib/kernel/portal'
 import { requireContactAccess } from '@/lib/portal/require-contact-access'
+import { isValidUUID } from '@/lib/validations'
 import {
   PortalViewOutput,
   PortalResponse,
   PORTAL_ERRORS,
+  PORTAL_VALIDATION_RULES,
   createPortalSuccess,
   createPortalErrorResponse,
   type PortalViewInput,
 } from '@/lib/kernel/portal-contracts'
 
 export async function GET(
-  request: NextRequest,
+  // Deliberately unread — every input is the route param below plus the session gate.
+  _request: NextRequest,
   context: { params: Promise<{ contactId: string }> }
 ): Promise<NextResponse<PortalResponse<PortalViewOutput>>> {
   try {
     const { contactId } = await context.params
 
-    // Validate input contract
-    if (!contactId || typeof contactId !== 'string') {
+    // ── VALIDATE INPUT AGAINST THE DECLARED CONTRACT ────────────────────────
+    //
+    // `PORTAL_VALIDATION_RULES.contactIdFormat` has said 'uuid' since the
+    // contract file was written, and NOTHING read it — the rule was declared,
+    // exported, and enforced by no one, while this check accepted any non-empty
+    // string. So a caller could hand this route arbitrary text; it reached
+    // `requireContactAccess` and then a `.eq("id", <text>)`, where Postgres
+    // answers 22P02 (invalid input syntax for type uuid) rather than a clean
+    // 400. The rule is now the thing being enforced, so contract and code cannot
+    // drift.
+    //
+    // NOT enforced here, and deliberately: `PORTAL_VALIDATION_RULES
+    // .validBuyerStages` is a THIRD buyer-stage vocabulary
+    // ('DISCOVERY'/'SEARCHING'/'UNDER_OFFER'/…) that matches neither the
+    // BuyerState union (lib/buyer-lifecycle/lifecycle-definitions.ts:13) nor the
+    // lowercase `contacts.buyer_stage` values. Gating on it would refuse every
+    // real contact. It is left as an open §6 finding rather than wired to a
+    // spelling nothing produces.
+    if (
+      !contactId ||
+      typeof contactId !== 'string' ||
+      (PORTAL_VALIDATION_RULES.contactIdFormat === 'uuid' && !isValidUUID(contactId))
+    ) {
       return NextResponse.json(
         createPortalErrorResponse(PORTAL_ERRORS.INVALID_INPUT),
         { status: 400 }
@@ -53,9 +77,12 @@ export async function GET(
     // Call kernel function with input contract
     const input: PortalViewInput = { contactId }
     const output = await determinePortalView(supabase, input)
+    // Wave 94: the kernel's LAYOUTS ride beside the single view, so an API reader sees
+    // a dual client's seller + buyer layouts exactly as the portal renders them.
+    const { layouts, primary, isDual } = await resolvePortalLayouts(supabase, input)
 
     // Return success response with output contract
-    return NextResponse.json(createPortalSuccess(output), { status: 200 })
+    return NextResponse.json(createPortalSuccess({ ...output, layouts, primary, isDual }), { status: 200 })
   } catch (error) {
     console.error('[Portal API] Error determining portal view:', error)
     return NextResponse.json(

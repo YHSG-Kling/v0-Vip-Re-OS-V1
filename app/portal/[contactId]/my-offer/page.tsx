@@ -1,9 +1,9 @@
 import { createClient } from "@/lib/supabase/server"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Clock, CheckCircle2, XCircle, RefreshCw, FileText } from "lucide-react"
 import { OfferDecisionButtons } from "@/components/portal/offer-decision-buttons"
+import { priceOrPendingReview } from "@/lib/format/money"
 
 export default async function MyOfferPage({ params }: { params: Promise<{ contactId: string }> }) {
   const { contactId } = await params
@@ -106,7 +106,7 @@ export default async function MyOfferPage({ params }: { params: Promise<{ contac
             <div className="grid md:grid-cols-3 gap-4">
               <div>
                 <p className="text-sm text-muted-foreground">Your Offer Price</p>
-                <p className="text-2xl font-bold text-green-600">${(activeOffer.offer_price || 0).toLocaleString()}</p>
+                <p className="text-2xl font-bold text-green-600">{priceOrPendingReview(activeOffer.offer_price)}</p>
               </div>
               <div>
                 <p className="text-sm text-muted-foreground">Financing</p>
@@ -141,7 +141,7 @@ export default async function MyOfferPage({ params }: { params: Promise<{ contac
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <p className="text-sm text-muted-foreground">Current Offer Price</p>
-                    <p className="text-xl font-bold">${(activeOffer.offer_price || 0).toLocaleString()}</p>
+                    <p className="text-xl font-bold">{priceOrPendingReview(activeOffer.offer_price)}</p>
                   </div>
                   <div>
                     <p className="text-sm text-muted-foreground">Status</p>

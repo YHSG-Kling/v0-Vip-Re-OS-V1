@@ -74,9 +74,11 @@ function sourceLayer() {
   console.log("\n[wiring — webhook records, UI launches, owned]")
   const wh = src("app/api/webhooks/ce-provider/route.ts")
   check("the webhook verifies the signature then records via the provider path", /verifyCeSignature\(raw, sig, secret\)/.test(wh) && /recordCeCompletionFromProvider\(/.test(wh))
+  // WAVE 155 (lane 155R5): the recorder MOVED into the signed route (as a "use server" export it was a public endpoint that
+  // skipped the HMAC) — asserted where the survivor lives, and the action file must no longer export it.
   const act = src("app/actions/ce-provider.ts")
-  check("recordCeCompletionFromProvider writes the ledger + recomputes ce_hours_completed", /agent_ce_completions"\)\.insert\(row\)/.test(act) && /ce_hours_completed: total/.test(act))
-  check("platform never fabricates: only provider-reported completions are recorded", /normalizeCeCompletion/.test(act) && /Not the accreditor|Accredited CE completed in-app/.test(src("lib/education/ce-provider.ts")))
+  check("recordCeCompletionFromProvider writes the ledger + recomputes ce_hours_completed (in the signed route, not a public action)", /agent_ce_completions"\)\.insert\(row\)/.test(wh) && /ce_hours_completed: total/.test(wh) && !/export\s+async\s+function\s+recordCeCompletionFromProvider/.test(act))
+  check("platform never fabricates: only provider-reported completions are recorded", /normalizeCeCompletion/.test(wh) && /Not the accreditor|Accredited CE completed in-app/.test(src("lib/education/ce-provider.ts")))
   const ui = src("app/dashboard/settings/license-ce/ce-center-panel.tsx")
   check("the CE center UI launches courses via launchCeCourse", /launchCeCourse\(/.test(ui))
   check("the License & CE page mounts the CE center", /CeCenterPanel/.test(src("app/dashboard/settings/license-ce/page.tsx")))

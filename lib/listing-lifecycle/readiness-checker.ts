@@ -28,18 +28,25 @@ export interface ReadinessEvaluation {
   failedChecks: string[]
 }
 
+/** Optional seams (wave 144). Production passes none; the proof (scripts/adaptive-vocabulary-guard.ts F4) injects the policy client. */
+interface ReadinessDeps {
+  /** The client the coming-soon POLICY is read through (default: the service client — see checkComingSoonPolicy). */
+  comingSoonPolicyClient?: { from: (table: string) => any }
+}
+
 /**
  * Evaluate all readiness checks for a listing
  */
 export async function evaluateReadinessChecks(
   supabase: SupabaseClient,
   listingId: string,
-  requiredChecks: ReadinessCheckType[]
+  requiredChecks: ReadinessCheckType[],
+  deps?: ReadinessDeps,
 ): Promise<ReadinessEvaluation> {
   const results: ReadinessCheckResult[] = []
-  
+
   for (const check of requiredChecks) {
-    const result = await evaluateSingleCheck(supabase, listingId, check)
+    const result = await evaluateSingleCheck(supabase, listingId, check, deps)
     results.push(result)
   }
   
@@ -60,7 +67,8 @@ export async function evaluateReadinessChecks(
 async function evaluateSingleCheck(
   supabase: SupabaseClient,
   listingId: string,
-  check: ReadinessCheckType
+  check: ReadinessCheckType,
+  deps?: ReadinessDeps,
 ): Promise<ReadinessCheckResult> {
   switch (check) {
     case "documents_verified":
@@ -102,6 +110,9 @@ async function evaluateSingleCheck(
     
     case "closing_docs_ready":
       return await checkClosingDocsReady(supabase, listingId)
+
+    case "coming_soon_policy":
+      return await checkComingSoonPolicy(supabase, listingId, deps)
     
     default:
       return {
@@ -115,6 +126,29 @@ async function evaluateSingleCheck(
 /**
  * Check: documents_verified
  * Verifies all required documents are uploaded
+ */
+/**
+ * "Are the required documents on file, and are the ones on file finished?"
+ *
+ * THE BUG THIS REPLACES WAS A COMPLIANCE BYPASS, not a rough edge. The previous
+ * version read the documents ATTACHED to the listing and asked whether any were
+ * in a non-terminal status. With ZERO documents attached, the filter is empty,
+ * `unverified === 0`, and the gate returned passed:true — verified live against
+ * a real listing. A seller listing with no paperwork whatsoever satisfied
+ * "documents verified" and could be advanced to LISTING_AGREEMENT_SIGNED.
+ *
+ * The owner's rule is explicit: all signed documents from both sides, all
+ * required brokerage/team/agent docs, where required-vs-warning is a setting,
+ * and any missing item notifies the TC and/or the listing agent.
+ *
+ * auditListingDocuments is that rule, and it already existed — it resolves the
+ * REQUIRED checklist for the brokerage/team/agent/state and reports what is
+ * missing, split into blocking and warning. It was reachable only through
+ * markAgreementSigned, which nothing called, so the one path an agent actually
+ * has ran the weaker check. Both halves are now enforced here:
+ *
+ *   1. every BLOCKING required document is present  (was not checked at all)
+ *   2. every attached document has reached a terminal status  (the old check)
  */
 async function checkDocumentsVerified(
   supabase: SupabaseClient,
@@ -137,14 +171,149 @@ async function checkDocumentsVerified(
 
   // documents.status terminal/verified states are 'complete' and 'signed'.
   const unverifiedDocs = data?.filter((d) => !["complete", "signed"].includes(d.status)) || []
-  
+
+  // ─── The required-checklist half ──────────────────────────────────────────
+  // Same columns and the same identity resolution markAgreementSigned uses, so
+  // the readiness gate and the execution checkpoint cannot disagree about what
+  // "required" means for this listing.
+  const { data: listing, error: listingError } = await supabase
+    .from("listings")
+    // metadata: the listing's own contract subtype / representation (wave 144, lane 144A Outside-lane 3)
+    .select("brokerage_id, agent_id, seller_contact_id, contact_id, state, metadata")
+    .eq("id", listingId)
+    .maybeSingle()
+
+  if (listingError) {
+    return {
+      check: "documents_verified",
+      passed: false,
+      reason: `Error reading the listing: ${listingError.message}`,
+    }
+  }
+  if (!listing?.brokerage_id) {
+    // No tenant anchor means the required-docs checklist cannot be resolved.
+    // REFUSE rather than fall through to the weaker check — an unresolvable
+    // compliance gate is a blocked transition, not a passed one.
+    return {
+      check: "documents_verified",
+      passed: false,
+      reason: "Listing has no brokerage on file, so its required-document checklist cannot be resolved",
+    }
+  }
+
+  const { auditListingDocuments } = await import("@/lib/compliance/required-documents")
+  // The listing's own checklist dimensions, through the SAME narrowing the activation gate and the offer-side gates use
+  // (wave 144 — lane 144A Outside-lane 3), so the three listing checkpoints keep judging one checklist.
+  const { offerChecklistDimensions } = await import("@/lib/transactions/transaction-creation-gate")
+  const dims = offerChecklistDimensions(listing as { metadata?: unknown })
+
+  // listings.agent_id is agents.id. auditListingDocuments wants users.id, so it
+  // is RESOLVED — never substituted. A wrong id here would silently resolve the
+  // wrong agent's document requirements.
+  const listingAgentUserId = listing.agent_id
+    ? ((await supabase.from("agents").select("user_id").eq("id", listing.agent_id).maybeSingle())
+        .data?.user_id as string | null) ?? null
+    : null
+
+  const teamId = listingAgentUserId
+    ? ((await supabase.from("users").select("team_id").eq("id", listingAgentUserId).maybeSingle())
+        .data?.team_id as string | null) ?? null
+    : null
+
+  const audit = await auditListingDocuments(supabase, {
+    brokerageId:     listing.brokerage_id,
+    listingId,
+    // THE SELLER IS IN seller_contact_id. listings.contact_id exists but is not
+    // populated — 0 of 3 rows live — so reading it made sellerContactId always
+    // null and the audit silently skipped every document filed against the
+    // seller's CONTACT record rather than the listing. Raised in review on the
+    // neighborhood-report fallback; the same column mistake was here and in
+    // markAgreementSigned, so both were corrected together. contact_id is kept
+    // as a fallback for any legacy row that used it.
+    sellerContactId: ((listing.seller_contact_id ?? listing.contact_id) as string | null) ?? null,
+    agentUserId:     listingAgentUserId,
+    teamId,
+    stateCode:       (listing.state as string | null) ?? null,
+    contractSubtype: dims.contractSubtype,
+    representation:  dims.representation,
+  })
+
+  // ─── The EXECUTION half ───────────────────────────────────────────────────
+  //
+  // "documents_verified" CLAIMED MORE THAN IT CHECKED. Presence plus a terminal
+  // `documents.status` is not verification: `status` is a workflow label a
+  // caller writes, while whether every required party actually SIGNED and
+  // INITIALED lives in `documents.signature_completeness`, which this check
+  // never opened. A document could sit at status 'complete' with the seller's
+  // initials blank and this gate called it verified.
+  //
+  // The owner's 2026-09-04 ruling — "same compliance gate when a listing becomes
+  // an active listing" — is what closes it. findUnexecutedDocuments is the SAME
+  // pure function the offer-side transaction gate and the listing-activation
+  // gate run (§6: one vocabulary), so a check named `documents_verified` and the
+  // gate that guards MLS_ACTIVE can no longer disagree about what a verified
+  // document is.
+  //
+  // LISTING_AGREEMENT_PARTIES (agent + seller) is passed explicitly: this is
+  // seller-side paperwork and there is no buyer at this point in the lifecycle.
+  // The default is the purchase-contract pair and would refuse every listing.
+  const { findUnexecutedDocuments } = await import("@/lib/transactions/transaction-creation-gate")
+  const { LISTING_AGREEMENT_PARTIES } = await import("@/lib/compliance/signature-completeness")
+  const unexecuted = audit.unavailable_reason
+    ? []
+    : findUnexecutedDocuments(
+        audit.deal_file,
+        audit.required_breakdown.map((r) => r.classification),
+        LISTING_AGREEMENT_PARTIES,
+      )
+  const signatureGaps = unexecuted.filter((u) => u.missingSignatures.length > 0)
+  const initialGaps   = unexecuted.filter((u) => u.missingInitials.length > 0)
+
+  const reasons: string[] = []
+  // AN AUDIT THAT COULD NOT RUN IS NOT A CLEAN AUDIT. This check is the exact
+  // surface finding #105 named ("documents_verified passes with zero
+  // documents"), and the settings end of it had the same shape: a REFUSED
+  // checklist or deal-file read used to come back as the all-zero result of a
+  // clean file. auditListingDocuments now says so, and it BLOCKS here.
+  if (audit.unavailable_reason) {
+    reasons.push(`required-document check could not run: ${audit.unavailable_reason}`)
+  }
+  if (audit.missing_blocking.length > 0) {
+    reasons.push(`${audit.missing_blocking.length} required document(s) missing: ${audit.missing_blocking.join(", ")}`)
+  }
+  // Signatures and initials are reported SEPARATELY, because the owner names
+  // them separately and fixing one is not fixing the other.
+  if (signatureGaps.length > 0) {
+    reasons.push(`${signatureGaps.length} required document(s) not fully signed: ${signatureGaps.map((u) => u.label).join(", ")}`)
+  }
+  if (initialGaps.length > 0) {
+    reasons.push(`initials outstanding on ${initialGaps.length} required document(s): ${initialGaps.map((u) => u.label).join(", ")}`)
+  }
+  if (unverifiedDocs.length > 0) {
+    reasons.push(`${unverifiedDocs.length} attached document(s) not yet complete or signed`)
+  }
+
   return {
     check: "documents_verified",
-    passed: unverifiedDocs.length === 0,
-    reason: unverifiedDocs.length > 0
-      ? `${unverifiedDocs.length} required document(s) not verified`
-      : undefined,
-    details: { totalRequired: data?.length || 0, unverified: unverifiedDocs.length },
+    passed:
+      !audit.unavailable_reason &&
+      audit.missing_blocking.length === 0 &&
+      unexecuted.length === 0 &&
+      unverifiedDocs.length === 0,
+    reason: reasons.length > 0 ? reasons.join("; ") : undefined,
+    details: {
+      attached: data?.length || 0,
+      unverified: unverifiedDocs.length,
+      required_total: audit.required_total,
+      missing_blocking: audit.missing_blocking,
+      // Warnings never block, but the surface should still show them so the
+      // agent knows what the TC is about to ask for.
+      missing_warning: audit.missing_warning,
+      // The execution half, split the way the refusal is, so a surface can tell
+      // an agent WHICH job is outstanding rather than only that one is.
+      missing_signatures: signatureGaps.map((u) => ({ label: u.label, missing: u.missingSignatures, unscanned: u.unscanned })),
+      missing_initials:   initialGaps.map((u) => ({ label: u.label, missing: u.missingInitials, unscanned: u.unscanned })),
+    },
   }
 }
 
@@ -186,8 +355,10 @@ async function checkMediaApproved(
   supabase: SupabaseClient,
   listingId: string
 ): Promise<ReadinessCheckResult> {
-  // Photo approval state lives on listing_media.is_approved (listing_photos has no
-  // approval concept). Filter to photo media for the 10-photo minimum.
+  // Photo approval state lives on listing_media.is_approved. That approval
+  // governance is precisely why listing_media survived the m368/m369
+  // consolidation and the duplicate listing_photos table was dropped.
+  // media_type is pinned so the 10-photo minimum counts photos, not documents.
   const { data: photos } = await supabase
     .from("listing_media")
     .select("id, is_approved")
@@ -522,4 +693,126 @@ async function checkClosingDocsReady(
     passed: docsReady,
     reason: docsReady ? undefined : "Closing disclosure not created",
   }
+}
+
+/**
+ * Check: coming_soon_policy (wave 144 — lane 144A Outside-lane 5, handed over by lane 144B Outside-lane 4)
+ *
+ * May this listing be announced COMING SOON under its MLS's attested rule? The rule is the brokerage's
+ * `coming_soon_policy` key (lib/compliance/coming-soon-policy.ts — recorded only through the vocabulary-healing
+ * proposal path with a compliance approver's attestation and the MLS's published rule cited). This is the reader
+ * at the COMING_SOON_ACTIVE door; it is declared on that stage (lifecycle-definitions.ts readinessChecks), so every
+ * door that validates the stage table runs it.
+ *
+ * CLOSED BY DEFAULT. No entry, an unattested entry, two MLSs covering the state with none named, an unreadable
+ * policy, an unreadable listing or showing count → NOT passed, with the reason. "Nobody recorded the MLS's rule"
+ * never renders as "coming soon is allowed" (CLAUDE.md §4).
+ *
+ * WHY THE SERVICE CLIENT FOR ONE READ. brokerage_settings' SELECT policy admits brokerage admins only (live
+ * pg_policies, 2026-10-25), and the doors that reach this check are agent / team-lead doors — a user-client read
+ * comes back successfully EMPTY and every listing would read "no rule on file". The GATE is the listing read
+ * through the CALLER's client (RLS-scoped); the brokerage id comes from that row, never from a parameter, and only
+ * the policy is read with the service client.
+ *
+ * Inputs at the door: the listing records no MLS today (no column, no writer), so the policy is chosen by the
+ * listing's STATE (the one attested entry covering it). daysInComingSoon is 0 on entry (or the days since
+ * stage_entered_at when the listing already sits in COMING_SOON_ACTIVE); showingsScheduled counts every showing of the
+ * listing the ONE showing-status fold does not call completed or cancelled (pending / unknown count); public marketing before coming soon
+ * is not recorded, so that window is not measured here (blind spot).
+ */
+async function checkComingSoonPolicy(
+  supabase: SupabaseClient,
+  listingId: string,
+  deps?: ReadinessDeps,
+): Promise<ReadinessCheckResult> {
+  const { data: listing, error: listingError } = await supabase
+    .from("listings")
+    .select("brokerage_id, state, lifecycle_stage, stage_entered_at, mls_live_timezone")
+    .eq("id", listingId)
+    .maybeSingle()
+  if (listingError) {
+    return { check: "coming_soon_policy", passed: false, reason: `Error reading the listing: ${listingError.message}` }
+  }
+  if (!listing?.brokerage_id) {
+    return { check: "coming_soon_policy", passed: false, reason: "Listing has no brokerage on file, so its MLS coming-soon rule cannot be resolved" }
+  }
+
+  const { data: showings, error: showingsError } = await supabase
+    .from("showings")
+    .select("status, completed_at")
+    .eq("listing_id", listingId)
+  if (showingsError) {
+    return { check: "coming_soon_policy", passed: false, reason: `Error reading the listing's showings: ${showingsError.message}` }
+  }
+  const { foldShowingStatus } = await import("@/lib/portal/portal-showing-feed")
+  // A showing counts unless it is known to be OVER or CANCELLED — a pending / unrecognised status is a planned showing
+  // (the closed answer: an unknown status never reads as "no showing").
+  const showingsScheduled = (showings ?? []).filter((s: { status?: string | null; completed_at?: string | null }) => {
+    const folded = foldShowingStatus(null, s.status ?? null, !!s.completed_at)
+    return folded !== "completed" && folded !== "cancelled"
+  }).length
+
+  const enteredAt = listing.lifecycle_stage === "COMING_SOON_ACTIVE" && listing.stage_entered_at
+    ? Date.parse(listing.stage_entered_at as string) : NaN
+  // C12 (wave 147, lane 147F — owner ruling 10, verbatim: "coming soon start date is the day the listing agreement was
+  // executed"). The MLS's max-days limit therefore counts from the EXECUTION day (the ONE agreement reader + the ONE window
+  // resolver), not from the COMING_SOON_ACTIVE stage entry — which can only block EARLIER (the closed side). Fallback, named
+  // in details.daysInComingSoonBasis: no executed agreement on file / an unreadable one → the stage entry, as before.
+  let daysInComingSoon = Number.isFinite(enteredAt) ? Math.max(0, Math.floor((Date.now() - enteredAt) / 86_400_000)) : 0
+  let daysInComingSoonBasis: "agreement_executed" | "stage_entered" = "stage_entered"
+  try {
+    const termsClient = deps?.comingSoonPolicyClient ?? (await import("@/lib/supabase/service")).createServiceClient()
+    const [{ governingListingAgreementTerms }, { resolveComingSoonWindow }] = await Promise.all([
+      import("@/lib/listings/listing-agreement-terms"), import("@/lib/listings/compute-dom"),
+    ])
+    const terms = await governingListingAgreementTerms(termsClient as never, { brokerageId: listing.brokerage_id as string, listingId })
+    if (terms.ok && terms.agreementExecutedAt) {
+      const w = resolveComingSoonWindow({ agreementExecutedAt: terms.agreementExecutedAt, listing: { mls_live_timezone: (listing as { mls_live_timezone?: string | null }).mls_live_timezone ?? null } })
+      if (w.days !== null) { daysInComingSoon = w.days; daysInComingSoonBasis = "agreement_executed" }
+    }
+  } catch {
+    /* the stage-entry count above stands, and the basis says so */
+  }
+
+  const { loadComingSoonPolicy, evaluateComingSoonReadiness } = await import("@/lib/compliance/coming-soon-policy")
+  let loaded: Awaited<ReturnType<typeof loadComingSoonPolicy>>
+  try {
+    const policyClient = deps?.comingSoonPolicyClient ?? (await import("@/lib/supabase/service")).createServiceClient()
+    loaded = await loadComingSoonPolicy(policyClient, listing.brokerage_id as string)
+  } catch (err) {
+    loaded = { ok: false, error: `the coming-soon policy could not be read: ${err instanceof Error ? err.message : String(err)}` }
+  }
+  // THE MLS-SUBMISSION CLOCK (wave 146, lane 146I — closes lane 145B Outside-lane 15). Public marketing of a Coming Soon
+  // listing starts at activation (the COMING_SOON_ACTIVE door is where the creative is checked and published), so the
+  // business days since stage_entered_at are the days the MLS's "submit within N business days of public marketing" rule
+  // counts. On entry it is 0. Weekdays only (UTC); public holidays are NOT excluded — that over-counts, which can only
+  // block earlier, never later (the closed side). A listing that is not in the stage has no clock (null), as before.
+  const businessDaysSincePublicMarketing = Number.isFinite(enteredAt) ? weekdaysBetween(enteredAt, Date.now()) : null
+  const verdict = evaluateComingSoonReadiness(loaded.ok ? loaded.policy : null, {
+    mlsSlug: null,
+    stateCode: (listing.state as string | null) ?? null,
+    daysInComingSoon,
+    showingsScheduled,
+    businessDaysSincePublicMarketing,
+  })
+  return {
+    check: "coming_soon_policy",
+    passed: verdict.ready,
+    reason: verdict.ready ? undefined : [loaded.ok ? null : loaded.error, ...verdict.blockers].filter(Boolean).join("; "),
+    details: { status: verdict.status, blockers: verdict.blockers, source: verdict.source, showingsScheduled, daysInComingSoon, daysInComingSoonBasis, businessDaysSincePublicMarketing },
+  }
+}
+
+/** PURE — whole weekdays (Mon–Fri, UTC) elapsed after `fromMs` up to `toMs`; the start day is day 0. Module-private: the
+ *  adaptive-vocabulary proof drives it through the door (evaluateReadinessChecks → details.businessDaysSincePublicMarketing). */
+function weekdaysBetween(fromMs: number, toMs: number): number {
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || toMs <= fromMs) return 0
+  const DAY = 86_400_000
+  const start = Math.floor(fromMs / DAY), end = Math.floor(toMs / DAY)
+  let n = 0
+  for (let d = start + 1; d <= end; d++) {
+    const dow = new Date(d * DAY).getUTCDay()
+    if (dow !== 0 && dow !== 6) n++
+  }
+  return n
 }

@@ -20,7 +20,8 @@
  * INSIDE an outro <Sequence> (so it inherits that sequence's timing window).
  */
 import React from "react"
-import { Img, interpolate, useCurrentFrame } from "remotion"
+import { Img, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { cinemaBadgeSlot, QR_OUTRO_BADGE } from "../../lib/video/cinema-finish"
 
 export interface QrOutroBadgeProps {
   /** data:image/png;base64,... from QRCode.toDataURL. Null/undefined → render nothing. */
@@ -57,6 +58,7 @@ export const QrOutroBadge: React.FC<QrOutroBadgeProps> = ({
   corner = "bottom-right",
 }) => {
   const frame = useCurrentFrame()
+  const { width, height } = useVideoConfig()
 
   // Default-off + MLS-clean guard. A missing data URL means minting was
   // skipped or failed; the reel must still render cleanly without the badge.
@@ -69,32 +71,37 @@ export const QrOutroBadge: React.FC<QrOutroBadgeProps> = ({
     extrapolateRight: "clamp",
   })
 
-  const horizontal = corner === "bottom-left" ? { left: 28 } : { right: 28 }
+  // WAVE 89 (lane 89F) — the corner is the frame's badge slot (lib/video/
+  // cinema-finish.ts cinemaBadgeSlot): inside the safe sides and above the
+  // disclosure footer / caption band. It sat at a typed 28 px, inside the
+  // platform UI band and on top of the outro's Equal Housing line.
+  const slot = cinemaBadgeSlot(width, height)
+  const horizontal = corner === "bottom-left" ? { left: slot.left } : { right: slot.right }
 
   return (
     <div
       style={{
         position: "absolute",
-        bottom: 28,
+        bottom: slot.bottom,
         ...horizontal,
         opacity,
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
         gap: 8,
-        padding: 12,
+        padding: QR_OUTRO_BADGE.padding,
         borderRadius: 14,
         backgroundColor: "rgba(255,255,255,0.96)",
-        boxShadow: `0 0 0 3px ${accentColor}`,
+        boxShadow: `0 0 0 ${QR_OUTRO_BADGE.ring}px ${accentColor}`,
       }}
     >
       <Img
         src={qrCodeDataUrl}
-        style={{ width: 132, height: 132, objectFit: "contain" }}
+        style={{ width: QR_OUTRO_BADGE.code, height: QR_OUTRO_BADGE.code, objectFit: "contain" }}
       />
       <div
         style={{
-          maxWidth: 156,
+          maxWidth: QR_OUTRO_BADGE.captionMaxWidth,
           textAlign: "center",
           color: primaryColor,
           fontSize: 18,

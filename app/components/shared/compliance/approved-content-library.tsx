@@ -159,7 +159,7 @@ export default function ApprovedContentLibrary() {
                   <CardContent className="p-4">
                     <div className="flex items-start justify-between mb-3">
                       <Badge variant="secondary">{item.content_category?.replace(/_/g, " ")}</Badge>
-                      <Badge variant="outline" className="text-green-600 border-green-600">
+                      <Badge variant="outline" className="text-green-700 border-green-600">
                         <CheckCircle className="w-3 h-3 mr-1" />
                         Approved
                       </Badge>

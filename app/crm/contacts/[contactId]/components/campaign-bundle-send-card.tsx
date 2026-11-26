@@ -1,0 +1,182 @@
+"use client"
+
+/**
+ * app/crm/contacts/[contactId]/components/campaign-bundle-send-card.tsx
+ *
+ * Dispatch a saved campaign bundle to THIS contact.
+ *
+ * The bundle builder at /settings/campaign-bundles composes an ordered set of
+ * (channel, preset) steps and tells the user in its own copy that "nothing
+ * sends until you dispatch it" — and until now there was no dispatch anywhere
+ * in the product. The multi-channel dispatcher
+ * (lib/direct-mail/orchestrate-bundle-send.ts) had no caller, so
+ * campaign_bundle_dispatches had no writer and the bundle-attribution rollup
+ * cron had nothing to roll up.
+ *
+ * The contact record is where a bundle actually gets sent to someone, which is
+ * why the send lives here and the composition lives in settings.
+ *
+ * Every gate stays where it was: the server action proves the contact is in the
+ * caller's tenant, and each channel orchestrator still runs its own compliance
+ * check per piece (consent, DNC, opt-out, quiet hours). A bundle is not a way
+ * around any of that — which is why the per-channel outcomes are reported
+ * individually below rather than collapsed into one "sent".
+ */
+
+import { useState, useTransition } from "react"
+import { Send, Loader2 } from "lucide-react"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import { sendCampaignBundleToContactAction } from "@/app/actions/campaign-bundle-dispatch"
+
+export interface BundleOption {
+  id: string
+  name: string
+  description: string | null
+  stepCount: number
+}
+
+/** A running marketing campaign this send may belong to (wave 154, lane 154H2 — the SMS piece then carries campaign identity). */
+export interface CampaignOption {
+  id: string
+  name: string
+}
+
+export function CampaignBundleSendCard({
+  contactId,
+  bundles,
+  campaigns = [],
+}: {
+  contactId: string
+  bundles: BundleOption[]
+  campaigns?: CampaignOption[]
+}) {
+  const [bundleId, setBundleId] = useState<string>("")
+  const [campaignId, setCampaignId] = useState<string>("none")
+  const [isPending, startTransition] = useTransition()
+  const [error, setError] = useState<string | null>(null)
+  const [outcomes, setOutcomes] = useState<Array<{ channel: string; success: boolean; error?: string }> | null>(null)
+  const [sentBundleName, setSentBundleName] = useState<string | null>(null)
+  const [followOn, setFollowOn] = useState<{ scheduled: boolean; channel: string | null; remaining: number } | null>(null)
+
+  function send() {
+    if (!bundleId) {
+      setError("Pick a bundle first.")
+      return
+    }
+    startTransition(async () => {
+      setError(null)
+      setOutcomes(null)
+      setSentBundleName(null)
+      setFollowOn(null)
+      // The campaign is optional; the action verifies it against the SESSION tenant and drops an unverifiable id (sent unattributed).
+      const result = await sendCampaignBundleToContactAction({ bundleId, contactId, marketingCampaignId: campaignId !== "none" ? campaignId : null })
+      // The dispatcher reports per-channel outcomes and an overall ok that is
+      // "at least one channel succeeded". Both halves are shown: claiming a
+      // send for a piece the compliance gate refused is exactly the failure
+      // this card exists not to repeat.
+      setOutcomes(result.channelOutcomes ?? null)
+      setFollowOn(result.followOn ?? null)
+      if (!result.success) {
+        setError(result.error ?? "The bundle did not send.")
+        return
+      }
+      setSentBundleName(result.bundleName ?? null)
+    })
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base flex items-center gap-2">
+          <Send className="h-4 w-4" />
+          Send a campaign bundle
+        </CardTitle>
+        <CardDescription>
+          Sends the bundle&apos;s first piece now. Each later piece waits until the OS judges the moment right
+          for this person, and every piece still passes its own consent and compliance checks — so a bundle
+          can partly deliver. The result below says what happened.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {bundles.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No active bundles in your scope. Build one under Settings → Campaign bundles.
+          </p>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-center gap-3">
+              <Select value={bundleId} onValueChange={setBundleId}>
+                <SelectTrigger className="max-w-80">
+                  <SelectValue placeholder="Choose a bundle" />
+                </SelectTrigger>
+                <SelectContent>
+                  {bundles.map((b) => (
+                    <SelectItem key={b.id} value={b.id}>
+                      {b.name} · {b.stepCount} step{b.stepCount === 1 ? "" : "s"}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {campaigns.length > 0 && (
+                <Select value={campaignId} onValueChange={setCampaignId}>
+                  <SelectTrigger className="max-w-72" aria-label="Campaign this send belongs to">
+                    <SelectValue placeholder="Part of a campaign (optional)" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Not part of a campaign</SelectItem>
+                    {campaigns.map((c) => (
+                      <SelectItem key={c.id} value={c.id}>
+                        {c.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+              <Button size="sm" onClick={send} disabled={isPending}>
+                {isPending ? <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" /> : null}
+                Send bundle
+              </Button>
+            </div>
+
+            {error && <p className="text-sm text-destructive">{error}</p>}
+            {sentBundleName && (
+              <p className="text-sm text-muted-foreground">
+                Dispatched <strong>{sentBundleName}</strong>.
+              </p>
+            )}
+
+            {followOn && followOn.remaining > 0 && (
+              <p className="text-sm text-muted-foreground">
+                {followOn.scheduled
+                  ? `${followOn.remaining} more piece${followOn.remaining === 1 ? "" : "s"} saved — the next (${followOn.channel ?? "piece"}) goes when the moment is right for this contact. You can watch them under Settings → Campaign bundles.`
+                  : "The remaining pieces could not be saved for later, so only the first piece went out. Try sending again in a moment."}
+              </p>
+            )}
+
+            {outcomes && outcomes.length > 0 && (
+              <ul className="space-y-1.5">
+                {outcomes.map((o, i) => (
+                  <li key={`${o.channel}-${i}`} className="flex flex-wrap items-center gap-2 text-sm">
+                    <Badge variant="outline" className="text-[11px]">{o.channel}</Badge>
+                    <span className={o.success ? "text-emerald-700" : "text-destructive"}>
+                      {o.success ? "sent" : (o.error ?? "not sent")}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  )
+}

@@ -100,13 +100,17 @@ export async function closeStrategyLoopForOffer(
 ): Promise<CloseStrategyLoopResult> {
   const { offerId, brokerageId, outcome } = params
 
-  const { data: offer } = await supabase
+  // §3 — supabase-js RESOLVES a refusal. A refused offer read is NOT "no such
+  // offer": treating it as one would silently skip closing the loop and report a
+  // clean no-op. Hardened in wave 26, when this function became the single
+  // survivor for the strategy-learning corpus.
+  const { data: offer, error: offerError } = await supabase
     .from("offers")
     .select("id, brokerage_id, offer_price, strategy_recommendation_id")
     .eq("id", offerId)
     .maybeSingle()
 
-  if (!offer || offer.brokerage_id !== brokerageId) {
+  if (offerError || !offer || offer.brokerage_id !== brokerageId) {
     return { recommendationClosed: false, negotiationClosed: false, noop: true }
   }
 
@@ -117,22 +121,48 @@ export async function closeStrategyLoopForOffer(
   // 1) Close the strategy_recommendations loop (the offer-strategy that produced it).
   const recId = offer.strategy_recommendation_id as string | null
   if (recId) {
-    // Idempotency: only one outcome row per (recommendation, offer).
-    const { data: existing } = await supabase
+    // Idempotency: only one outcome row per (recommendation, offer). A REFUSED
+    // read here must not read as "no row yet" — that would insert a duplicate
+    // learning row on every retry (§3).
+    const { data: existing, error: existingError } = await supabase
       .from("strategy_outcomes")
       .select("id")
       .eq("recommendation_id", recId)
       .eq("offer_id", offerId)
       .maybeSingle()
+    if (existingError) {
+      return { recommendationClosed: false, negotiationClosed: false, noop: true }
+    }
 
     if (!existing) {
-      const { data: rec } = await supabase
+      // SAME TENANT, or the learning corpus can be written across tenants.
+      // Ported here from app/actions/buyer-offers.ts (wave 26) when that action's
+      // hand-rolled strategy_outcomes insert was collapsed onto this function:
+      // it carried this filter and this function did not, so the swap had to
+      // bring the stricter half with it. A recommendation we cannot READ must
+      // never have a result attributed to it — that is exactly how the corpus
+      // getOrGenerateStrategyRecommendation reads back gets poisoned.
+      const { data: rec, error: recError } = await supabase
         .from("strategy_recommendations")
         .select("recommended_price")
         .eq("id", recId)
+        .eq("brokerage_id", brokerageId)
         .maybeSingle()
+      // supabase-js RESOLVES a refusal (§3): an unreadable recommendation is not
+      // an absent one. Withhold the outcome row rather than filing it against a
+      // recommendation whose tenancy we could not confirm.
+      if (recError) {
+        return { recommendationClosed: false, negotiationClosed: false, noop: true }
+      }
+      if (!rec) {
+        // No same-tenant recommendation → do NOT file an outcome against it.
+        // The negotiation half below is still closed: it is independently
+        // tenant-filtered on its own query.
+        negotiationClosed = await closeNegotiationStrategyForOffer(supabase, { offerId, brokerageId, outcome })
+        return { recommendationClosed: false, negotiationClosed, noop: !negotiationClosed }
+      }
 
-      const deviation = rec?.recommended_price != null && finalPrice != null
+      const deviation = rec.recommended_price != null && finalPrice != null
         ? Math.abs(finalPrice - Number(rec.recommended_price))
         : null
 
@@ -146,11 +176,20 @@ export async function closeStrategyLoopForOffer(
         notes: params.notes ?? `Auto-closed on offer ${outcome}`,
       })
       if (!insErr) {
-        await supabase
+        // Tenant-anchored and COUNTED (§3): an update that matches nothing also
+        // resolves, so `.select()` the rows back rather than assuming the status
+        // moved. The outcome row is already filed either way; this only decides
+        // whether we may claim the recommendation itself was closed.
+        const { data: statusRows, error: statusErr } = await supabase
           .from("strategy_recommendations")
           .update({ status: recommendationStatusFor(outcome) })
           .eq("id", recId)
-        recommendationClosed = true
+          .eq("brokerage_id", brokerageId)
+          .select("id")
+        if (statusErr) {
+          console.error("[close-strategy-loop] recommendation status update refused:", statusErr.message)
+        }
+        recommendationClosed = (statusRows?.length ?? 0) > 0
       }
     } else {
       recommendationClosed = true // already closed — treated as success

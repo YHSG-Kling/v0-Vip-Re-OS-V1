@@ -30,16 +30,16 @@ export function ModuleReaderClient({ module: mod }: { module: LearnerModuleView 
     try {
       const r = await submitModuleQuiz(mod.id, answers)
       if (!r.ok) {
-        toast({ title: "Could not submit", description: r.error, variant: "destructive" })
+        toast({ title: r.alreadyPassed ? "Already passed" : "Could not submit", description: r.error, variant: r.alreadyPassed ? "default" : "destructive" })
         return
       }
       setResult(r)
       if (r.certIssued) setCertified(true)
       toast({
-        title: r.passed ? "Passed!" : "Not quite yet",
+        title: r.passed ? "Passed — course complete" : "Not quite yet",
         description: r.passed
-          ? `You scored ${r.score}%${r.certIssued ? " — certification earned." : "."}`
-          : `You scored ${r.score}%. ${r.passingScore}% is needed to pass — review and retry.`,
+          ? `You scored ${r.score}%${r.certIssued ? " and earned your certificate." : "."}`
+          : `You scored ${r.score}%; ${r.passingScore}% passes. The questions you missed are marked with a tip. ${r.attemptsLeftToday > 0 ? `You have ${r.attemptsLeftToday} more ${r.attemptsLeftToday === 1 ? "try" : "tries"} today.` : "Your next try opens tomorrow."}`,
         variant: r.passed ? "default" : "destructive",
       })
     } finally {
@@ -99,6 +99,14 @@ export function ModuleReaderClient({ module: mod }: { module: LearnerModuleView 
         </CardContent>
       </Card>
 
+      {mod.readiness === "not_completable" && (
+        <Card>
+          <CardContent className="pt-6 text-sm text-muted-foreground">
+            This course needs a quiz to be completed, and its quiz isn&apos;t ready yet. Reading it won&apos;t mark it complete. It can be completed once its author adds the quiz questions.
+          </CardContent>
+        </Card>
+      )}
+
       {/* Quiz */}
       {mod.questionCount > 0 && (
         <Card>
@@ -106,8 +114,9 @@ export function ModuleReaderClient({ module: mod }: { module: LearnerModuleView 
             <CardTitle className="text-base">Knowledge Check</CardTitle>
             <CardDescription>
               {mod.required
-                ? `Pass with ${mod.passingScore}% to earn your certification.`
-                : `Score ${mod.passingScore}% to mark this module complete.`}
+                ? `Pass with ${mod.passingScore}% to complete this course and earn your certificate.`
+                : `Score ${mod.passingScore}% to complete this course.`}{" "}
+              Reading the lesson doesn&apos;t complete it; passing the quiz does. Up to {mod.attemptsPerDay} tries a day.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
@@ -151,14 +160,17 @@ export function ModuleReaderClient({ module: mod }: { module: LearnerModuleView 
                       </div>
                     ))}
                   </RadioGroup>
-                  {state === "wrong" && question.explainer && (
-                    <p className="text-xs text-muted-foreground border-l-2 border-amber-400 pl-2">{question.explainer}</p>
-                  )}
+                  {(() => {
+                    const tip = result?.perQuestion.find((p) => p.index === idx)?.coaching
+                    return state === "wrong" && tip ? (
+                      <p className="text-xs text-muted-foreground border-l-2 border-amber-400 pl-2">{tip}</p>
+                    ) : null
+                  })()}
                 </div>
               )
             })}
 
-            {!(result?.passed ?? false) && (
+            {!(result?.passed ?? false) && mod.status !== "completed" && (
               <Button onClick={handleSubmit} disabled={!allAnswered || submitting}>
                 {submitting ? "Submitting…" : result ? "Retry Quiz" : "Submit Quiz"}
               </Button>

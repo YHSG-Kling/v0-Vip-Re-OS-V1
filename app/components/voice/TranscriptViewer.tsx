@@ -80,7 +80,7 @@ export function TranscriptViewer({
       <div className="flex flex-col items-center justify-center py-12 text-center">
         <MessageSquare className="h-12 w-12 text-muted-foreground/50 mb-4" />
         <p className="text-muted-foreground">
-          Transcript not yet available — check back in a few minutes
+          The transcript is still being prepared — check back in a few minutes
         </p>
       </div>
     )

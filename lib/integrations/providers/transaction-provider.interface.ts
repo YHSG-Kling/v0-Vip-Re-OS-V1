@@ -34,10 +34,21 @@ export interface ProviderDocument {
   lastModified?: string
 }
 
+/**
+ * NOTE ON THE ABSENT agentId. This contract used to declare `agentId: string`.
+ * All six implementations — dotloop, skyslope, formsimplicity, brokermint,
+ * docusign, authentisign — ignored it, and every caller computed a value to
+ * satisfy the type. Each provider scopes the transaction by the account in its
+ * OWN credentials (dotloop, for instance, posts to /profile/{profileId}/loop
+ * using the profileId stored with the API key), so there is no id for the
+ * caller to supply. A required field that nothing reads is worse than no field:
+ * it reads as wiring, and the next person to add a provider will assume the
+ * agent identity arrives here when it never has. Removed rather than wired,
+ * because wiring it would invent a requirement no provider actually has.
+ */
 export interface CreateTransactionRequest {
   propertyAddress: string
   transactionType: "purchase" | "listing"
-  agentId: string
   contactId?: string
   listingId?: string
   transactionId?: string
@@ -156,6 +167,8 @@ export interface ListFormsRequest {
   query?: string
   /** Pagination — page size. Providers may cap this. Default 100. */
   pageSize?: number
+  /** Pagination — the provider's opaque cursor from the previous page's `nextCursor` (wave 156, lane 156C). Absent = first page. */
+  cursor?: string
 }
 
 export interface ProviderForm {
@@ -173,12 +186,48 @@ export interface ProviderForm {
   version?: string
   /** Optional URL the agent can preview before selecting. */
   previewUrl?: string
+  /** County the form is specific to, when the provider tags one (wave 156, lane 156C — the directory's county filter). */
+  county?: string
+  /** The provider marks the form retired / superseded; never selectable. */
+  retired?: boolean
+  /** The provider's replacement for a retired form. */
+  replacedByFormId?: string
+  /** false = the provider lists the form but this account is NOT licensed to use it (never offered, refused by id). */
+  licensed?: boolean
+  /** Offices / teams the provider restricts the form to (empty / absent = the whole account). */
+  officeIds?: string[]
+  teamIds?: string[]
 }
 
 export interface ListFormsResponse {
   success: boolean
   forms?:  ProviderForm[]
   error?:  string
+  /** The HTTP status of a refused call, so a refusal is classified by status and not by prose (wave 156, lane 156C). */
+  status?: number | null
+  /** The cursor for the next page; null/absent = the provider reported no further page (or does not page — see `total`). */
+  nextCursor?: string | null
+  /** The provider's own total for the query, when it reports one. */
+  total?: number | null
+}
+
+/**
+ * Map a provider's free-text form-category string to {@link ProviderForm}'s
+ * coarse `category` union — a keyword sniff on the lowercased string, "other"
+ * when nothing matches. Survivor for THREE byte-identical private copies
+ * (SAME BODY census round 3, 2026-09-09), one per e-sign provider:
+ *   lib/integrations/providers/authentisign-provider.ts:250 mapAuthentisignCategory
+ *   lib/integrations/providers/formsimplicity-provider.ts:211 mapCategory
+ *   lib/integrations/providers/skyslope-provider.ts:260 mapSkyslopeCategory
+ */
+export function mapProviderFormCategory(c: string | undefined): ProviderForm["category"] {
+  const s = (c ?? "").toString().toLowerCase()
+  if (s.includes("listing"))    return "listing"
+  if (s.includes("purchase") || s.includes("offer")) return "offer"
+  if (s.includes("addendum"))   return "addendum"
+  if (s.includes("disclosure")) return "disclosure"
+  if (s.includes("agency"))     return "agency"
+  return "other"
 }
 
 /**

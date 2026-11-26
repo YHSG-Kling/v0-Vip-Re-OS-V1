@@ -22,6 +22,11 @@ export interface GatewayChatResult {
   ok: boolean
   content: string | null
   error: string | null
+  /** The gateway's own token count for the call (OpenAI-compatible `usage`), when it reported
+   *  one — the number a caller books on ai_tool_usage (CLAUDE.md §5: a wrong number there is a
+   *  wrong invoice). Null when the gateway sent none; the caller then estimates and SAYS so.
+   *  Wave 141F: the business-card vision call was the first raw-gateway caller to book its cost. */
+  usage: { inputTokens: number; outputTokens: number } | null
 }
 
 /**
@@ -36,9 +41,12 @@ export async function gatewayChat(params: {
   temperature?: number
 }): Promise<GatewayChatResult> {
   const key = process.env.AI_GATEWAY_API_KEY
-  if (!key) return { ok: false, content: null, error: "AI_GATEWAY_API_KEY is not configured" }
+  if (!key) return { ok: false, content: null, error: "AI_GATEWAY_API_KEY is not configured", usage: null }
 
-  const res = await callConnector<{ choices?: Array<{ message?: { content?: string } }> }>({
+  const res = await callConnector<{
+    choices?: Array<{ message?: { content?: string } }>
+    usage?: { prompt_tokens?: number; completion_tokens?: number } | null
+  }>({
     connector: "vercel-ai-gateway",
     baseUrl: "https://ai-gateway.vercel.sh",
     path: "/v1/chat/completions",
@@ -53,8 +61,12 @@ export async function gatewayChat(params: {
     timeoutMs: 60_000,
   })
 
-  if (!res.ok) return { ok: false, content: null, error: res.error ?? `HTTP ${res.status}` }
-  return { ok: true, content: res.data?.choices?.[0]?.message?.content ?? null, error: null }
+  if (!res.ok) return { ok: false, content: null, error: res.error ?? `HTTP ${res.status}`, usage: null }
+  const u = res.data?.usage
+  const usage = u && Number.isFinite(Number(u.prompt_tokens)) && Number.isFinite(Number(u.completion_tokens))
+    ? { inputTokens: Number(u.prompt_tokens), outputTokens: Number(u.completion_tokens) }
+    : null
+  return { ok: true, content: res.data?.choices?.[0]?.message?.content ?? null, error: null, usage }
 }
 
 export interface GatewayChatJSONResult<T> {

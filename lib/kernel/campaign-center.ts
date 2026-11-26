@@ -58,7 +58,9 @@ export async function loadCampaignCenter(brokerageId: string, client?: Svc): Pro
     // they syndicate to the user's configured podcast channels (Transistor).
     supabase.from("podcast_episodes").select("id, title, approval_status, created_at").eq("brokerage_id", brokerageId).eq("approval_status", "pending_review").limit(200),
     supabase.from("neighbor_notification_campaigns").select("id, status, created_at, listing_id").eq("brokerage_id", brokerageId).eq("status", "awaiting_seller_permission").limit(200),
-    supabase.from("open_houses").select("id, title, status, created_at").eq("brokerage_id", brokerageId).eq("status", "draft").limit(200),
+    // open_house_events is the survivor; `open_houses` was a second spelling of it
+    // and was retired by m543 (title merged onto this table in the same migration).
+    supabase.from("open_house_events").select("id, title, status, created_at").eq("brokerage_id", brokerageId).eq("status", "draft").limit(200),
   ])
 
   for (const s of (social.data ?? []) as any[]) items.push({ channel: "social", id: s.id, title: `Social: ${String(s.post_type ?? "post").replace(/_/g, " ")}`, play: playTagOf(s.post_brief), status: s.approval_status, createdAt: s.created_at })

@@ -1,6 +1,11 @@
-"use server"
+// NOT a server-action module (wave 155, lane 155R17 — CLAUDE.md §4). The module-level "use server" that stood here made this
+// GATE a public HTTP door taking a `Request` (which a server-action call cannot even carry). Its only callers are route
+// handlers — app/api/seed/users/route.ts and app/api/migrate/verify/route.ts — which pass their own request. The
+// maintenance.access activities row it writes is the access EVIDENCE of those routes, not a user's act.
+import "server-only"
 import { createClient } from "@/lib/supabase/server"
 import { NextResponse } from "next/server"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export async function requireAdminMaintenanceAccess(request: Request): Promise<
   { authorized: true } | { authorized: false; response: NextResponse }
@@ -46,16 +51,19 @@ export async function requireAdminMaintenanceAccess(request: Request): Promise<
     .eq("id", user.id)
     .single()
 
-  const allowedTypes = ["admin", "broker", "superadmin"]
-  if (!profile || !allowedTypes.includes(profile.user_type ?? "")) {
+  // TRUE ADMIN GATE (operational maintenance): repointed to the ONE tenant
+  // roster. 'superadmin' was dead here — 0 live rows store that user_type.
+  if (!profile || !isAdminOrBroker({ user_type: profile.user_type })) {
     return {
       authorized: false,
       response: NextResponse.json({ error: "Forbidden" }, { status: 403 }),
     }
   }
 
-  // Non-blocking audit log to activities table
-  await supabase
+  // Audit log to activities table. This is the record of WHO reached an
+  // operational maintenance endpoint and from where — the row a security
+  // review would ask for. Non-blocking, but not unobserved.
+  const { error: maintenanceAuditError } = await supabase
     .from("activities")
     .insert({
       activity_type: "maintenance.access",
@@ -66,6 +74,9 @@ export async function requireAdminMaintenanceAccess(request: Request): Promise<
         ip: request.headers.get("x-forwarded-for") || "unknown",
       },
     })
+  if (maintenanceAuditError) {
+    console.error("[require-admin-maintenance-access] maintenance.access audit REJECTED — this admin's access is unlogged:", maintenanceAuditError.message)
+  }
 
   return { authorized: true }
 }

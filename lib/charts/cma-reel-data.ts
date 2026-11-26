@@ -77,6 +77,12 @@ export interface BuildCmaReelInput {
   /** Market median sale price (public market data) — used for customer-facing
    *  affordability so the subject's value is never revealed. */
   marketMedianPrice?: number
+  /** LANE 74D — legal attribution line for the comps this reel displays,
+   *  derived by the caller from `cma_comparables.source_provider` via
+   *  lib/listings/attribution.ts::listingAttributionLine (never invented
+   *  here — this file stays a pure data→chart bridge with no provenance
+   *  logic of its own). "" / absent renders nothing. */
+  attribution?: string
 }
 
 export function buildCmaReelInputProps(input: BuildCmaReelInput): Record<string, unknown> {
@@ -151,11 +157,14 @@ export function buildCmaReelInputProps(input: BuildCmaReelInput): Record<string,
       ? "Your home's value — revealed at our meeting."
       : "Want this analysis for your home?",
     brand,
+    attribution:    input.attribution ?? "",
   }
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────
-function clamp01(v: number): number { return Math.min(1, Math.max(0, v)) }
+import { clamp } from "@/lib/format/math"
+// TOMBSTONE (§1.1, 2026-09-08): local `clamp01` lived here; survivor lib/format/math.ts:clamp
+const clamp01 = (v: number) => clamp(v, 0, 1)
 function meanOf(values: number[]): number {
   const nums = values.filter((v) => Number.isFinite(v) && v > 0)
   return nums.length ? nums.reduce((s, v) => s + v, 0) / nums.length : 0

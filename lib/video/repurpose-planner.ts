@@ -9,13 +9,20 @@
 //
 // Pure (no I/O) → unit-testable. The handler in manager-signals.ts calls commissionVideo.
 
+import { BROADCAST_PLATFORMS } from "@/lib/campaigns/channels"
+
 /** The vertical social channels we cut platform shorts for (Director's isVerticalSocial set). */
 export const SHORT_CHANNELS = ["tiktok", "instagram"] as const
 export type ShortChannel = (typeof SHORT_CHANNELS)[number]
 
-/** Public social channels — a video that targets one of these is a BROADCAST asset (repurposable);
- *  a video that only targets email/portal is a 1:1 piece and is never turned into public shorts. */
-const BROADCAST_CHANNELS = new Set(["tiktok", "instagram", "youtube", "facebook"])
+/** Public social platforms — a video that targets one of these is a BROADCAST asset (repurposable);
+ *  a video that only targets email/portal is a 1:1 piece and is never turned into public shorts.
+ *  TOMBSTONE (lane 82C, CLAUDE.md §1.1): this file used to keep a PRIVATE
+ *  `BROADCAST_CHANNELS` Set of the four platform names — a second spelling, under the same
+ *  name, of the campaign vocabulary's broadcast set. Merged onto the survivor
+ *  lib/campaigns/channels.ts:145 BROADCAST_PLATFORMS (derived from BROADCAST_CHANNELS'
+ *  `platforms`); the private copy is deleted. */
+const BROADCAST_PLATFORM_SET: ReadonlySet<string> = new Set(BROADCAST_PLATFORMS)
 
 export interface RepurposeSource {
   /** ai_video_projects.video_metadata.director_key — carries the recursion marker. */
@@ -35,7 +42,7 @@ export interface RepurposeSource {
 export function isRepurposableVideo(v: RepurposeSource): boolean {
   if (!v.directorKey || v.directorKey.includes(":repurpose:")) return false
   if (v.audience === "lead") return false
-  return (v.targetChannels ?? []).some((c) => BROADCAST_CHANNELS.has(String(c).toLowerCase()))
+  return (v.targetChannels ?? []).some((c) => BROADCAST_PLATFORM_SET.has(String(c).toLowerCase()))
 }
 
 /**

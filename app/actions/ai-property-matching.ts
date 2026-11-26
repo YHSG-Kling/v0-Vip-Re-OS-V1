@@ -1,14 +1,18 @@
 "use server"
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
-import { generateObject } from "@/lib/ai/generate"
+import { bookedGenerateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { revalidatePath } from "next/cache"
+
+// Wave 98 (98C): every model call in this file is BOOKED to the SESSION tenant (lib/ai/generate.ts::bookedGenerateObject).
+const generateObject = bookedGenerateObject("ai_property_matching")
 
 /**
  * AI Property Matching System
@@ -100,6 +104,22 @@ export async function generatePropertyMatches(params: {
       .eq("contact_id", params.contactId)
       .eq("brokerage_id", ctx.brokerageId)
 
+    // WAVE 155 (155R17, G14): THE BUYER'S OWN VOTES — the reader property_feedback was written for. learnFromBuyerFeedback
+    // (agent side, below) and submitPropertyFeedback (the portal's rating dialog, app/actions/portal-lifetime.ts) both write
+    // here "so a rating teaches the match engine", and the match engine never read it. A refused read is logged and matching
+    // proceeds on the other signals (§3 — never a silent empty).
+    const { data: feedbackRows, error: feedbackReadError } = await supabase
+      .from("property_feedback")
+      .select("listing_id, feedback_type, disliked_features")
+      .eq("contact_id", params.contactId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .order("created_at", { ascending: false })
+      .limit(50)
+    if (feedbackReadError) console.error("[ai-property-matching] generatePropertyMatches: feedback read refused:", feedbackReadError.message)
+    const feedbackLines = (feedbackRows ?? [])
+      .filter((f: { listing_id?: string | null; feedback_type?: string | null }) => f.listing_id && f.feedback_type)
+      .map((f: { listing_id?: string | null; feedback_type?: string | null; disliked_features?: string[] | null }) => `- ${f.feedback_type}: listing ${f.listing_id}${f.disliked_features?.length ? ` (disliked: ${f.disliked_features.join(", ")})` : ""}`)
+
     // Get available listings matching basic criteria
     let listingsQuery = supabase
       .from("listings")
@@ -154,6 +174,9 @@ VIEWING BEHAVIOR:
 - Most viewed property types: ${analyzeViewingPatterns(viewHistory)}
 - Saved properties: ${savedProperties?.length || 0}
 
+BUYER'S OWN PROPERTY VOTES (${feedbackLines.length}):
+${feedbackLines.length ? feedbackLines.join("\n") : "- none recorded"}
+
 AVAILABLE PROPERTIES (${listings.length} total):
 ${listings.slice(0, 20).map(l => `
 - ID: ${l.id}
@@ -182,9 +205,9 @@ Score each property 0-100 based on how well it matches the buyer's explicit pref
       generated_at: new Date().toISOString(),
     }))
 
-    await supabase.from("property_matches").upsert(matchInserts, {
+    await sentinelWrite(supabase, supabase.from("property_matches").upsert(matchInserts, {
       onConflict: "contact_id,property_id",
-    })
+    }), { table: "property_matches", flow: "property_matches_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
     revalidatePath(`/portal/${params.contactId}/matches`)
 
@@ -210,6 +233,8 @@ export async function analyzePropertyForBuyer(params: {
   if (!ctx.isAuthenticated || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "property_match.analysis.generate", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId ?? null }, subject: { type: "contact", id: params.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { listing_id: params.propertyId } }, async () => {
 
   if (!isValidUUID(params.contactId) || !isValidUUID(params.propertyId)) {
     return { success: false, error: "Invalid IDs" }
@@ -248,6 +273,9 @@ export async function analyzePropertyForBuyer(params: {
     const preferredFeatures = criteria?.mustHaveFeatures ?? []
 
     const { text: analysis } = await generateText({
+      brokerageId: ctx.brokerageId,
+      userId: ctx.userId,
+      agentId: ctx.agentId,
       model: resolveModel("openai/gpt-4o"),
       prompt: `Analyze this property for the buyer and provide a comprehensive assessment:
 
@@ -274,6 +302,7 @@ Provide:
   } catch (error) {
     return handleError(error, "analyzePropertyForBuyer")
   }
+  })
 }
 
 // Smart notification for new matches
@@ -323,12 +352,15 @@ export async function notifyNewMatches(params: {
 
     // Generate personalized notification
     const { text: notification } = await generateText({
+      brokerageId: ctx.brokerageId,
+      userId: ctx.userId,
+      agentId: ctx.agentId,
       model: resolveModel("openai/gpt-4o-mini"),
       prompt: `Generate a brief, exciting notification message for a buyer about ${newMatches.length} new property matches with scores of ${threshold}%+. Keep it under 160 characters for SMS. Be warm and professional.`,
     })
 
     // Log the notification
-    await supabase.from("notifications").insert({
+    await sentinelWrite(supabase, supabase.from("notifications").insert({
       contact_id: params.contactId,
       user_id: ctx.userId, // notifications targets users.id (no agent_id column)
       brokerage_id: ctx.brokerageId,
@@ -337,7 +369,7 @@ export async function notifyNewMatches(params: {
       body: notification,
       entity_type: "contact",
       entity_id: params.contactId,
-    })
+    }), { table: "notifications", flow: "ai_property_matching_notify", brokerageId: ctx.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
 
     // Wave 59 — buyer property-match reel AUTO-handoff (deliverable-gated): produce a
     // personalized "homes matching your search" video into the render queue. Best-effort
@@ -374,6 +406,8 @@ export async function learnFromBuyerFeedback(params: {
   if (!ctx.isAuthenticated || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "property_match.feedback.record", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId ?? null }, subject: { type: "contact", id: params.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { listing_id: params.propertyId } }, async () => {
 
   if (!isValidUUID(params.contactId) || !isValidUUID(params.propertyId)) {
     return { success: false, error: "Invalid IDs" }
@@ -397,14 +431,31 @@ export async function learnFromBuyerFeedback(params: {
 
     // Save feedback
     // property_feedback real columns: feedback_type (not feedback), disliked_features (not reasons)
-    await supabase.from("property_feedback").insert({
+    //
+    // listing_id is stamped with params.propertyId because the guard above just
+    // PROVED it against listings (same brokerage) — this id IS a listings.id.
+    // Stamping it is what makes the `listings(*)` embed in the preference read
+    // below resolve: unstamped, every row rendered "- loved: undefined" into the
+    // learning prompt and the brain never got the house with the vote.
+    // property_id stays in place: a "property_id" that points at listings is not
+    // a property id (m542 precedent), and with listing_id stamped the column now
+    // has ZERO readers — dropping it is a migration decision, recorded here as a
+    // future-drop candidate rather than taken in application code.
+    // §3: supabase-js RESOLVES refusals — a swallowed insert error would report
+    // feedbackSaved: true for a vote that was never recorded.
+    const { error: feedbackError } = await supabase.from("property_feedback").insert({
       contact_id: params.contactId,
       property_id: params.propertyId,
+      listing_id: params.propertyId,
       brokerage_id: ctx.brokerageId,
       feedback_type: params.feedback,
       disliked_features: params.reasons,
       created_at: new Date().toISOString(),
     })
+    if (feedbackError) {
+      console.error("[ai-property-matching] learnFromBuyerFeedback: insert refused:", feedbackError.message)
+      return { success: false, error: "Failed to save feedback" }
+    }
 
     // Update preferences based on feedback patterns
     const { data: allFeedback } = await supabase
@@ -443,4 +494,5 @@ Analyze patterns in what they love vs hate and suggest specific preference field
   } catch (error) {
     return handleError(error, "learnFromBuyerFeedback")
   }
+  })
 }

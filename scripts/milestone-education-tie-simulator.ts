@@ -21,8 +21,8 @@
  *   5. the EDUCATION TIE is real: a representative client-facing milestone resolves
  *      to an id that carries a lesson, an explanation, a responsible party, AND a
  *      label — i.e. the portal can actually teach the contact at that step.
- *   6. CHANNEL-BY-AGE: getEducationDelivery picks the right primary format per age
- *      segment (18-30 video, 30-50/50-65 guide, 65+ checklist).
+ *   6. DELIVERY BY STATED PREFERENCE (wave 145, owner ruling 18 — supersedes the wave-15
+ *      "channel by age" matrix): one default for everyone; what the person STATED adapts it.
  */
 
 // The education maps live in resolve-education-context, which transitively imports
@@ -125,12 +125,21 @@ async function main(): Promise<void> {
     check(`lesson anchor "${lessonAnchor}" is reachable from a real milestone name`, reachable.has(lessonAnchor))
   }
 
-  console.log("\n[6 · CHANNEL-BY-AGE — delivery format follows the age segment]")
-  check("18-30 → video (autoplay short-form)", getEducationDelivery({ ageSegment: "18-30" }).primaryFormat === "video")
-  check("30-50 → guide", getEducationDelivery({ ageSegment: "30-50" }).primaryFormat === "guide")
-  check("50-65 → guide (detailed reading level)",
-    getEducationDelivery({ ageSegment: "50-65" }).primaryFormat === "guide" && getEducationDelivery({ ageSegment: "50-65" }).readingLevel === "detailed")
-  check("65+ → checklist", getEducationDelivery({ ageSegment: "65+" }).primaryFormat === "checklist")
+  // WAVE 145 (lane 145H, owner ruling 18 — 2026-10-27): RE-ASSERTED AS THE RULE. This section pinned the wave-15
+  // band→format matrix (18-30 video + auto-play, 65+ checklist + "simplified"). Ruling 18 makes delivery what the
+  // PERSON stated, never inferred from age; DELIVERY_MATRIX is tombstoned in lib/kernel/education.ts.
+  console.log("\n[6 · DELIVERY FOLLOWS WHAT THE PERSON STATED — one default, no age (wave 145, ruling 18)]")
+  const dflt = getEducationDelivery({})
+  check("nothing stated → ONE default for everyone: a written guide, standard reading, no auto-play",
+    dflt.primaryFormat === "guide" && dflt.readingLevel === "standard" && dflt.autoPlay === false && dflt.statedByPerson === false)
+  check("a person who asks for VIDEO with captions gets video first, captions on — and still no auto-play",
+    (() => { const d = getEducationDelivery({ accessibility: { communication_format: "video", captions: true } }); return d.primaryFormat === "video" && d.captions && !d.autoPlay })())
+  check("a screen-reader portal → a written guide first, with a transcript",
+    (() => { const d = getEducationDelivery({ accessibility: { portal_modality: "screen_reader" } }); return d.primaryFormat === "guide" && d.transcript })())
+  check("a stated text size rides on the delivery (large)",
+    getEducationDelivery({ accessibility: { text_size: "large" } }).textSize === "large")
+  check("POSITIVE CONTROL — a stated preference actually changes the delivery (else every check above could pass on a constant)",
+    getEducationDelivery({ accessibility: { communication_format: "video" } }).primaryFormat !== dflt.primaryFormat)
 
   console.log("\n[7 · WORDING-BY-PERSONA — cohort framing leads each milestone explanation]")
   // Age → cohort → a distinct lead-in, so the SAME facts are framed per generation.
@@ -154,7 +163,7 @@ async function main(): Promise<void> {
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
   console.log(` RESULT: ${pass} passed, ${fail} failed`)
   if (fail > 0) { console.log(" ❌ MILESTONE_EDUCATION_TIE_FAIL"); process.exit(1) }
-  console.log(" ✅ MILESTONE_EDUCATION_TIE_PASS — every contact-facing milestone resolves to education, channel by age")
+  console.log(" ✅ MILESTONE_EDUCATION_TIE_PASS — every contact-facing milestone resolves to education, delivered as the person stated (never by age)")
 }
 
 main().catch((e) => { console.error(e); process.exit(1) })

@@ -24,7 +24,7 @@ export function BrokerBreakEvenCard({ avgBreakEvenMonth, breakEvenMonths, trend 
   const statusStyles = {
     excellent: {
       badge: "outline" as const,
-      text: "text-green-600",
+      text: "text-green-700",
       bg: "bg-green-500/10",
       label: "Excellent",
     },
@@ -36,7 +36,7 @@ export function BrokerBreakEvenCard({ avgBreakEvenMonth, breakEvenMonths, trend 
     },
     acceptable: {
       badge: "secondary" as const,
-      text: "text-yellow-600",
+      text: "text-yellow-700",
       bg: "bg-yellow-500/10",
       label: "Acceptable",
     },
@@ -50,7 +50,7 @@ export function BrokerBreakEvenCard({ avgBreakEvenMonth, breakEvenMonths, trend 
 
   const styles = statusStyles[status]
   const TrendIcon = trend === "improving" ? TrendingUp : trend === "worsening" ? TrendingDown : Clock
-  const trendColor = trend === "improving" ? "text-green-600" : trend === "worsening" ? "text-red-600" : "text-muted-foreground"
+  const trendColor = trend === "improving" ? "text-green-700" : trend === "worsening" ? "text-red-600" : "text-muted-foreground"
 
   // Distribution of break-even times
   const distribution = {
@@ -93,7 +93,7 @@ export function BrokerBreakEvenCard({ avgBreakEvenMonth, breakEvenMonths, trend 
             <div className="text-right text-xs space-y-1">
               <div className="flex items-center justify-end gap-2">
                 <span className="text-muted-foreground">Fast ({"<"}6mo)</span>
-                <span className="font-medium text-green-600">{distribution.fast}</span>
+                <span className="font-medium text-green-700">{distribution.fast}</span>
               </div>
               <div className="flex items-center justify-end gap-2">
                 <span className="text-muted-foreground">Moderate</span>
@@ -101,7 +101,7 @@ export function BrokerBreakEvenCard({ avgBreakEvenMonth, breakEvenMonths, trend 
               </div>
               <div className="flex items-center justify-end gap-2">
                 <span className="text-muted-foreground">Slow ({">"}12mo)</span>
-                <span className="font-medium text-orange-600">{distribution.slow}</span>
+                <span className="font-medium text-orange-700">{distribution.slow}</span>
               </div>
             </div>
           )}

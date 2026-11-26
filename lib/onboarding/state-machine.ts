@@ -18,6 +18,7 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export type OnboardingStatus = "pending" | "in_progress" | "completed" | "abandoned"
 
@@ -46,29 +47,58 @@ export async function advanceBrokerageOnboarding(
  *
  * Idempotent — safe to call on every login. No-ops once status is past
  * pending or the user has no matching invitation.
+ *
+ * LOGIN IS A JOURNEY STEP WITH A POST-CONDITION (wave 148, lane 148A — the subscriber journey's "login →
+ * immediate error reporting"). Before this, the invitation READ dropped its error (a refused read was "no
+ * invitation"), the accept UPDATE only logged a refusal and still returned accepted: true, an update that
+ * matched no row (the invitation flipped or vanished between read and write) read as success, and the
+ * callback (app/auth/callback/route.ts) wrapped it all in an empty catch. So a member who signed in never
+ * left `pending`, the brokerage's onboarding never advanced, and nobody was told. Now every refusal is READ,
+ * the update is COUNTED, and a failed post-condition is reported IMMEDIATELY through the one reporter
+ * (lib/kernel/immediate-operations.ts reportOperationOutcome, operation `invitation`) — evidence row + the
+ * owning manager's open signal — and returned as `accepted: false` with the reason. Sign-in itself is never
+ * blocked by it (the session already exists); the failure is visible, not swallowed.
+ * `client` is the proof seam (scripts/subscriber-provisioning-guard.ts); production uses the service client.
  */
 export async function acceptUserInvitationOnFirstLogin(params: {
   userId:       string
   email:        string
   brokerageId:  string | null
-}): Promise<{ accepted: boolean; advanced?: OnboardingStatus }> {
+  client?:      ReturnType<typeof createServiceClient>
+}): Promise<{ accepted: boolean; advanced?: OnboardingStatus; error?: string }> {
   if (!params.brokerageId) return { accepted: false }
+  const brokerageId = params.brokerageId
 
-  const svc = createServiceClient()
+  const svc = params.client ?? createServiceClient()
+  const email = params.email.toLowerCase()
+  const reportFailure = async (error: string, evidence: Record<string, unknown>) => {
+    try {
+      const { reportOperationOutcome } = await import("@/lib/kernel/immediate-operations")
+      await reportOperationOutcome(svc, {
+        operation: "invitation", brokerageId, ok: false, subjectType: "user", subjectId: params.userId,
+        actorUserId: params.userId, source: "ui", evidence: { stage: "first_login_acceptance", email, ...evidence }, error,
+        tenantFacing: "a team member signed in but their invitation could not be marked accepted — the OS is re-checking it",
+      })
+    } catch (err) {
+      console.error("[onboarding/state-machine] invitation acceptance failure NOT reported:", (err as Error)?.message)
+    }
+    return { accepted: false, error }
+  }
 
   // Find pending invitation matching this user's email + brokerage
-  const { data: invite } = await svc
+  const { data: invite, error: inviteReadErr } = await svc
     .from("user_invitations")
     .select("id, user_type, status")
-    .eq("brokerage_id", params.brokerageId)
-    .eq("email", params.email.toLowerCase())
+    .eq("brokerage_id", brokerageId)
+    .eq("email", email)
     .eq("status", "pending")
     .maybeSingle()
+  if (inviteReadErr) return reportFailure(`invitation read refused: ${inviteReadErr.message}`, { read: "user_invitations" })
 
   if (!invite) return { accepted: false }
 
-  // Mark accepted
-  await svc
+  // Mark accepted — COUNTED: an update that matches nothing resolves too (CLAUDE.md §3).
+  const { data: acceptedRows, error: inviteAcceptErr } = await svc
     .from("user_invitations")
     .update({
       status:           "accepted",
@@ -76,13 +106,18 @@ export async function acceptUserInvitationOnFirstLogin(params: {
       accepted_at:      new Date().toISOString(),
     })
     .eq("id", invite.id)
+    .eq("status", "pending")
+    .select("id")
+  if (inviteAcceptErr) return reportFailure(`invitation NOT marked accepted: ${inviteAcceptErr.message}`, { invitation_id: invite.id })
+  if ((acceptedRows ?? []).length !== 1) return reportFailure(`invitation NOT marked accepted: the update matched ${(acceptedRows ?? []).length} rows`, { invitation_id: invite.id, matched: (acceptedRows ?? []).length })
 
   // If this is a NON-ADMIN role accepting, the brokerage has moved beyond
   // the initial setup phase — advance to in_progress (idempotent).
   // Admin-only acceptances don't advance, since brokerage admins ARE
   // the onboarding driver.
-  if (!["admin", "broker", "broker_admin", "superadmin"].includes(invite.user_type)) {
-    const r = await advanceBrokerageOnboarding(params.brokerageId, "in_progress")
+  if (!isAdminOrBroker({ user_type: invite.user_type })) {
+    const r = await advanceBrokerageOnboarding(brokerageId, "in_progress")
+    if (!r.ok) console.warn(`[onboarding/state-machine] onboarding not advanced for ${brokerageId}: ${r.error}`)
     return { accepted: true, advanced: r.status }
   }
 

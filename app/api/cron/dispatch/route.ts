@@ -26,6 +26,8 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       ok: true, registered: CRON_REGISTRY.length,
       due: r.due, dispatched: r.dispatched, failures: r.failures.slice(0, 20),
+      // 149Z: invoked but not waited for (the dispatcher's 55 s budget passed) — outcome is the route's own log.
+      stillRunning: (r.stillRunning ?? []).slice(0, 20),
     })
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message ?? String(e) }, { status: 500 })

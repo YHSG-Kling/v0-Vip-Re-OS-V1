@@ -1,17 +1,15 @@
 "use server"
 
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
 import { revalidatePath } from "next/cache"
 import { requireLenderVendorActor, PortalAuthError } from "@/lib/kernel/portal-auth"
-
-const LENDER_VISIBLE_MILESTONES = [
-  "appraisal_ordered",
-  "appraisal_completed",
-  "loan_approved",
-  "clear_to_close",
-  "clear_to_close_received",
-] as const
+// TOMBSTONE: the module-private copy of this list is gone. SURVIVOR:
+// lib/lenders/visible-milestones.ts:25 — the same five names, now shared with the
+// lender portal's display so the entitlement and the query cannot drift (§6).
+import { LENDER_VISIBLE_MILESTONES } from "@/lib/lenders/visible-milestones"
 
 // ─── GET LENDER TRANSACTION DETAIL ───────────────────────────────────────────
 export async function getLenderTransactionDetail(transactionId: string, _lenderId?: string) {
@@ -36,6 +34,13 @@ export async function getLenderTransactionDetail(transactionId: string, _lenderI
     .eq("transaction_id", transactionId)
     .maybeSingle()
 
+  // `agents` has NO first_name / last_name / email / phone (verified against
+  // information_schema) — those live on `users`, reached through
+  // agents_user_id_fkey, the ONLY FK from agents to users, so the embed is an
+  // OBJECT. Naming them here made PostgREST reject the ENTIRE select, so
+  // getLenderTransactionDetail always threw "Transaction not found" and the
+  // whole lender portal page was dead, not just the agent card.
+  // `contacts` genuinely HAS first_name/last_name/email/phone — left as is.
   const { data: transaction, error: txnError } = await supabase
     .from("transactions")
     .select(`
@@ -49,7 +54,10 @@ export async function getLenderTransactionDetail(transactionId: string, _lenderI
       buyer_contact_id,
       agent_id,
       contacts:buyer_contact_id(id, first_name, last_name, email, phone),
-      agents:agent_id(id, first_name, last_name, email, phone)
+      agents:agent_id(
+        id, phone_mobile, phone_office,
+        users:user_id(first_name, last_name, email, phone)
+      )
     `)
     .eq("id", transactionId)
     .single()
@@ -77,11 +85,31 @@ export async function getLenderTransactionDetail(transactionId: string, _lenderI
     daysUntilClose = Math.ceil((closeDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
   }
 
+  // Flattened to the shape the page already renders
+  // (app/portal/lender/[transactionId]/page.tsx:345-359 reads
+  // transaction.agents.first_name / last_name / email / phone), so no consumer
+  // changes — but the values are now real. Phone prefers the agent's own
+  // client-facing numbers; users.phone is the fallback.
+  const a = (transaction as any).agents as Record<string, any> | null
+  const u = (a?.users ?? null) as Record<string, any> | null
+  const transactionWithAgent = {
+    ...(transaction as any),
+    agents: a
+      ? {
+          id: a.id,
+          first_name: u?.first_name ?? null,
+          last_name: u?.last_name ?? null,
+          email: u?.email ?? null,
+          phone: a.phone_mobile ?? a.phone_office ?? u?.phone ?? null,
+        }
+      : null,
+  }
+
   return {
-    transaction,
+    transaction: transactionWithAgent,
     lenderAssignment,
     milestones: milestones || [],
-    documents: documents || [],
+    documents: (documents || []).map((d: any) => ({ ...d, file_url: documentOpenHref(d.file_url) })), // wave 154 (154M): file_url aliases a stored docref:// reference
     daysUntilClose,
   }
 }
@@ -105,6 +133,9 @@ export async function uploadLenderDocument(data: {
     throw err
   }
 
+  // WAVE 155 (155R17): the receipt — the gate's SESSION user (the assigned lender vendor) and the tenant it resolved.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const recorded = await ledgerSessionAction({ brokerageId: actor.brokerageId, action: "transaction.lender_document.upload", actor: { type: "user", userId: actor.userId }, subject: { type: "transaction", id: data.transactionId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { doc_type: data.documentType, vendor_id: actor.vendorId } }, async () => {
   const supabase = await createClient()
 
   const { data: document, error } = await supabase
@@ -125,6 +156,11 @@ export async function uploadLenderDocument(data: {
 
   revalidatePath(`/portal/lender/${data.transactionId}`)
   return document
+  })
+  // A refused write throws (settled failed, rethrown by the helper) exactly as before; a typed refusal never reaches here
+  // without a key, but if it does it is thrown, never handed back as a document.
+  if (recorded && typeof recorded === "object" && "success" in recorded && (recorded as { success?: unknown }).success === false) throw new Error((recorded as { error?: string }).error ?? "Upload not recorded")
+  return recorded
 }
 
 // ─── ISSUE CLEAR TO CLOSE ────────────────────────────────────────────────────
@@ -146,14 +182,14 @@ export async function issueClearToClose(data: {
 
   const supabase = await createClient()
 
-  const { data: transaction } = await supabase
+  const { data: transaction, error: transactionError } = await supabase
     .from("transactions")
     .select("id, property_address, buyer_contact_id, agent_id, brokerage_id")
     .eq("id", data.transactionId)
     .eq("brokerage_id", actor.brokerageId)
     .single()
 
-  if (!transaction) throw new Error("Transaction not found")
+  if (transactionError || !transaction) throw new Error("Transaction not found")
 
   const { error: milestoneError } = await supabase
     .from("transaction_milestones")
@@ -170,7 +206,7 @@ export async function issueClearToClose(data: {
     .or("milestone_type.eq.clear_to_close_received,milestone_name.eq.clear_to_close_received,milestone_name.eq.clear_to_close")
 
   if (milestoneError) {
-    await supabase.from("transaction_milestones").insert({
+    const { error: ctcMilestoneInsErr } = await supabase.from("transaction_milestones").insert({
       transaction_id: data.transactionId,
       brokerage_id: actor.brokerageId,
       milestone_name: "clear_to_close_received",
@@ -178,24 +214,57 @@ export async function issueClearToClose(data: {
       status: "completed",
       completed_at: new Date().toISOString(),
     })
+    if (ctcMilestoneInsErr) console.error(`[lender-portal] clear-to-close milestone could not be created: ${ctcMilestoneInsErr.message}`)
   }
 
   // Update transaction_lenders by transaction_id — scoped by brokerage
-  await supabase
+  const { error: ctcLenderErr } = await supabase
     .from("transaction_lenders")
     .update({ underwriting_status: "approved", clear_to_close_date: new Date().toISOString().split("T")[0] })
     .eq("transaction_id", data.transactionId)
     .eq("brokerage_id", actor.brokerageId)
+  if (ctcLenderErr) return { success: false, error: `Could not record clear-to-close on the lender record: ${ctcLenderErr.message}` }
 
-  if (transaction.buyer_contact_id) {
-    await supabase.from("client_portal_messages").insert({
+  // Buyer-facing CTC message. Measured live (client_portal_messages,
+  // 2026-08-18): agent_id is NOT NULL (FK agents.id) and transaction_id exists
+  // and is nullable — the old insert set neither, so it was refused 23502 on
+  // every Clear to Close and the discarded result swallowed the refusal.
+  // transaction_id is stamped so the m482 vendor lane can later narrow from
+  // has_vendor_seat() to is_assigned_vendor_on_transaction(transaction_id).
+  // ONCE PER DEAL (wave 155, lane 155F2): a replayed Clear to Close (a second click, a retried request) re-stamps the records above
+  // but does not tell the buyer again. The prior message is read on the SERVICE client after the gate (the vendor seat's own RLS
+  // cannot see client threads, so a session read would always report "none"); a refused read sends (never silence on a real CTC).
+  let ctcMessageSent = false
+  let ctcAlreadyTold = false
+  if (transaction.buyer_contact_id && transaction.agent_id) {
+    const { data: priorCtc, error: priorCtcErr } = await createServiceClient().from("client_portal_messages").select("id")
+      .eq("brokerage_id", actor.brokerageId).eq("transaction_id", data.transactionId).eq("contact_id", transaction.buyer_contact_id)
+      .eq("metadata->>type", "clear_to_close").limit(1)
+    if (priorCtcErr) console.error("[lenderPortal:CTC] prior CTC message read refused — sending:", priorCtcErr.message)
+    ctcAlreadyTold = !priorCtcErr && (priorCtc ?? []).length > 0
+  }
+  if (ctcAlreadyTold) {
+    ctcMessageSent = true
+  } else if (transaction.buyer_contact_id && transaction.agent_id) {
+    const { error: ctcMessageError } = await supabase.from("client_portal_messages").insert({
       brokerage_id: actor.brokerageId,
       contact_id: transaction.buyer_contact_id,
+      agent_id: transaction.agent_id,
+      transaction_id: data.transactionId,
       direction: "agent_to_client",
       channel: "portal",
       body: `Great news! ${actor.lenderCompany || "Your lender"} has issued Clear to Close for ${transaction.property_address || "your property"}. You are one step closer to closing!`,
+      metadata: { type: "clear_to_close", vendor_id: actor.vendorId },
       created_at: new Date().toISOString(),
     })
+    if (ctcMessageError) {
+      console.error("[lenderPortal:CTC] buyer CTC message refused:", ctcMessageError.message)
+    } else ctcMessageSent = true
+  } else {
+    console.error(
+      `[lenderPortal:CTC] buyer CTC message NOT sent for transaction ${data.transactionId}: ` +
+      `${!transaction.buyer_contact_id ? "no buyer_contact_id" : "no agent_id"} on the transaction, and client_portal_messages requires both (NOT NULL)`,
+    )
   }
 
   try {
@@ -215,6 +284,46 @@ export async function issueClearToClose(data: {
     })
   } catch (err) {
     console.error("[lenderPortal:CTC] fan-out failed (non-blocking)", err)
+  }
+
+  // FINANCING_CLEAR_TO_CLOSE — declared in lib/kernel/events.ts with a live
+  // event-fanout.ts template ("You're clear to close!") but zero emitters anywhere
+  // (CLAUDE.md §1.2: BUILD the missing half). This IS the clear-to-close moment:
+  // the lender vendor issuing CTC, right after transaction_lenders.clear_to_close_date
+  // is stamped above. Separate from the generic MILESTONE_COMPLETED emit above (kept
+  // for its own consumers) so the specific, higher-signal event reaches its own
+  // fanout template and the portal's "financing.cleared" alias. Best-effort.
+  try {
+    const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+    await emitTransactionEvent({
+      event:        KernelEvent.FINANCING_CLEAR_TO_CLOSE,
+      brokerageId:  actor.brokerageId,
+      entityId:     data.transactionId,
+      actorUserId:  actor.userId,
+      metadata: {
+        issued_by_vendor_id: actor.vendorId,
+        lender_company:      actor.lenderCompany ?? null,
+        property_address:    transaction.property_address ?? null,
+      },
+    })
+  } catch (err) {
+    console.error("[lenderPortal:CTC] emitTransactionEvent(FINANCING_CLEAR_TO_CLOSE) failed (non-blocking)", err)
+  }
+
+  // THE CLIENT'S OPEN QUESTIONS (wave 155, lane 155F2 — owner R10, directive F1.7). The lender answered through ITS OWN seat
+  // (gated above by requireLenderVendorActor — a lender is a vendor category, never a user type), so every open portal question on
+  // this deal is re-evaluated from the record. The buyer's "am I clear to close?" closes ONCE on the Clear to Close message just
+  // sent (alreadyTold — the buyer is not told twice); a question the record still cannot answer stays open. Gate first, then the
+  // service client (the question tasks are the agent's rows). Non-blocking: the CTC itself already landed.
+  try {
+    const { reevaluateOpenQuestionsForDeal } = await import("@/lib/portal/question-answer-decision")
+    const r = await reevaluateOpenQuestionsForDeal(createServiceClient(), {
+      brokerageId: actor.brokerageId, transactionId: data.transactionId,
+      alreadyTold: ctcMessageSent && transaction.buyer_contact_id ? { fact: "lender_clearance", contactId: transaction.buyer_contact_id, evidence: "the lender's own Clear to Close message on the portal" } : null,
+    })
+    if (r.errors.length > 0) console.error("[lenderPortal:CTC] open client questions not fully re-evaluated:", r.errors.join("; "))
+  } catch (err) {
+    console.error("[lenderPortal:CTC] open client questions not re-evaluated (non-blocking):", err instanceof Error ? err.message : err)
   }
 
   revalidatePath(`/portal/lender/${data.transactionId}`)
@@ -238,27 +347,51 @@ export async function flagLenderIssue(data: {
   const supabase = await createClient()
   const { data: transaction } = await supabase
     .from("transactions")
-    .select("id, property_address, agent_id, brokerage_id")
+    .select("id, property_address, agent_id, buyer_contact_id, brokerage_id")
     .eq("id", data.transactionId)
     .eq("brokerage_id", actor.brokerageId) // scope to actor brokerage
     .maybeSingle()
 
   if (!transaction) return { success: false, error: "Transaction not found in your brokerage" }
 
-  const { error: messageError } = await supabase.from("client_portal_messages").insert({
-    contact_id: transaction.agent_id,
-    direction: "agent_to_client",
-    channel: "portal",
-    body: `[LENDER ISSUE] ${actor.lenderCompany ?? "Lender"} has flagged an issue for ${transaction.property_address ?? "transaction"}:\n\n${data.issueDescription}`,
-    metadata: {
-      type:           "lender_issue",
-      vendor_id:      actor.vendorId,
+  // SHAPE FIX, from the live schema (measured 2026-08-18, project
+  // hrvaqgvukzxfskkcrwbt): client_portal_messages carries contact_id (NOT NULL,
+  // FK contacts.id), agent_id (NOT NULL, FK agents.id), brokerage_id (NOT
+  // NULL), nullable transaction_id, and direction CHECK
+  // (agent_to_client | client_to_agent). There is NO users-keyed column. The
+  // old insert stuffed transactions.agent_id (an agents.id) into contact_id —
+  // an FK violation — and set neither agent_id nor brokerage_id (both NOT
+  // NULL), so every lender issue flag was refused. The message addresses the
+  // AGENT: agent_id = the transaction's agent (already an agents.id, the
+  // column's own FK class — no users.id resolution exists for this table),
+  // direction = client_to_agent (portal-side → agent, the same lane
+  // vendor/portal senders use), threaded on the transaction's buyer contact
+  // and stamped with transaction_id.
+  if (transaction.agent_id && transaction.buyer_contact_id) {
+    const { error: messageError } = await supabase.from("client_portal_messages").insert({
+      brokerage_id: actor.brokerageId,
+      contact_id: transaction.buyer_contact_id,
+      agent_id: transaction.agent_id,
       transaction_id: data.transactionId,
-    },
-    created_at: new Date().toISOString(),
-  })
+      direction: "client_to_agent",
+      channel: "portal",
+      body: `[LENDER ISSUE] ${actor.lenderCompany ?? "Lender"} has flagged an issue for ${transaction.property_address ?? "transaction"}:\n\n${data.issueDescription}`,
+      metadata: {
+        type:      "lender_issue",
+        vendor_id: actor.vendorId,
+      },
+      created_at: new Date().toISOString(),
+    })
 
-  if (messageError) return { success: false, error: messageError.message }
+    if (messageError) return { success: false, error: messageError.message }
+  } else {
+    // client_portal_messages cannot hold this row (both anchors are NOT NULL).
+    // Say so and still emit the kernel event below — the issue itself is not lost.
+    console.error(
+      `[flagLenderIssue] portal message NOT written for transaction ${data.transactionId}: ` +
+      `${!transaction.agent_id ? "no agent_id" : "no buyer_contact_id"} on the transaction; the JOURNEY_STAGE_UPDATED event still carries the issue`,
+    )
+  }
 
   try {
     const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
@@ -310,8 +443,50 @@ export async function updateLenderLoanStatus(data: {
       updated_at: new Date().toISOString(),
     })
     .eq("transaction_id", data.transactionId)
+    // The comment above always promised this predicate; the query never carried it (lane 155F2 — the tenant from the session).
+    .eq("brokerage_id", actor.brokerageId)
 
   if (error) return { success: false, error: error.message }
+
+  // THE CLIENT'S OPEN QUESTIONS (wave 155, lane 155F2): the lender answered through its own seat — open portal questions on this
+  // deal are re-evaluated from the record; one that now resolves (an approved / clear-to-close status) answers the client ONCE
+  // (the follow-up arbiter chooses how) and closes with evidence; a replay sends nothing. Non-blocking.
+  try {
+    const { reevaluateOpenQuestionsForDeal } = await import("@/lib/portal/question-answer-decision")
+    const r = await reevaluateOpenQuestionsForDeal(createServiceClient(), { brokerageId: actor.brokerageId, transactionId: data.transactionId })
+    if (r.errors.length > 0) console.error("[updateLenderLoanStatus] open client questions not fully re-evaluated:", r.errors.join("; "))
+  } catch (err) {
+    console.error("[updateLenderLoanStatus] open client questions not re-evaluated (non-blocking):", err instanceof Error ? err.message : err)
+  }
+
+  // THE ASK IS ANSWERED (lane 78D, blind spot 4). app/actions/lender-status-
+  // request.ts files the agent's request as `document_requests` rows (status
+  // 'pending'); a loan-status update from the portal is the lender answering
+  // the `underwriting_status` ask, and a clear-to-close status answers the
+  // `clear_to_close_eta` ask too. Marked 'submitted' (the live CHECK value —
+  // scripts/check-vocabularies.ts document_requests.status) on the SERVICE
+  // client AFTER the gate above (§4: gate first, then the service client),
+  // scoped to the actor's brokerage + this transaction. Counted: an update
+  // matching nothing resolves too (§3), and zero answered asks is the ordinary
+  // case, not a failure.
+  try {
+    const answered = data.newStatus === "clear_to_close"
+      ? ["underwriting_status", "clear_to_close_eta"]
+      : ["underwriting_status"]
+    const svc = createServiceClient()
+    const { data: closed, error: askErr } = await svc
+      .from("document_requests")
+      .update({ status: "submitted", fulfilled_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+      .eq("brokerage_id", actor.brokerageId)
+      .eq("transaction_id", data.transactionId)
+      .eq("status", "pending")
+      .in("document_type", answered)
+      .select("id")
+    if (askErr) console.error("[updateLenderLoanStatus] document_requests fulfilment REFUSED — the status landed but the agent's ask stays 'pending':", askErr.message)
+    else if ((closed ?? []).length > 0) console.log(`[updateLenderLoanStatus] ${(closed ?? []).length} outstanding ask(s) marked submitted for ${data.transactionId}`)
+  } catch (err) {
+    console.error("[updateLenderLoanStatus] document_requests fulfilment failed (non-blocking)", err)
+  }
 
   // Fan-out via the transaction kernel so the agent dashboard, buyer +
   // seller portals, and title portal all see the loan-status change.
@@ -335,5 +510,76 @@ export async function updateLenderLoanStatus(data: {
   }
 
   revalidatePath(`/portal/lender/${data.transactionId}`)
+  return { success: true }
+}
+
+// ─── SEND MESSAGE TO AGENT ───────────────────────────────────────────────────
+// Backs ExternalCommunicationPanel.onSendMessage on /lender/dashboard. Vendor
+// and title each already have a sendXMessageToAgent (vendor-portal.ts,
+// title-portal.ts); the lender lane had only flagLenderIssue and
+// issueClearToClose — both a specific, structured event, not a free-text
+// message box. This is the missing general lane, gated and shaped exactly
+// like flagLenderIssue's own client_portal_messages insert (contact_id =
+// the transaction's buyer contact, agent_id = the transaction's agent — the
+// column's own FK class, no users.id resolution exists for this table).
+//
+// Signature matches ExternalCommunicationPanel's onSendMessage exactly so it
+// can be passed as the prop directly — the panel supplies `transactionId` in
+// `context` from whatever the mount passed it as a panel prop.
+export async function sendLenderMessageToAgent(
+  body: string,
+  context: { partnerId: string; partnerType: string; transactionId?: string },
+): Promise<{ success: boolean; error?: string }> {
+  if (!context.transactionId) {
+    return { success: false, error: "No active transaction to message — open a specific deal to send a message." }
+  }
+  let actor
+  try {
+    actor = await requireLenderVendorActor(context.transactionId)
+  } catch (err) {
+    if (err instanceof PortalAuthError) return { success: false, error: err.message }
+    throw err
+  }
+
+  const supabase = await createClient()
+  const { data: transaction } = await supabase
+    .from("transactions")
+    .select("id, property_address, agent_id, buyer_contact_id, brokerage_id")
+    .eq("id", context.transactionId)
+    .eq("brokerage_id", actor.brokerageId)
+    .maybeSingle()
+
+  if (!transaction) return { success: false, error: "Transaction not found in your brokerage" }
+  if (!transaction.agent_id || !transaction.buyer_contact_id) {
+    return { success: false, error: "This transaction has no agent/buyer thread to message yet" }
+  }
+
+  const { error: messageError } = await supabase.from("client_portal_messages").insert({
+    brokerage_id: actor.brokerageId,
+    contact_id: transaction.buyer_contact_id,
+    agent_id: transaction.agent_id,
+    transaction_id: context.transactionId,
+    direction: "client_to_agent",
+    channel: "portal",
+    body: `[LENDER] ${actor.lenderCompany ?? "Lender"} re: ${transaction.property_address ?? "transaction"}:\n\n${body}`,
+    metadata: { type: "lender_message", vendor_id: actor.vendorId },
+    created_at: new Date().toISOString(),
+  })
+  if (messageError) return { success: false, error: messageError.message }
+
+  try {
+    const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+    await emitTransactionEvent({
+      event:       KernelEvent.MESSAGE_CREATED,
+      brokerageId: actor.brokerageId,
+      entityId:    context.transactionId,
+      actorUserId: actor.userId,
+      metadata: { actor_role: "lender", lender_company: actor.lenderCompany },
+    })
+  } catch (err) {
+    console.error("[sendLenderMessageToAgent] fan-out failed (non-blocking)", err)
+  }
+
+  revalidatePath(`/portal/lender/${context.transactionId}`)
   return { success: true }
 }

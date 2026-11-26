@@ -9,7 +9,13 @@
 // and carry market_id (the active-subscriber territory). The owning brokerage is
 // resolved from the market at promotion — brokerages never see raw prospects.
 
-import { createClient } from "@/lib/supabase/server"
+import "server-only"
+// SERVICE CLIENT (lane 88F, sessionless). This module built the COOKIE client
+// (`await createClient()` from @/lib/supabase/server), and its ONLY caller is the
+// lead-scraping cron — no session, so every read of the platform-owned
+// raw_recruit_prospects row ran as anon and every promotion write was refused.
+// The owning brokerage is resolved from the scraped market row, never a request.
+import { createServiceClient } from "@/lib/supabase/service"
 
 type RecruitProcessingStatus =
   | "pending"
@@ -17,6 +23,7 @@ type RecruitProcessingStatus =
   | "territory_mismatch"
   | "insufficient_identity"
   | "duplicate"
+  | "existing_member"
   | "unassigned_no_market"
   | "promoted"
   | "error"
@@ -43,17 +50,22 @@ interface RawRecruitPreview {
 }
 
 async function setStatus(
-  supabase: Awaited<ReturnType<typeof createClient>>,
+  supabase: ReturnType<typeof createServiceClient>,
   id: string,
   status: RecruitProcessingStatus,
-) {
-  await supabase
+): Promise<boolean> {
+  const { error } = await supabase
     .from("raw_recruit_prospects")
     .update({
       processing_status: status,
       ...(status === "promoted" || status === "error" ? { processed_at: new Date().toISOString() } : {}),
     })
     .eq("id", id)
+  if (error) {
+    console.error(`[recruit-processor] raw_recruit_prospects ${id} status '${status}' refused:`, error.message)
+    return false
+  }
+  return true
 }
 
 /**
@@ -65,9 +77,11 @@ export async function processRawRecruit(
   rawId: string,
   brokerageId?: string | null,
 ): Promise<RecruitPipelineResult> {
-  const supabase = await createClient()
+  const supabase = createServiceClient()
 
-  await setStatus(supabase, rawId, "processing")
+  if (!(await setStatus(supabase, rawId, "processing"))) {
+    return { success: false, action: "error", reason: "Could not claim the raw recruit prospect (status write refused)", stage: "claim" }
+  }
 
   const { data: raw, error: fetchError } = await supabase
     .from("raw_recruit_prospects")
@@ -120,7 +134,7 @@ export async function processRawRecruit(
     const fullName = [firstName, lastName].filter(Boolean).join(" ").trim()
     if (email && fullName) {
       try {
-        await supabase.from("platform_prospects").upsert({
+        const { error: prospectErr } = await supabase.from("platform_prospects").upsert({
           name: fullName,
           email,
           company: preview.currentBrokerage ?? null,
@@ -129,6 +143,7 @@ export async function processRawRecruit(
           interest_note: `Switch-intent signal scraped in an unclaimed territory${preview.licenseState ? ` (${preview.licenseState})` : ""} — no subscribing brokerage can work them; a direct solo-tier OS prospect.`,
           updated_at: new Date().toISOString(),
         }, { onConflict: "email" })
+        if (prospectErr) console.error("[recruit-processor] platform_prospects capture refused:", prospectErr.message)
       } catch { /* capture is additive — the recruit pipeline verdict stands */ }
     }
     await setStatus(supabase, rawId, "unassigned_no_market")
@@ -152,22 +167,27 @@ export async function processRawRecruit(
     }
   }
 
-  // ── Dedup against existing recruits in the owning brokerage ─────────────────
-  let dupQuery = supabase
-    .from("recruits")
-    .select("id")
-    .eq("brokerage_id", effectiveBrokerageId)
-  dupQuery = email
-    ? dupQuery.eq("email", email)
-    : dupQuery.ilike("first_name", firstName).ilike("last_name", lastName)
-  const { data: existing } = await dupQuery.limit(1).maybeSingle()
-
-  if (existing?.id) {
-    await supabase
+  // ── Intake gate + dedup (wave 156, lane 156K) — lib/recruiting/stale-recruit-policy.ts recruitIntakeVerdict ───────────────
+  // A suspended or current member of the owning brokerage is never filed as a prospect; a recruit who DECLINED is not re-opened;
+  // a person already in the pipeline links to their row. A refused read FAILS CLOSED (it used to read as "no duplicate").
+  const intake = await readRecruitIntake(supabase, { brokerageId: effectiveBrokerageId, email, firstName, lastName })
+  if (!intake.ok) {
+    await setStatus(supabase, rawId, "error")
+    return { success: false, action: "error", reason: intake.error, stage: "dedup" }
+  }
+  if (!intake.verdict.admit) {
+    const v = intake.verdict
+    if (!v.recruitId) {
+      await setStatus(supabase, rawId, "existing_member")
+      return { success: false, action: "skipped", reason: v.reason === "suspended_member" ? "A suspended member of this brokerage is never re-filed as a recruiting prospect" : "Already a member of this brokerage — not a recruit", stage: "member_gate" }
+    }
+    const { error: dupErr } = await supabase
       .from("raw_recruit_prospects")
-      .update({ recruit_id: existing.id, processing_status: "duplicate", processed_at: new Date().toISOString() })
+      .update({ recruit_id: v.recruitId, processing_status: "duplicate", processed_at: new Date().toISOString() })
       .eq("id", rawId)
-    return { success: true, action: "skipped", recruitId: existing.id, reason: "Duplicate of existing recruit", stage: "dedup" }
+    if (dupErr) console.error(`[recruit-processor] raw ${rawId} duplicate link refused:`, dupErr.message)
+    const what = v.reason === "declined_recruit" ? "Recruit previously DECLINED — not re-opened" : "Duplicate of existing recruit"
+    return { success: true, action: "skipped", recruitId: v.recruitId, reason: dupErr ? `${what} (link refused: ${dupErr.message})` : what, stage: "dedup" }
   }
 
   // ── Promote → recruits (brokerage-owned) ────────────────────────────────────
@@ -194,10 +214,40 @@ export async function processRawRecruit(
     return { success: false, action: "error", reason: `Failed to create recruit: ${createError?.message}`, stage: "promotion" }
   }
 
-  await supabase
+  const { error: promoteErr } = await supabase
     .from("raw_recruit_prospects")
     .update({ recruit_id: recruit.id, processing_status: "promoted", processed_at: new Date().toISOString() })
     .eq("id", rawId)
+  if (promoteErr) console.error(`[recruit-processor] raw ${rawId} → recruit ${recruit.id} link refused:`, promoteErr.message)
 
-  return { success: true, action: "created", recruitId: recruit.id, reason: "New recruit created", stage: "promotion" }
+  return { success: true, action: "created", recruitId: recruit.id, reason: promoteErr ? `New recruit created (raw link refused: ${promoteErr.message})` : "New recruit created", stage: "promotion" }
+}
+
+/**
+ * WAVE 156 (lane 156K) — the READS behind recruitIntakeVerdict (lib/recruiting/stale-recruit-policy.ts), shared by the two doors
+ * that file a prospect on their own: processRawRecruit above and the public recruiting page
+ * (app/recruiting/[brokerageSlug]/actions.ts submitRecruitInquiry). The client is HANDED in (both doors pass the service client
+ * after resolving the tenant themselves — the market row, or the page's own live slug); the tenant is a parameter only because
+ * those callers established it. Either read refused ⇒ { ok: false }: "could not tell" is never "admit".
+ */
+export async function readRecruitIntake(
+  db: { from: (table: string) => any },
+  p: { brokerageId: string; email: string | null; firstName: string; lastName: string },
+): Promise<{ ok: true; verdict: import("@/lib/recruiting/stale-recruit-policy").RecruitIntakeVerdict } | { ok: false; error: string }> {
+  const { recruitIntakeVerdict } = await import("@/lib/recruiting/stale-recruit-policy")
+  const email = (p.email ?? "").trim().toLowerCase() || null
+  // ILIKE with the wildcards escaped: case-insensitive equality (an address may carry "_").
+  const exact = (s: string) => s.replace(/[\\%_]/g, (c) => `\\${c}`)
+  let member: { brokerageId: string | null; status: string | null; userType: string | null } | null = null
+  if (email) {
+    const { data, error } = await db.from("users").select("id, brokerage_id, status, user_type").ilike("email", exact(email)).limit(1).maybeSingle()
+    if (error) return { ok: false, error: `Could not check whether this person is already a member (${error.message}); nothing was filed` }
+    const u = data as { brokerage_id?: string | null; status?: string | null; user_type?: string | null } | null
+    member = u ? { brokerageId: u.brokerage_id ?? null, status: u.status ?? null, userType: u.user_type ?? null } : null
+  }
+  let q = db.from("recruits").select("id, status").eq("brokerage_id", p.brokerageId)
+  q = email ? q.ilike("email", exact(email)) : q.ilike("first_name", exact(p.firstName)).ilike("last_name", exact(p.lastName))
+  const { data: rows, error: recErr } = await q.limit(20)
+  if (recErr) return { ok: false, error: `Could not check the recruiting pipeline for this person (${recErr.message}); nothing was filed` }
+  return { ok: true, verdict: recruitIntakeVerdict({ brokerageId: p.brokerageId, member, recruits: (rows ?? []) as Array<{ id: string; status: string | null }> }) }
 }

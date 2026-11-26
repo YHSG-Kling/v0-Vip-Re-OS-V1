@@ -6,17 +6,34 @@
 // processKernelEvent(COMPETITOR_CONTENT_ALERTED) when severity >= 'high'
 
 import { createClient } from "@/lib/supabase/server"
-import { canAccessFeature } from "@/lib/kernel/0.1-feature-access"
-import { resolveProvider } from "@/lib/kernel/providers"
+import { mayUseFeature } from "@/lib/billing/billing-access"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
-import { generateText } from "ai"
+// ROUTED, was raw (lane 99B) — see generateInsights below.
+import { generateTextRouted } from "@/lib/ai/models"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
+// PLATFORM VOCABULARIES live in ./ad-monitor-vocabulary — a plain module, NOT this
+// one. This file carries a top-level "use server" directive, and such a module may
+// export ONLY async functions; the two `readonly[]` constants that used to sit here
+// made Next.js fail page-data collection with
+//   A "use server" file can only export async functions, found object.
+// which fails the production build. The `export type` aliases were legal (types are
+// erased) but moved with them so the vocabulary has one home.
+//
+// Re-exporting them from here would reintroduce the same defect — a value export is
+// a value export however it is spelled — so consumers import from the vocabulary
+// module directly. Type-only import here: erased, and therefore safe.
+import type {
+  CompetitorAdPlatform,
+  CompetitorPostPlatform,
+} from "./ad-monitor-vocabulary"
+
 export interface IngestCompetitorAdParams {
-  brokerageId: string
-  sourcePlatform: "facebook" | "instagram" | "google" | "linkedin" | "tiktok"
+  /** Ignored — the tenant is resolved from the session by requireBrokerage(). */
+  brokerageId?: string
+  sourcePlatform: CompetitorAdPlatform
   competitorName: string
   adHeadline: string
   adCopy: string
@@ -26,8 +43,9 @@ export interface IngestCompetitorAdParams {
 }
 
 export interface IngestCompetitorPostParams {
-  brokerageId: string
-  sourcePlatform: "facebook" | "instagram" | "twitter" | "linkedin" | "tiktok"
+  /** Ignored — the tenant is resolved from the session by requireBrokerage(). */
+  brokerageId?: string
+  sourcePlatform: CompetitorPostPlatform
   competitorName: string
   postCaption: string
   mediaUrl?: string
@@ -93,25 +111,64 @@ export interface TrendAlert {
   created_at: string
 }
 
+/**
+ * Session gate for the ingest writers below.
+ *
+ * NOT EXPORTED. This module carries `"use server"`, so **every exported async
+ * function in it is a publicly reachable HTTP endpoint**, lib/ directory or not.
+ * Exporting a helper here would mint another one.
+ *
+ * The `canAccessFeature(params.brokerageId, …)` call the writers already had is
+ * an ENTITLEMENT check, not an authentication check — it answers "is this
+ * brokerage's plan allowed the competitor monitor", which any caller satisfies by
+ * naming a brokerage whose plan is. It never established who was asking.
+ */
+async function requireBrokerage(): Promise<
+  { ok: true; brokerageId: string; userId: string } | { ok: false; error: string }
+> {
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return { ok: false, error: "Not authenticated" }
+  if (!ctx.brokerageId) return { ok: false, error: "Brokerage not configured" }
+  return { ok: true, brokerageId: ctx.brokerageId, userId: ctx.userId }
+}
+
 // ─── INGEST COMPETITOR AD ─────────────────────────────────────────────────────
 
+/**
+ * GATED + SESSION-SCOPED (was neither). `brokerageId` came from the caller and
+ * nothing authenticated the request, so anyone could write arbitrary rows —
+ * `competitor_name`, `ad_headline`, `ad_copy`, and a free-form `raw_payload`
+ * jsonb — into any tenant's `competitor_ads` table.
+ *
+ * That is worse than ordinary tenant pollution, because `generateInsights` in
+ * this same file reads these rows back and feeds `ad_copy` into an LLM prompt.
+ * An unauthenticated writer into a table that is later prompted from is a
+ * **prompt-injection channel into another tenant's AI spend**, not just bad data.
+ */
 export async function ingestCompetitorAd(
   params: IngestCompetitorAdParams
 ): Promise<{ success: boolean; adId?: string; error?: string }> {
   try {
+    const gate = await requireBrokerage()
+    if (!gate.ok) return { success: false, error: gate.error }
+    const brokerageId = gate.brokerageId
+
     const supabase = await createClient()
 
-    // Kernel gate: canAccessFeature
-    const accessResult = await canAccessFeature(params.brokerageId, "competitor_monitor")
+    // Kernel gate: canAccessFeature (entitlement, on the RESOLVED brokerage)
+    const accessResult = await mayUseFeature(brokerageId, "competitor_monitor")
     if (!accessResult.allowed) {
       return { success: false, error: accessResult.reason || "Feature access denied" }
     }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: brokerageId, action: "marketing.competitor_ad.ingest", actor: { type: "user", userId: gate.userId }, subject: { type: "competitor_ad", id: null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { source_platform: params.sourcePlatform } }, async () => {
 
     // Upsert on (brokerage_id, source_platform, ad_headline) updating last_seen_at
     const { data: existing, error: checkError } = await supabase
       .from("competitor_ads")
       .select("id")
-      .eq("brokerage_id", params.brokerageId)
+      .eq("brokerage_id", brokerageId)
       .eq("source_platform", params.sourcePlatform)
       .eq("ad_headline", params.adHeadline)
       .maybeSingle()
@@ -144,7 +201,7 @@ export async function ingestCompetitorAd(
     const { data, error } = await supabase
       .from("competitor_ads")
       .insert({
-        brokerage_id: params.brokerageId,
+        brokerage_id: brokerageId,
         source_platform: params.sourcePlatform,
         competitor_name: params.competitorName,
         ad_headline: params.adHeadline,
@@ -163,6 +220,7 @@ export async function ingestCompetitorAd(
     }
 
     return { success: true, adId: data.id }
+    })
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "Unknown error" }
   }
@@ -170,22 +228,34 @@ export async function ingestCompetitorAd(
 
 // ─── INGEST COMPETITOR POST ───────────────────────────────────────────────────
 
+/**
+ * GATED + SESSION-SCOPED (was neither) — same defect and same fix as
+ * `ingestCompetitorAd` above. `post_caption` is the field `generateInsights`
+ * later prompts from, so the unauthenticated-writer-feeding-an-LLM concern
+ * applies here identically.
+ */
 export async function ingestCompetitorPost(
   params: IngestCompetitorPostParams
 ): Promise<{ success: boolean; postId?: string; error?: string }> {
   try {
+    const gate = await requireBrokerage()
+    if (!gate.ok) return { success: false, error: gate.error }
+    const brokerageId = gate.brokerageId
+
     const supabase = await createClient()
 
-    // Kernel gate: canAccessFeature
-    const accessResult = await canAccessFeature(params.brokerageId, "competitor_monitor")
+    // Kernel gate: canAccessFeature (entitlement, on the RESOLVED brokerage)
+    const accessResult = await mayUseFeature(brokerageId, "competitor_monitor")
     if (!accessResult.allowed) {
       return { success: false, error: accessResult.reason || "Feature access denied" }
     }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: brokerageId, action: "marketing.competitor_post.ingest", actor: { type: "user", userId: gate.userId }, subject: { type: "competitor_post", id: null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { source_platform: params.sourcePlatform } }, async () => {
 
     const { data, error } = await supabase
       .from("competitor_posts")
       .insert({
-        brokerage_id: params.brokerageId,
+        brokerage_id: brokerageId,
         source_platform: params.sourcePlatform,
         competitor_name: params.competitorName,
         post_caption: params.postCaption,
@@ -203,6 +273,7 @@ export async function ingestCompetitorPost(
     }
 
     return { success: true, postId: data.id }
+    })
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "Unknown error" }
   }
@@ -211,13 +282,23 @@ export async function ingestCompetitorPost(
 // ─── GENERATE INSIGHTS ────────────────────────────────────────────────────────
 
 export async function generateInsights(
-  brokerageId: string
+  /** Ignored (lane 99B) — the tenant is resolved from the SESSION by requireBrokerage(),
+   *  exactly like the two ingest writers. Kept so existing callers still type-check. */
+  _requestedBrokerageId?: string
 ): Promise<{ success: boolean; insights?: Insight[]; error?: string }> {
   try {
+    // SESSION-SCOPED (was body-supplied): this is a public "use server" endpoint that
+    // spends AI and writes rows; a caller-named brokerageId would bill and write into
+    // any tenant whose plan has the feature (CLAUDE.md §4). Fail closed without one.
+    const gate = await requireBrokerage()
+    if (!gate.ok) return { success: false, error: gate.error }
+    const brokerageId = gate.brokerageId
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: brokerageId, action: "marketing.ad_insight.generate", actor: { type: "user", userId: gate.userId }, subject: { type: "brokerage", id: brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
     const supabase = await createClient()
 
     // Kernel gate: canAccessFeature
-    const accessResult = await canAccessFeature(brokerageId, "competitor_monitor")
+    const accessResult = await mayUseFeature(brokerageId, "competitor_monitor")
     if (!accessResult.allowed) {
       return { success: false, error: accessResult.reason || "Feature access denied" }
     }
@@ -249,8 +330,15 @@ export async function generateInsights(
       return { success: true, insights: [] }
     }
 
-    // Step 2: Build Claude API prompt
-    const provider = await resolveProvider({ providerType: "ai", actorContext: { userId: "", brokerageId } })
+    // Step 2: Build the prompt.
+    //
+    // TOMBSTONE (lane 99B) — `resolveProvider({ providerType: "ai" })` stood here and its
+    // `providerKey` was handed to the raw SDK as the MODEL. `ai` is a SYSTEM-ONLY provider
+    // type (lib/kernel/providers.ts SYSTEM_ONLY_TYPES — no tenant override exists), so this
+    // was never "the brokerage's own AI provider": it resolved the platform VENDOR name
+    // ("anthropic"), not a model id, and no ai_tool_usage row was written. SURVIVOR: the
+    // routed lane below — lib/ai/models.ts `competitive_monitoring`, booked to the session
+    // tenant (platform-covered AI with per-tier overage, CLAUDE.md §5).
 
     const adsForPrompt = (recentAds || []).map((ad) => ({
       platform: ad.source_platform,
@@ -295,11 +383,12 @@ Be specific to real estate marketing. Identify patterns like:
 - Price anchoring strategies
 - Lead generation tactics`
 
-    const { text } = await generateText({
-      model: provider.providerKey,
+    const { text } = await generateTextRouted({
+      feature: "competitive_monitoring",
+      brokerageId,
       system: systemPrompt,
       prompt: userPrompt,
-      maxOutputTokens: 2000,
+      maxTokens: 2000,
     })
 
     // Parse the JSON response
@@ -432,6 +521,7 @@ Be specific to real estate marketing. Identify patterns like:
     }
 
     return { success: true, insights }
+    })
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "Unknown error" }
   }
@@ -443,21 +533,29 @@ export async function resolveAlert(
   alertId: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    const gate = await requireBrokerage()
+    if (!gate.ok) return { success: false, error: gate.error }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: gate.brokerageId, action: "marketing.trend_alert.resolve", actor: { type: "user", userId: gate.userId }, subject: { type: "trend_alert", id: alertId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
     const supabase = await createClient()
 
-    const { error } = await supabase
+    const { data: resolved, error } = await supabase
       .from("trend_alerts")
       .update({
         is_resolved: true,
         resolved_at: new Date().toISOString(),
       })
       .eq("id", alertId)
+      .eq("brokerage_id", gate.brokerageId)
+      .select("id")
 
     if (error) {
       return { success: false, error: error.message }
     }
+    if (!resolved || resolved.length === 0) return { success: false, error: "Alert not found in your brokerage" }
 
     return { success: true }
+    })
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "Unknown error" }
   }
@@ -471,7 +569,7 @@ export async function getCompetitorAds(
   try {
     const supabase = await createClient()
 
-    const accessResult = await canAccessFeature(brokerageId, "competitor_monitor")
+    const accessResult = await mayUseFeature(brokerageId, "competitor_monitor")
     if (!accessResult.allowed) {
       return { success: false, error: accessResult.reason || "Feature access denied" }
     }
@@ -500,7 +598,7 @@ export async function getCompetitorPosts(
   try {
     const supabase = await createClient()
 
-    const accessResult = await canAccessFeature(brokerageId, "competitor_monitor")
+    const accessResult = await mayUseFeature(brokerageId, "competitor_monitor")
     if (!accessResult.allowed) {
       return { success: false, error: accessResult.reason || "Feature access denied" }
     }
@@ -529,7 +627,7 @@ export async function getAdInsights(
   try {
     const supabase = await createClient()
 
-    const accessResult = await canAccessFeature(brokerageId, "competitor_monitor")
+    const accessResult = await mayUseFeature(brokerageId, "competitor_monitor")
     if (!accessResult.allowed) {
       return { success: false, error: accessResult.reason || "Feature access denied" }
     }
@@ -558,7 +656,7 @@ export async function getTrendAlerts(
   try {
     const supabase = await createClient()
 
-    const accessResult = await canAccessFeature(brokerageId, "competitor_monitor")
+    const accessResult = await mayUseFeature(brokerageId, "competitor_monitor")
     if (!accessResult.allowed) {
       return { success: false, error: accessResult.reason || "Feature access denied" }
     }

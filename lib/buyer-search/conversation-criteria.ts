@@ -29,6 +29,7 @@
  */
 
 import { parseNaturalLanguageQuery } from "./intent-parser"
+import type { LotMinimum } from "./explanation-evidence"
 
 // ─── Criteria shape ──────────────────────────────────────────────────────────
 
@@ -40,6 +41,15 @@ export interface ConversationCriteria {
   minBaths?: number
   propertyTypes?: string[]
   cities?: string[]
+  /** Two-letter state the buyer named (wave 91) — RentCast cannot search a
+   *  city without one. property_alerts has no state column; the sweep resolves
+   *  one from the brokerage (alert-engine.ts resolveAlertSearchState). */
+  state?: string
+  /** Five-digit ZIPs the buyer named (wave 91) → property_alerts.zip_codes. */
+  zipCodes?: string[]
+  /** 'rent' when the buyer's words say renting (wave 91) →
+   *  property_alerts.listing_type (m657, PROPERTY_ALERT_LISTING_TYPES). */
+  listingType?: "sale" | "rent"
   /** Concrete feature words (pool, garage, …) → must_have_features. */
   features?: string[]
   /** BUYER-STATED school-district / school-zone phrases ("Mocksley school
@@ -121,8 +131,16 @@ export function detectSupplementalCity(sentence: string): string | null {
   const m = sentence.match(/\b(?:in|near|around)\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)/)
   if (!m) return null
   const candidate = m[1].trim()
-  const words = candidate.split(/\s+/)
-  if (words.some((w) => NOT_A_CITY.has(w.toLowerCase()))) return null
+  // Wave 147C: the place name ENDS at the first stopword instead of the whole candidate being
+  // rejected — "in Frisco TX" used to lose Frisco because the trailing state code was in the
+  // stoplist, so the commonest way a buyer names a city ("City ST") carried no location at all.
+  // A candidate that STARTS with a stopword ("in Texas", "in The …") is still not a city.
+  const words: string[] = []
+  for (const w of candidate.split(/\s+/)) {
+    if (NOT_A_CITY.has(w.toLowerCase())) break
+    words.push(w)
+  }
+  if (words.length === 0) return null
   return words.map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ")
 }
 
@@ -176,6 +194,15 @@ export function detectStatedAgeRestrictedCommunity(sentence: string): boolean {
 
 // ─── Extraction + merge ──────────────────────────────────────────────────────
 
+/** PURE. Did the buyer say they do NOT want this feature ("no pool", "without a garage", "less yard")? */
+function isNegatedFeature(sentence: string, feature: string): boolean {
+  const f = feature.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  const negation = new RegExp(`\\b(?:no|not an?|without(?: an?| the)?|don'?t want(?: an?| the)?|avoid(?: an?| the)?|never an?)\\s+(?:\\w+\\s+)?${f}\\b`, "i")
+  if (negation.test(sentence)) return true
+  // size words negate only the yard ("a small office" still wants an office)
+  return /yard/i.test(feature) && new RegExp(`\\b(?:less|smaller|small|tiny|low[- ]maintenance)\\s+(?:back)?${f}\\b`, "i").test(sentence)
+}
+
 function unionInto(target: string[] | undefined, add: string[]): string[] {
   const out = [...(target ?? [])]
   for (const v of add) if (!out.includes(v)) out.push(v)
@@ -202,7 +229,15 @@ export function extractCriteriaFromTranscript(text: string): ExtractedConversati
     if (parsed.minBeds != null)  { criteria.minBeds  = parsed.minBeds;  contributed = true }
     if (parsed.minBaths != null) { criteria.minBaths = parsed.minBaths; contributed = true }
     if (parsed.propertyTypes?.length) { criteria.propertyTypes = unionInto(criteria.propertyTypes, parsed.propertyTypes); contributed = true }
-    if (parsed.features?.length)      { criteria.features      = unionInto(criteria.features, parsed.features);           contributed = true }
+    // A NEGATED feature is not a must-have (wave 147C): "no pool" and "less yard" used to land as
+    // must_have_features ["pool"] / ["yard"] — the opposite of what the buyer said — on the alert
+    // proposal and the saved criteria alike. They are dropped here; the deal-breaker / lifestyle
+    // extractors (detectStatedDealBreakers, extractLifestyleAsks) carry the buyer's real meaning.
+    const features = (parsed.features ?? []).filter((f) => !isNegatedFeature(sentence, f))
+    if (features.length)              { criteria.features      = unionInto(criteria.features, features);                  contributed = true }
+    if (parsed.zipCodes?.length)      { criteria.zipCodes      = unionInto(criteria.zipCodes, parsed.zipCodes);           contributed = true }
+    if (parsed.states?.length)        { criteria.state = parsed.states[0]; contributed = true }
+    if (parsed.listingType === "rent") { criteria.listingType = "rent" }
 
     const cities = parsed.cities ?? []
     if (cities.length === 0) {
@@ -227,16 +262,7 @@ export function extractCriteriaFromTranscript(text: string): ExtractedConversati
     delete criteria.minPrice
   }
 
-  let signalCount = 0
-  if (criteria.minPrice != null || criteria.maxPrice != null) signalCount++
-  if (criteria.cities?.length) signalCount++
-  if (criteria.minBeds != null) signalCount++
-  if (criteria.minBaths != null) signalCount++
-  if (criteria.propertyTypes?.length) signalCount++
-  // Buyer-stated school district / 55+ community are CONCRETE signals — the
-  // buyer named a searchable criterion in their own words.
-  if (criteria.schoolDistricts?.length) signalCount++
-  if (criteria.ageRestrictedCommunity) signalCount++
+  const signalCount = countCriteriaSignals(criteria)
 
   return {
     criteria,
@@ -244,6 +270,425 @@ export function extractCriteriaFromTranscript(text: string): ExtractedConversati
     signalCount,
     evidence: evidence.slice(0, 6),
   }
+}
+
+/** How many distinct CONCRETE signal groups the criteria carry (features
+ *  excluded) — the one count both the rules pass and the model-assisted pass
+ *  (lib/buyer-search/parse-buyer-criteria.ts) grade confidence on. */
+export function countCriteriaSignals(criteria: ConversationCriteria): number {
+  let signalCount = 0
+  if (criteria.minPrice != null || criteria.maxPrice != null) signalCount++
+  if (criteria.cities?.length || criteria.zipCodes?.length) signalCount++
+  if (criteria.minBeds != null) signalCount++
+  if (criteria.minBaths != null) signalCount++
+  if (criteria.propertyTypes?.length) signalCount++
+  // Buyer-stated school district / 55+ community are CONCRETE signals — the
+  // buyer named a searchable criterion in their own words.
+  if (criteria.schoolDistricts?.length) signalCount++
+  if (criteria.ageRestrictedCommunity) signalCount++
+  return signalCount
+}
+
+// ─── Model assist (wave 91) — the PURE half ──────────────────────────────────
+//
+// Owner: "we use rentcast for property listings to send to the buyers that
+// reflect their criteria (even nlp natural language)". The rules above are the
+// FIRST pass and cost nothing; they miss what no word list can hold (a city
+// not on the metro list with no "in" before it, "a couple hundred thousand",
+// "3 or 4 bedrooms"). lib/buyer-search/parse-buyer-criteria.ts asks the cheap
+// model lane (AI_TASK_ROUTING.buyer_criteria_parse, Haiku) ONLY when a gap
+// below is open, and merges its answer through mergeModelCriteria — which is
+// where the no-steering line holds for the model exactly as it does for the
+// rules: the model may only FILL a gap, only with something the buyer's own
+// words contain, and never with a school, age or household criterion.
+
+/** The concrete gaps a search cannot run well without. Location is the one
+ *  RentCast needs; price and beds are what make a list worth sending. */
+export type CriteriaGap = "location" | "price" | "beds"
+
+export function criteriaGaps(criteria: ConversationCriteria): CriteriaGap[] {
+  const gaps: CriteriaGap[] = []
+  if (!criteria.cities?.length && !criteria.zipCodes?.length) gaps.push("location")
+  if (criteria.minPrice == null && criteria.maxPrice == null) gaps.push("price")
+  if (criteria.minBeds == null) gaps.push("beds")
+  return gaps
+}
+
+/** What the model lane may return — deliberately no school, age, household,
+ *  or neighborhood-character field: a field that does not exist cannot be
+ *  filled (fair housing, conversation-criteria.ts header). */
+export interface ModelCriteria {
+  minPrice?: number | null
+  maxPrice?: number | null
+  minBeds?: number | null
+  minBaths?: number | null
+  propertyTypes?: string[] | null
+  cities?: string[] | null
+  state?: string | null
+  zipCodes?: string[] | null
+  features?: string[] | null
+  listingType?: "sale" | "rent" | null
+}
+
+const MODEL_PROPERTY_TYPES = new Set(["single_family", "condo", "townhouse", "multi_family", "land"])
+
+/** Did the buyer's own words contain this number? Accepts the figure as said
+ *  ("450", "450k", "450,000") — the model may convert units, never invent. */
+function numberStatedIn(text: string, n: number): boolean {
+  if (!Number.isFinite(n) || n <= 0) return false
+  const digits = text.replace(/,/g, "")
+  const forms = new Set<string>([String(n)])
+  if (n >= 1000 && n % 1000 === 0) forms.add(String(n / 1000))
+  if (n >= 1_000_000) forms.add(String(n / 1_000_000))
+  for (const f of forms) {
+    if (new RegExp(`(^|[^\\d.])${f.replace(".", "\\.")}([^\\d]|$)`).test(digits)) return true
+  }
+  return false
+}
+
+/** Does the buyer's text contain this word/phrase (case-insensitive, whole word)? */
+function phraseStatedIn(text: string, phrase: string): boolean {
+  const p = phrase.trim()
+  if (!p) return false
+  const esc = p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  return new RegExp(`\\b${esc}\\b`, "i").test(text)
+}
+
+/**
+ * PURE. Rules win; the model FILLS a gap only, and every value it fills must
+ * be backed by the buyer's own words (numberStatedIn / phraseStatedIn). The
+ * one inference allowed is a STATE for a city the buyer named — a location
+ * fact RentCast needs to search a city, never a characterization.
+ */
+export function mergeModelCriteria(
+  rules: ConversationCriteria,
+  model: ModelCriteria | null | undefined,
+  text: string,
+): ConversationCriteria {
+  const out: ConversationCriteria = { ...rules }
+  if (!model) return out
+  const priceOk = (n: number | null | undefined): n is number =>
+    n != null && Number.isFinite(n) && n > 0 && numberStatedIn(text, n)
+
+  if (out.minPrice == null && out.maxPrice == null) {
+    if (priceOk(model.minPrice)) out.minPrice = model.minPrice
+    if (priceOk(model.maxPrice)) out.maxPrice = model.maxPrice
+    if (out.minPrice != null && out.maxPrice != null && out.minPrice > out.maxPrice) delete out.minPrice
+  }
+  if (out.minBeds == null && model.minBeds != null && model.minBeds > 0 && model.minBeds < 20 && numberStatedIn(text, model.minBeds)) out.minBeds = model.minBeds
+  if (out.minBaths == null && model.minBaths != null && model.minBaths > 0 && model.minBaths < 20 && numberStatedIn(text, model.minBaths)) out.minBaths = model.minBaths
+
+  if (!out.cities?.length && !out.zipCodes?.length) {
+    const cities = (model.cities ?? []).filter((c) => typeof c === "string" && phraseStatedIn(text, c))
+    if (cities.length) out.cities = cities.map((c) => c.trim().split(/\s+/).map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(" "))
+    const zips = (model.zipCodes ?? []).filter((z) => /^\d{5}$/.test(String(z)) && text.includes(String(z)))
+    if (zips.length) out.zipCodes = zips
+  }
+  if (!out.state && out.cities?.length && typeof model.state === "string" && /^[A-Z]{2}$/.test(model.state.trim().toUpperCase())) {
+    out.state = model.state.trim().toUpperCase()
+  }
+  if (!out.propertyTypes?.length) {
+    const types = (model.propertyTypes ?? []).filter((t) => MODEL_PROPERTY_TYPES.has(String(t)))
+    if (types.length) out.propertyTypes = types
+  }
+  const features = (model.features ?? []).filter((f) => typeof f === "string" && phraseStatedIn(text, f))
+  if (features.length) out.features = unionInto(out.features, features.map((f) => f.toLowerCase()))
+  if (!out.listingType && model.listingType === "rent" && /\b(rent|renting|rental|lease|leasing|month)\b/i.test(text)) out.listingType = "rent"
+  return out
+}
+
+/** Asks the buyer made that no listing feed can filter on, said back honestly
+ *  instead of silently dropped. School QUALITY is the fair-housing case: the
+ *  OS does not rank schools (a stated district name IS captured above). */
+export function unsearchableAsks(text: string): string[] {
+  const notes: string[] = []
+  if (/\b(good|great|best|top|top[- ]rated|highly[- ]rated|excellent)\s+schools?\b/i.test(text)) {
+    notes.push("School quality is not a listing filter — the agent can share the attendance-zone boundaries for any home, and the buyer can check the district's own ratings.")
+  }
+  return notes
+}
+
+// ─── Lifestyle asks + deal-breakers (wave 147, lane 147C — contract C10) ─────
+//
+// A buyer talks about how they want to LIVE, not only about beds and price:
+// "lots of natural light", "an easy commute to the Medical Center", "open floor
+// plan", "less yard". These are captured as the buyer's OWN asks, each with the
+// literal phrase as evidence, exactly like the criteria above. They are NOT
+// listing filters: no feed carries "natural light", so the matcher answers each
+// ask only where accurate source data exists and otherwise says UNKNOWN
+// (lib/buyer-search/explanation-generator.ts explainCriteriaFit) — an ask is
+// never silently dropped and never answered with an invented fact.
+//
+// NO-STEERING LINE (same as the header): only what the buyer said about THEIR
+// home and THEIR routine is captured. Schools-by-quality, places of worship and
+// anything about who lives in an area are not lifestyle kinds — a kind that
+// does not exist cannot be filled. An accessibility need is captured only when
+// the buyer states it; it is never inferred from anything.
+
+export const LIFESTYLE_KINDS = [
+  "natural_light", "commute", "layout", "accessibility", "nearby_amenity", "outdoor_space", "quiet_setting",
+] as const
+export type LifestyleKind = (typeof LIFESTYLE_KINDS)[number]
+
+/** more = "more light"; less = "less yard"; must = a stated requirement; avoid = "not on a busy road". */
+export type LifestyleDirection = "more" | "less" | "must" | "avoid"
+
+export interface LifestyleAsk {
+  kind: LifestyleKind
+  /** The canonical ask, in plain words ("open floor plan", "commute to Medical Center"). */
+  label: string
+  direction: LifestyleDirection
+  /** A named destination / amenity when the buyer gave one ("Medical Center", "parks"). */
+  target: string | null
+  /** A stated time limit for a commute ("under 30 minutes" → 30), else null. */
+  maxMinutes: number | null
+  /** Wave 148 (148E): a stated minimum lot for an acreage ask ("2 acres" → 2), else null/absent.
+   *  Wave 149 (149B, C27): DERIVED from `lotMinimum` (its value in acres) — kept for the readers that already take
+   *  acres; never set without a buyer-stated `lotMinimum`. */
+  minAcres?: number | null
+  /** Wave 149 (149B, C27 — owner ruling 5 "the buyer decides the yard and acreage minimum"): the minimum the BUYER
+   *  stated, in their unit, with their words; null/absent = they have not said one, and none is invented. */
+  lotMinimum?: LotMinimum | null
+  /** The buyer's literal words — the proof the ask was STATED. */
+  evidence: string
+}
+
+/** Neutral amenities a buyer may name. Schools and places of worship are deliberately absent. */
+const AMENITY_WORDS = "parks?|trails?|greenbelt|grocery(?: stores?)?|coffee(?: shops?)?|restaurants?|shops|shopping|downtown|transit|the train|train station|light rail|the beach|beach|the lake|lake|gym|hospital"
+
+const LOT_FRACTION_WORDS: Record<string, number> = { "half": 0.5, "a half": 0.5, "quarter": 0.25, "a quarter": 0.25, "three quarters": 0.75, "three-quarters": 0.75, "an": 1, "a": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "ten": 10 }
+
+/**
+ * PURE (wave 149, lane 149B, C27 — owner ruling 5). The lot MINIMUM the buyer stated in this sentence, or null.
+ *
+ *   "at least 2 acres" · "2+ acres" · "half an acre" · "a quarter-acre lot" · "an acre or more" · "1/2 acre"
+ *   · "a 10,000 sq ft lot" · "lot of at least 8000 square feet"
+ *
+ * Read ONLY from a number or a plain fraction beside its unit. Square feet count only when the sentence is about the
+ * LOT / yard / land (so "2,000 sq ft home" is never a lot minimum). A MAXIMUM ("under an acre", "no more than", "at
+ * most") is not a minimum and returns null. A hedge ("about", "or so", "roughly", "-ish", "maybe") keeps the value
+ * with confidence "low" — worth a gentle confirm, never a reason to change the number. "A big yard" returns null:
+ * how big is the buyer's to say, and the AI asks.
+ */
+function statedLotMinimum(sentence: string): LotMinimum | null {
+  const s = String(sentence ?? "")
+  if (!s.trim()) return null
+  const hedged = /\b(about|around|roughly|approximately|or so|maybe|ish)\b|-ish\b/i.test(s)
+  const confidence = hedged ? "low" as const : "high" as const
+  const isMaximum = (at: number) => /\b(under|less than|no more than|at most|max(?:imum)?|not more than|smaller than|below)\s*(?:an?\s+|the\s+)?$/i.test(s.slice(Math.max(0, at - 24), at))
+  const literalAt = (i: number, len: number) => s.slice(Math.max(0, i - 24), Math.min(s.length, i + len + 16)).trim()
+
+  const acres = /(\d+(?:\.\d+)?|\d+\s*\/\s*\d+|three[- ]quarters|a half|half|a quarter|quarter|an|one|two|three|four|five|ten)\s*(?:\+|plus)?\s*(?:-|\s)?(?:an?\s+|of\s+an?\s+)?(?:or more\s+)?acres?\b/i.exec(s)
+  if (acres) {
+    const tok = acres[1].toLowerCase().replace(/\s+/g, " ").trim()
+    let value: number | null = null
+    if (/^\d+(?:\.\d+)?$/.test(tok)) value = Number(tok)
+    else if (/^\d+ ?\/ ?\d+$/.test(tok)) { const [n, d] = tok.split("/").map((x) => Number(x.trim())); value = d ? n / d : null }
+    else value = LOT_FRACTION_WORDS[tok] ?? null
+    if (value != null && value > 0 && value <= 10_000 && !isMaximum(acres.index)) {
+      return { value, unit: "acres", stated_by: "buyer", literal: literalAt(acres.index, acres[0].length), confidence }
+    }
+    return null
+  }
+  if (/\b(lot|yard|land|parcel|acreage)\b/i.test(s)) {
+    const sq = /(\d{1,3}(?:,\d{3})+|\d{3,7})\s*(?:\+|plus)?\s*(?:sq\.?\s*ft\.?|sqft|square[- ]f(?:ee|oo)t|sf)(?![a-z])/i.exec(s)
+    if (sq) {
+      const after = s.slice(sq.index + sq[0].length, sq.index + sq[0].length + 14)
+      const before = s.slice(Math.max(0, sq.index - 30), sq.index)
+      const aboutLot = /^\s*(lot|yard|parcel|of land)\b/i.test(after) || /\b(lot|yard|parcel|land)\b[^.]{0,20}$/i.test(before)
+      const aboutHouse = /^\s*(home|house|homes|houses|living|of living|interior|floor)\b/i.test(after)
+      const value = Number(sq[1].replace(/,/g, ""))
+      if (aboutLot && !aboutHouse && value > 0 && !isMaximum(sq.index)) {
+        return { value, unit: "square_feet", stated_by: "buyer", literal: literalAt(sq.index, sq[0].length), confidence }
+      }
+    }
+  }
+  return null
+}
+
+function clip(sentence: string): string {
+  return sentence.length > 160 ? `${sentence.slice(0, 157)}…` : sentence
+}
+
+/**
+ * PURE. The buyer's lifestyle asks, one per (kind, label), from their own
+ * sentences (labeled transcripts contribute only the buyer's lines — the same
+ * buyerUtterances split the criteria use). "more light, less yard" yields two
+ * asks: natural_light/more and outdoor_space/less.
+ */
+export function extractLifestyleAsks(text: string): LifestyleAsk[] {
+  const out: LifestyleAsk[] = []
+  const push = (a: LifestyleAsk) => {
+    const at = out.findIndex((x) => x.kind === a.kind && x.label === a.label)
+    if (at >= 0) out[at] = a // a later sentence refines the earlier one
+    else out.push(a)
+  }
+  for (const sentence of buyerUtterances(text ?? "")) {
+    // (149B: a thousands comma — "10,000 sq ft" — is not a clause break)
+    for (const part of sentence.split(/,(?!\d{3}\b)\s*|\s+but\s+|\s+and\s+(?=(?:more|less|a |an |lots|no |not )\b)/i)) {
+      const s = part.trim()
+      if (!s) continue
+      const ev = clip(sentence)
+
+      if (/\b(less light|darker|not too (?:bright|sunny))\b/i.test(s)) {
+        push({ kind: "natural_light", label: "natural light", direction: "less", target: null, maxMinutes: null, evidence: ev })
+      } else if (/\b(natural light|lots of light|more light|light[- ]filled|bright(?:er)?\b|sunny|sun[- ]?(?:filled|drenched|lit)|skylights?|south[- ]facing)/i.test(s)) {
+        push({ kind: "natural_light", label: "natural light", direction: "more", target: null, maxMinutes: null, evidence: ev })
+      }
+
+      const commute = /\b(?:commute|drive|get)\s+(?:to|into)\s+([A-Z][\w'’.-]*(?:\s+[A-Z][\w'’.-]*){0,3})/.exec(s)
+        ?? /\b(?:close to|near|minutes from)\s+(?:my\s+)?(work|the office|my office|[A-Z][\w'’.-]*(?:\s+[A-Z][\w'’.-]*){0,3}\s+(?:Medical Center|Campus|Hospital|Airport|Base))/.exec(s)
+      const commuteWord = /\b(commute|commuting)\b/i.test(s)
+      if (commute || commuteWord) {
+        // Wave 150 (150W, canary 7): "a 25-minute commute", "25 minute drive", "30 minutes or less", "40 min tops" state the
+        // buyer's limit as plainly as "under 25 minutes" — read them too (still only a number the buyer said).
+        const minutes = /\b(?:under|less than|within|no more than|max(?:imum)?)\s+(\d{1,3})\s*(?:min|minutes)\b/i.exec(s)
+          ?? /\b(\d{1,3})[- ]?(?:min|minutes?)\s+(?:commute|drive)\b/i.exec(s)
+          ?? /\b(\d{1,3})\s*(?:min|minutes)\s+(?:or less|max(?:imum)?|tops|at most)\b/i.exec(s)
+        // Wave 150 (150W): a sentence-final period rode into the place name ("Fort Hood.") — so the measured drive (keyed
+        // by the buyer's place) never matched it and every commute read UNKNOWN. Trailing punctuation is not the place.
+        const target = commute ? commute[1].trim().replace(/[.'’-]+$/, "") || null : null
+        push({
+          kind: "commute",
+          label: target ? `commute to ${target}` : "commute",
+          direction: "must",
+          target,
+          maxMinutes: minutes ? Number(minutes[1]) : null,
+          evidence: ev,
+        })
+      }
+
+      if (/\bopen (?:floor ?plan|concept|layout)\b/i.test(s)) push({ kind: "layout", label: "open floor plan", direction: "must", target: null, maxMinutes: null, evidence: ev })
+      if (/\b(single[- ]stor(?:y|ey)|one[- ]stor(?:y|ey)|single[- ]level|one[- ]level|ranch[- ]style|no stairs)\b/i.test(s)) push({ kind: "layout", label: "single level", direction: "must", target: null, maxMinutes: null, evidence: ev })
+      if (/\b(?:primary|master)(?: bedroom| suite)?\s+(?:on|down)\s+(?:the\s+)?(?:main|first|ground)(?: floor| level)?\b/i.test(s)) push({ kind: "layout", label: "primary bedroom on the main level", direction: "must", target: null, maxMinutes: null, evidence: ev })
+      if (/\bsplit (?:floor ?plan|bedrooms?)\b/i.test(s)) push({ kind: "layout", label: "split bedroom plan", direction: "must", target: null, maxMinutes: null, evidence: ev })
+
+      if (/\b(wheelchair|step[- ]free|zero[- ]step|no steps|accessible|ada\b|grab bars|wide doorways|elevator)/i.test(s)) {
+        push({ kind: "accessibility", label: "step-free / accessible", direction: "must", target: null, maxMinutes: null, evidence: ev })
+      }
+
+      const amenity = new RegExp(`\\b(?:walk(?:ing distance)?\\s+to|walkable\\s+to|near(?:by)?|close to|minutes from)\\s+(?:a\\s+|the\\s+)?(${AMENITY_WORDS})\\b`, "i").exec(s)
+      if (amenity) {
+        const target = amenity[1].toLowerCase().replace(/^the\s+/, "")
+        push({ kind: "nearby_amenity", label: `near ${target}`, direction: "must", target, maxMinutes: null, evidence: ev })
+      } else if (/\bwalkable\b/i.test(s)) {
+        push({ kind: "nearby_amenity", label: "walkable", direction: "must", target: null, maxMinutes: null, evidence: ev })
+      }
+
+      // Wave 148 (lane 148E — owner: "outdoor space is a home with acreage"): ACREAGE is its own ask (label "acreage",
+      // answered in acres from the lot size; "2 acres" keeps the stated minimum), distinct from a bigger yard.
+      // Wave 149 (149B, C27): the minimum is read ONLY from what the buyer said (statedLotMinimum) — a number or a plain
+      // fraction with its unit, acres or square feet of LOT — and never set from a phrase like "a big yard".
+      const lotMinimum = statedLotMinimum(s)
+      const acresStated = lotMinimum && lotMinimum.unit === "acres" ? lotMinimum : null
+      if (/\b(less yard|smaller yard|small yard|low[- ]maintenance yard|no yard|less (?:lawn|grass)|tiny yard)\b/i.test(s)) {
+        push({ kind: "outdoor_space", label: "outdoor space", direction: "less", target: null, maxMinutes: null, evidence: ev })
+      } else if (acresStated || /\b(acreage|acres|some land|a little land|room to roam|horse property|hobby farm|small farm)\b/i.test(s)) {
+        push({ kind: "outdoor_space", label: "acreage", direction: "more", target: null, maxMinutes: null, minAcres: acresStated ? acresStated.value : null, lotMinimum: acresStated, evidence: ev })
+      } else if (lotMinimum) {
+        push({ kind: "outdoor_space", label: "outdoor space", direction: "more", target: null, maxMinutes: null, minAcres: lotMinimum.value / 43_560, lotMinimum, evidence: ev })
+      } else if (/\b(more yard|bigger yard|big yard|large yard|lots of yard|room for a garden|big lot|large lot|outdoor space|private (?:back)?yard|fenced (?:back)?yard|a (?:back)?yard)\b/i.test(s)) {
+        push({ kind: "outdoor_space", label: "outdoor space", direction: "more", target: null, maxMinutes: null, evidence: ev })
+      }
+
+      if (/\b(quiet street|cul[- ]de[- ]sac|not on a busy (?:road|street)|away from traffic|low traffic)\b/i.test(s)) {
+        push({ kind: "quiet_setting", label: "quiet street", direction: /\bnot on\b|\baway from\b/i.test(s) ? "avoid" : "must", target: null, maxMinutes: null, evidence: ev })
+      } else if (/\b(quiet|peaceful|privacy|private setting|secluded|tucked away|not (?:too )?close to (?:the |my )?neighbou?rs|space (?:between|from) (?:the )?(?:neighbou?rs|houses|homes)|no (?:close )?neighbou?rs|away from (?:the )?neighbou?rs)\b/i.test(s)) {
+        // Owner: "quiet setting is not close to neighbors" — answered from building spacing, lot size and road
+        // exposure (location-evidence.ts), never from who lives nearby.
+        push({ kind: "quiet_setting", label: "quiet and away from close neighbors", direction: "must", target: null, maxMinutes: null, evidence: ev })
+      }
+    }
+  }
+  return out
+}
+
+/** Canonical deal-breaker labels a buyer can state ("no HOA", "not a condo"). */
+const DEAL_BREAKER_MAP: Array<[RegExp, string]> = [
+  [/\bhoas?\b/i, "hoa"],
+  [/\bcondos?\b/i, "condo"],
+  [/\btown ?(?:house|home)s?\b/i, "townhouse"],
+  [/\bpools?\b/i, "pool"],
+  [/\bseptic\b/i, "septic"],
+  [/\bstairs\b/i, "stairs"],
+  [/\bbusy (?:road|street)\b/i, "busy road"],
+  [/\bflood ?zone\b/i, "flood zone"],
+  [/\bfixer(?:[- ]upper)?s?\b/i, "fixer-upper"],
+]
+
+/**
+ * PURE. Things the buyer said they do NOT want, from their own words only:
+ * "no HOA", "not a condo", "don't want a pool", "avoid a busy road".
+ */
+export function detectStatedDealBreakers(text: string): { dealBreakers: string[]; evidence: string[] } {
+  const dealBreakers: string[] = []
+  const evidence: string[] = []
+  for (const sentence of buyerUtterances(text ?? "")) {
+    const re = /\b(?:no|not an?|not on an?|without(?: an?)?|don'?t want(?: an?)?|avoid(?: an?)?|never an?)\s+((?:[a-z-]+\s){0,2}[a-z-]+)/gi
+    let m: RegExpExecArray | null
+    let hit = false
+    while ((m = re.exec(sentence))) {
+      for (const [pattern, label] of DEAL_BREAKER_MAP) {
+        if (pattern.test(m[1]) && !dealBreakers.includes(label)) { dealBreakers.push(label); hit = true }
+      }
+    }
+    if (hit) evidence.push(clip(sentence))
+  }
+  return { dealBreakers, evidence }
+}
+
+/** Is a priority word on this ask ("light matters more than the yard now")? */
+export function detectPriorityShift(text: string): { up: LifestyleKind | null; down: LifestyleKind | null } {
+  const t = text ?? ""
+  const m = /\b(light|commute|layout|yard|outdoor space|quiet|walkab\w*)\b[^.]{0,30}\b(?:matters?|is)\s+more\b[^.]{0,20}\bthan\b[^.]{0,10}\b(light|commute|layout|yard|outdoor space|quiet|walkab\w*)\b/i.exec(t)
+  if (!m) return { up: null, down: null }
+  const kindOf = (w: string): LifestyleKind =>
+    /light/i.test(w) ? "natural_light" : /commute/i.test(w) ? "commute" : /layout/i.test(w) ? "layout"
+      : /yard|outdoor/i.test(w) ? "outdoor_space" : /quiet/i.test(w) ? "quiet_setting" : "nearby_amenity"
+  return { up: kindOf(m[1]), down: kindOf(m[2]) }
+}
+
+// ─── "What you didn't say" — clarifying questions (wave 147C) ───────────────
+//
+// The assistant asks about the gaps that change WHICH homes come back, in the
+// order a search needs them, one at a time on voice and at most two in text.
+// Every question is drawn from this fixed list — there is no free-text question
+// generator, so a question about household, children, age, religion, school
+// quality or who lives in an area cannot be asked (scripts/conversational-
+// buyer-guard.ts scans every question this function can return).
+
+export interface ClarifyingQuestion {
+  /** Which gap it closes. */
+  about: CriteriaGap | "commute_target" | "must_or_nice" | "listing_type"
+  question: string
+}
+
+export function clarifyingQuestions(
+  criteria: ConversationCriteria,
+  lifestyle: LifestyleAsk[] = [],
+  opts: { channel?: "voice" | "text"; max?: number; /** the buyer's words, so a stated "must" is not asked again */ text?: string } = {},
+): ClarifyingQuestion[] {
+  const max = opts.max ?? (opts.channel === "voice" ? 1 : 2)
+  const qs: ClarifyingQuestion[] = []
+  const gaps = criteriaGaps(criteria)
+  if (gaps.includes("location")) qs.push({ about: "location", question: "Which areas or ZIP codes should I look in?" })
+  if (gaps.includes("price")) {
+    qs.push({
+      about: "price",
+      question: criteria.listingType === "rent"
+        ? "What monthly rent feels comfortable — is there a number you don't want to go past?"
+        : "What price range feels comfortable — is there a top number you don't want to go past?",
+    })
+  }
+  if (gaps.includes("beds")) qs.push({ about: "beds", question: "How many bedrooms do you need at a minimum?" })
+  const commute = lifestyle.find((l) => l.kind === "commute" && !l.target)
+  if (commute) qs.push({ about: "commute_target", question: "Where is the commute to, and what's the longest drive that still works for you?" })
+  const firstFeature = criteria.features?.[0]
+  const esc = (firstFeature ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  const statedMust = !!firstFeature && !!opts.text
+    && new RegExp(`\\b(must|need|needs|required|have to have|non-negotiable)\\b[^.]{0,40}\\b${esc}`, "i").test(opts.text)
+  if (firstFeature && !statedMust) qs.push({ about: "must_or_nice", question: `Is the ${firstFeature} a must-have, or a nice-to-have?` })
+  return qs.slice(0, Math.max(0, max))
 }
 
 // ─── Alert-row mapping ───────────────────────────────────────────────────────
@@ -299,6 +744,7 @@ export function describeCriteria(criteria: ConversationCriteria): string {
   else if (criteria.maxPrice != null) parts.push(`under ${fmtPrice(criteria.maxPrice)}`)
   else if (criteria.minPrice != null) parts.push(`over ${fmtPrice(criteria.minPrice)}`)
   if (criteria.cities?.length) parts.push(`in ${criteria.cities.join(", ")}`)
+  if (criteria.zipCodes?.length) parts.push(`${criteria.cities?.length ? "" : "in "}${criteria.zipCodes.join(", ")}`.trim())
   for (const s of criteria.schoolDistricts ?? []) {
     parts.push(s.endsWith("school district") ? `in the ${s}` : `zoned for ${s}`)
   }
@@ -321,6 +767,8 @@ export interface ProposedAlertRow {
   alert_name: string
   source: string
   is_active: false
+  /** m657 sale|rent (live CHECK property_alerts_listing_type_check). */
+  listing_type: "sale" | "rent"
   min_price: number | null
   max_price: number | null
   bedrooms_min: number | null
@@ -354,13 +802,17 @@ export function criteriaToAlertRow(
     alert_name:                  ids.alertName,
     source:                      ids.source ?? SPOKEN_ALERT_SOURCE,
     is_active:                   false, // PROPOSED — only agent approval activates
+    // A renter's monthly budget must not be swept against for-sale prices
+    // (m657; lib/property-alerts/idx-alert-search.ts routes 'rent' to the
+    // RentCast RENTAL endpoint only).
+    listing_type:                criteria.listingType === "rent" ? "rent" : "sale",
     min_price:                   criteria.minPrice ?? null,
     max_price:                   criteria.maxPrice ?? null,
     bedrooms_min:                criteria.minBeds ?? null,
     bathrooms_min:               criteria.minBaths ?? null,
     property_types:              criteria.propertyTypes ?? [],
     cities:                      criteria.cities ?? [],
-    zip_codes:                   [],
+    zip_codes:                   criteria.zipCodes ?? [],
     // Buyer-STATED criteria only (see the no-steering block above): a stated
     // 55+ request lands as a must-have feature; stated school-district
     // phrases land as keywords. Both trace to evidence quotes.

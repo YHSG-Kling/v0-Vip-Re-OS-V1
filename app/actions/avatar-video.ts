@@ -16,6 +16,7 @@
  */
 
 import { createClient } from "@/lib/supabase/server"
+import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 import { isValidUUID } from "@/lib/validations"
 import {
   AVATAR_EXPLAINER_PRESETS,
@@ -66,6 +67,7 @@ export interface TeammateExplainerReadinessResult {
 export async function getTeammateExplainerReadiness(): Promise<TeammateExplainerReadinessResult> {
   const auth = await resolveCaller()
   if (!auth.ok) return { success: false, error: auth.error }
+  return ledgered(auth.caller, { action: "marketing.avatar_explainer.resume_parked", subject: { type: "brokerage", id: auth.caller.brokerageId }, riskClass: "LOW_RISK_WRITE" }, async () => {
   const { userId, brokerageId } = auth.caller
 
   try {
@@ -76,14 +78,23 @@ export async function getTeammateExplainerReadiness(): Promise<TeammateExplainer
 
     // Recent lane projects — session client, so RLS scopes visibility.
     const supabase = await createClient()
-    const { data: recentRows } = await supabase
-      .from("ai_video_projects")
-      .select("id, title, status, approval_status, created_at")
-      .eq("brokerage_id", brokerageId)
-      .eq("agent_id", userId)
-      .contains("video_metadata", { lane: "avatar_explainer" })
-      .order("created_at", { ascending: false })
-      .limit(5)
+    // Scoped: resolveCaller already fixed the brokerage this surface acts in.
+    // No agents row ⇒ no projects of your own, which is an empty list; the
+    // readiness itself is still worth returning.
+    const agentId = await resolveAgentIdInBrokerage(supabase, userId, brokerageId)
+    const { data: recentRows, error: recentError } = agentId
+      ? await supabase
+          .from("ai_video_projects")
+          .select("id, title, status, approval_status, created_at")
+          .eq("brokerage_id", brokerageId)
+          .eq("agent_id", agentId)
+          .contains("video_metadata", { lane: "avatar_explainer" })
+          .order("created_at", { ascending: false })
+          .limit(5)
+      : { data: [], error: null }
+    if (recentError) {
+      return { success: false, error: recentError.message }
+    }
 
     return {
       success: true,
@@ -94,6 +105,7 @@ export async function getTeammateExplainerReadiness(): Promise<TeammateExplainer
   } catch (e) {
     return { success: false, error: (e as Error).message }
   }
+  })
 }
 
 export interface CreateTeammateExplainerInput {
@@ -124,6 +136,7 @@ export async function createTeammateExplainerVideo(
 ): Promise<CreateTeammateExplainerResult> {
   const auth = await resolveCaller()
   if (!auth.ok) return { success: false, error: auth.error }
+  return ledgered(auth.caller, { action: "marketing.avatar_explainer.commission", subject: { type: "listing", id: input.listingId ?? null, ref: input.listingId ? null : "avatar_explainer:new" }, riskClass: "FINANCIAL", detail: { preset_id: input.presetId ?? null } }, async () => {
   const { userId, brokerageId } = auth.caller
 
   const topic = (input.topic ?? "").trim()
@@ -159,4 +172,30 @@ export async function createTeammateExplainerVideo(
     voiceSource: result.voiceSource,
     warnings: result.warnings,
   }
+  })
+}
+
+/**
+ * WAVE 155 (lane 155R9, G12): ONE agent_action_ledger receipt per session write — ledgerSessionAction
+ * (lib/kernel/action-ledger.ts) does the claim → run → settle. Who and which tenant come from the SESSION (CLAUDE.md §4);
+ * "session" resolves them through getAgentContext. NO idempotency key: a person's second save runs again and leaves a
+ * second receipt. The export's value comes back unchanged; a refused claim (only a malformed action name, caught by
+ * test:action-ledger §14) throws instead of returning a value of another shape. No session tenant → the write runs exactly
+ * as before, unrecorded (agent_action_ledger.brokerage_id is NOT NULL — there is no valid row to write).
+ * @proofSeam scripts/ledger-receipts-transaction2-guard.ts
+ */
+async function ledgered<T>(
+  who: { userId?: string | null; brokerageId?: string | null; agentId?: string | null } | null | undefined | "session",
+  what: { action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> },
+  run: () => Promise<T>,
+): Promise<T> {
+  const seat = who === "session" ? await (await import("@/lib/identity/get-agent-context")).getAgentContext() : who
+  if (!seat?.userId || !seat.brokerageId) return run()
+  const id = what.subject.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(what.subject.id) ? what.subject.id : null
+  const subject = { type: what.subject.type, id, ref: id ? what.subject.ref ?? null : what.subject.ref ?? what.subject.id ?? null }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const r = await ledgerSessionAction({ brokerageId: seat.brokerageId, action: what.action, actor: { type: "user", userId: seat.userId, agentId: seat.agentId ?? null }, subject, riskClass: what.riskClass, reasonCode: "HUMAN_REQUESTED", detail: what.detail ?? null }, async () => { ran = true; return run() })
+  if (!ran) throw new Error((r as { error?: string }).error ?? "action ledger refused the claim")
+  return r as T
 }

@@ -18,6 +18,31 @@
 export type CdaFieldSource = "waterfall" | "transaction" | "agent_input" | "static"
 export type CdaFieldType = "currency" | "percent" | "date" | "text"
 
+// ── The catalog: the ONLY source_keys a binding may reference (grounding) ─────
+// Keys mirror cdaWaterfallContext() (waterfall) and buildContext() (transaction) in
+// app/actions/cda-template-field-actions.ts - keep them in sync (scripts/agreement-waterfall-guard.ts asserts every key the
+// context returns is here). One list: the classifier grounds its suggestions on it and the mapping editor offers it.
+export const CDA_WATERFALL_KEYS: Record<string, { label: string; field_type: CdaFieldType }> = {
+  gross_commission: { label: "Gross Commission", field_type: "currency" },
+  agent_net: { label: "Agent Net Commission", field_type: "currency" },
+  brokerage_net: { label: "Brokerage Net Commission", field_type: "currency" },
+  agent_split_percent: { label: "Agent Split %", field_type: "percent" },
+  fees: { label: "Fees", field_type: "currency" },
+  team_split: { label: "Team Split", field_type: "currency" },
+  revenue_share: { label: "Revenue Share", field_type: "currency" },
+  // Wave 143 (143C): the referral payout the CDA must show (distribution_type 'referral', the waterfall's step 03b).
+  referral: { label: "Referral Fee", field_type: "currency" },
+  // Wave 144 (144D, owner ruling 7): the ROYALTY is a brokerage fee of its own (distribution_type 'royalty', stage 10) —
+  // its own CDA line, never folded into "Fees".
+  royalty: { label: "Royalty Fee (to brokerage)", field_type: "currency" },
+}
+
+export const CDA_TRANSACTION_KEYS: Record<string, { label: string; field_type: CdaFieldType }> = {
+  property_address: { label: "Property Address", field_type: "text" },
+  close_date: { label: "Closing Date", field_type: "date" },
+  sale_price: { label: "Sale Price", field_type: "currency" },
+}
+
 export interface CdaFieldDef {
   field_key: string
   label?: string | null
@@ -181,21 +206,32 @@ export interface CdaWaterfallInput {
   gross_commission?: number | null
   agent_net?: number | null
   brokerage_net?: number | null
-  /** commission_distributions rows for the transaction (distribution_type + calculated_amount). */
-  distributions?: Array<{ distribution_type?: string | null; calculated_amount?: number | null }>
+  /** commission_distributions rows for the transaction (distribution_type + calculated_amount + status). */
+  distributions?: Array<{ distribution_type?: string | null; calculated_amount?: number | null; status?: string | null }>
 }
 
-/** Derive the named waterfall values a CDA form can bind to. Pure. */
+/**
+ * Derive the named waterfall values a CDA form can bind to. Pure.
+ *
+ * ONE VOCABULARY (CLAUDE.md section 6, wave 143 lane 143C): the rows are summed by the LIVE commission_distributions.distribution_type
+ * CHECK (agent | brokerage | fee | referral | residual | royalty | team_member). This used to read "team" and
+ * "revenue_share" - spellings the database REFUSES - so a CDA's team-split and revenue-share lines were blank on every
+ * deal, and the referral payout the owner requires on the CDA ("CDA payouts include referrals") had no line at all.
+ * A VOIDED row carries no money (isVoidedDistribution's rule, inlined - this module is DB- and import-free); a
+ * correction row is a signed entry, so summing the live rows gives the corrected figure with no special case.
+ * Template keys keep their names (team_split, revenue_share): a brokerage's saved mapping must not break.
+ */
 export function cdaWaterfallContext(input: CdaWaterfallInput): Record<string, number | null> {
   const gross = input.gross_commission ?? null
   const agentNet = input.agent_net ?? null
   const brokerageNet = input.brokerage_net ?? null
 
-  // Sum distributions by type so a form can bind a "Fees" or "Team Split" line.
+  // Sum the LIVE distributions by type so a form can bind a "Fees", "Team Split" or "Referral" line.
   const byType: Record<string, number> = {}
   for (const d of input.distributions ?? []) {
+    if ((d.status ?? "").toLowerCase() === "voided") continue
     const t = (d.distribution_type ?? "other").toLowerCase()
-    byType[t] = (byType[t] ?? 0) + (d.calculated_amount ?? 0)
+    byType[t] = Math.round(((byType[t] ?? 0) + (d.calculated_amount ?? 0)) * 100) / 100
   }
 
   // Split percent derived from the net vs gross (matches how the dashboard bridge derives it).
@@ -207,7 +243,9 @@ export function cdaWaterfallContext(input: CdaWaterfallInput): Record<string, nu
     brokerage_net: brokerageNet,
     agent_split_percent: splitPercent,
     fees: byType["fee"] ?? null,
-    team_split: byType["team"] ?? null,
-    revenue_share: byType["revenue_share"] ?? null,
+    team_split: byType["team_member"] ?? null,
+    revenue_share: byType["residual"] ?? null,
+    referral: byType["referral"] ?? null,
+    royalty: byType["royalty"] ?? null,
   }
 }

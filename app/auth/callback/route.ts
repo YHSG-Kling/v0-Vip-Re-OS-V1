@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { handleAuthCallback } from '@/app/actions/auth'
 import { createServiceClient } from '@/lib/supabase/service'
 import { acceptUserInvitationOnFirstLogin } from '@/lib/onboarding/state-machine'
+import { toMagicLinkMessage, type MagicLinkMessage } from '@/app/types/auth'
 
 export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams
@@ -11,9 +12,15 @@ export async function GET(request: NextRequest) {
   // `next` is set by invite emails to signal desired post-auth destination
   const next = searchParams.get('next')
 
-  // Handle errors from Supabase
+  // Handle errors from Supabase.
+  //
+  // ANNOTATED, NOT INFERRED: this string is read back by app/login/page.tsx
+  // through `toMagicLinkMessage`, which refuses anything outside the roster.
+  // Before the reader existed nothing noticed a drifted spelling — the page
+  // rendered nothing either way. Now a spelling that is not in the vocabulary
+  // fails at type-check instead of silently going blank in front of a user.
   if (error) {
-    const message = errorDescription?.includes('expired')
+    const message: MagicLinkMessage = errorDescription?.includes('expired')
       ? 'link-expired'
       : errorDescription?.includes('used')
       ? 'link-used'
@@ -33,7 +40,12 @@ export async function GET(request: NextRequest) {
   const result = await handleAuthCallback(code)
 
   if (!result.success) {
-    const message = result.error?.code || 'error'
+    // `result.error.code` is whatever supabase-js handed back ('otp_expired',
+    // 'flow_state_not_found', …) — a provider vocabulary, not this rail's. Put
+    // it through the same gate the reader uses so only a value the login page
+    // can actually render reaches the URL; anything else degrades to 'error',
+    // which at least says something true to the user.
+    const message: MagicLinkMessage = toMagicLinkMessage(result.error?.code) ?? 'error'
     return NextResponse.redirect(
       new URL(`/login?message=${message}`, request.url)
     )
@@ -52,14 +64,19 @@ export async function GET(request: NextRequest) {
         .select('brokerage_id')
         .eq('id', user.id)
         .maybeSingle()
-      await acceptUserInvitationOnFirstLogin({
+      // A failed acceptance post-condition is REPORTED by the state machine itself (wave 148, lane 148A —
+      // reportOperationOutcome `invitation`); the result is logged here so the request log carries it too.
+      const accepted = await acceptUserInvitationOnFirstLogin({
         userId:      user.id,
         email:       user.email,
         brokerageId: profile?.brokerage_id ?? null,
       })
+      if (accepted.error) console.error(`[auth/callback] invitation acceptance failed for ${user.id}: ${accepted.error}`)
     }
-  } catch {
-    // Non-fatal — onboarding state machine is advisory.
+  } catch (err) {
+    // Non-fatal for the redirect (the session already exists) — but never SILENT: an empty catch here hid every
+    // first-login acceptance failure (wave 148, lane 148A). The state machine reports its own post-condition.
+    console.error("[auth/callback] invitation acceptance hook threw:", (err as Error)?.message ?? String(err))
   }
 
   // ── First-login onboarding redirect ────────────────────────────────────────
@@ -98,8 +115,10 @@ export async function GET(request: NextRequest) {
         }
       }
     }
-  } catch {
-    // Non-fatal — fall through to default dashboard route
+  } catch (err) {
+    // Non-fatal — fall through to default dashboard route (which DETECTS an incomplete account and routes a visible
+    // setup state). Logged, not silent (wave 148, lane 148A).
+    console.warn("[auth/callback] onboarding redirect check failed — routing to /dashboard:", (err as Error)?.message ?? String(err))
   }
 
   // Default: role-based routing happens at /dashboard

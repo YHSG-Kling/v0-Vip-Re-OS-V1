@@ -18,6 +18,7 @@ import {
   repurposeUrlToPodcast,
 } from "@/lib/repurpose/actions"
 import type { OutputFormat, RepurposedOutput } from "@/lib/repurpose/types"
+import { paidDoorRefusalMessage } from "@/lib/vendor-governance/budget-eval"
 
 const CHANNELS: { platform: string; format: OutputFormat; label: string }[] = [
   { platform: "instagram", format: "instagram_reels", label: "Instagram Reels" },
@@ -45,6 +46,10 @@ export function VideoUrlRepurposeCard({ connectedPlatforms }: { connectedPlatfor
   const [mode, setMode] = useState<Mode>("create")
   const [url, setUrl] = useState("")
   const [transcript, setTranscript] = useState("")
+  // WAVE 153 (153P) → WAVE 154 (154D, owner R4): a stated basis (own content or a license) is needed only to REUSE the source
+  // itself (re-posting the video). With no basis the source supplies the IDEA only: an original piece is written in your voice
+  // and none of the source's words or footage is carried.
+  const [rightsBasis, setRightsBasis] = useState<"" | "own_content" | "licensed">("")
   const [showTranscript, setShowTranscript] = useState(false)
   const [selected, setSelected] = useState<Set<OutputFormat>>(new Set())
   const [results, setResults] = useState<RepurposedOutput[]>([])
@@ -70,6 +75,10 @@ export function VideoUrlRepurposeCard({ connectedPlatforms }: { connectedPlatfor
       toast.error("Select at least one channel")
       return false
     }
+    if (mode === "distribute" && !rightsBasis) {
+      toast.error("Re-posting this video needs your own-content or license basis — or choose blog, podcast or branded video to use its idea only")
+      return false
+    }
     return true
   }
 
@@ -84,7 +93,7 @@ export function VideoUrlRepurposeCard({ connectedPlatforms }: { connectedPlatfor
 
   const runDistribute = () =>
     startTransition(async () => {
-      const res = await repurposeVideoUrl({ sourceUrl: url.trim(), outputFormats: [...selected] })
+      const res = await repurposeVideoUrl({ sourceUrl: url.trim(), outputFormats: [...selected], rightsBasis: rightsBasis || undefined })
       if (!res.success) return void toast.error(res.error ?? "Repurpose failed")
       setResults(res.outputs ?? [])
       const scheduled = (res.outputs ?? []).filter((o) => o.status === "scheduled").length
@@ -98,6 +107,7 @@ export function VideoUrlRepurposeCard({ connectedPlatforms }: { connectedPlatfor
         sourceUrl: url.trim(),
         transcript: transcript.trim() || undefined,
         channels: [...selected],
+        rightsBasis: rightsBasis || undefined,
       })
       if (res.redirectTo) {
         toast.message(res.error ?? "Setup required", { description: "Redirecting to setup…" })
@@ -114,7 +124,7 @@ export function VideoUrlRepurposeCard({ connectedPlatforms }: { connectedPlatfor
         })
         if (!kick.ok) {
           const body = await kick.json().catch(() => ({}))
-          return void toast.error(body.error ?? "Video project created, but generation failed to start. Retry it from your video library.")
+          return void toast.error(paidDoorRefusalMessage({ budgetExceeded: body.budgetExceeded, capExceeded: body.capExceeded, error: body.error }, "Video project created, but generation failed to start. Retry it from your video library.", "the video"))
         }
       } catch {
         return void toast.error("Video project created, but the network request failed. Retry generation from your video library.")
@@ -125,7 +135,7 @@ export function VideoUrlRepurposeCard({ connectedPlatforms }: { connectedPlatfor
 
   const runBlog = () =>
     startTransition(async () => {
-      const res = await repurposeUrlToBlogPost({ sourceUrl: url.trim(), transcript: transcript.trim() || undefined })
+      const res = await repurposeUrlToBlogPost({ sourceUrl: url.trim(), transcript: transcript.trim() || undefined, rightsBasis: rightsBasis || undefined })
       if (handleTranscriptGate(res)) return
       if (!res.success) return void toast.error(res.error ?? "Could not create the blog post")
       toast.success("Draft blog post with a cover image created — review it in your blog dashboard.")
@@ -134,7 +144,7 @@ export function VideoUrlRepurposeCard({ connectedPlatforms }: { connectedPlatfor
 
   const runPodcast = () =>
     startTransition(async () => {
-      const res = await repurposeUrlToPodcast({ sourceUrl: url.trim(), transcript: transcript.trim() || undefined })
+      const res = await repurposeUrlToPodcast({ sourceUrl: url.trim(), transcript: transcript.trim() || undefined, rightsBasis: rightsBasis || undefined })
       if (handleTranscriptGate(res)) return
       if (!res.success) return void toast.error(res.error ?? "Could not create the podcast episode")
       toast.success(res.error ? `Episode created, audio pending: ${res.error}` : "Podcast episode generated — review it in your podcast dashboard.")
@@ -192,6 +202,25 @@ export function VideoUrlRepurposeCard({ connectedPlatforms }: { connectedPlatfor
             onChange={(e) => setUrl(e.target.value)}
             disabled={isPending}
           />
+        </div>
+
+        <div className="space-y-2">
+          <Label>Your right to reuse this source (optional for idea-only)</Label>
+          <div className="flex flex-col gap-2 text-sm">
+            <label className="flex items-center gap-2">
+              <Checkbox checked={rightsBasis === "own_content"} onCheckedChange={(v) => setRightsBasis(v ? "own_content" : "")} disabled={isPending} />
+              It is my own content, published elsewhere
+            </label>
+            <label className="flex items-center gap-2">
+              <Checkbox checked={rightsBasis === "licensed"} onCheckedChange={(v) => setRightsBasis(v ? "licensed" : "")} disabled={isPending} />
+              I hold a license to reuse it
+            </label>
+            <p className="text-xs text-muted-foreground">
+              Neither? Leave both unchecked to use only the idea: an original piece is written in your voice, checked for
+              closeness to the source, and none of its words, footage or branding is reused. Re-posting the video itself
+              needs one of the boxes above.
+            </p>
+          </div>
         </div>
 
         {mode !== "distribute" && (showTranscript || transcript) && (

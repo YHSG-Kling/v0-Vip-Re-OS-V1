@@ -10,6 +10,8 @@
 //
 // Pure (no I/O), unit-tested directly.
 
+import { lifeEventTypeOf } from "@/lib/enrichment/life-event-vocabulary"
+
 export interface ProfileLike {
   home_owner_status?: string | null
   job_title?: string | null
@@ -31,8 +33,9 @@ function norm(v: unknown): string {
 function lifeEventTypes(p: ProfileLike | null | undefined): Set<string> {
   const out = new Set<string>()
   for (const e of p?.life_events ?? []) {
-    const t = typeof e === "string" ? e : (e?.type ?? "")
-    const k = norm(t)
+    const t = typeof e === "string" ? e : (e?.type ?? (e as { event?: string | null } | null)?.event ?? "")
+    // C20 (wave 148, lane 148F): one event, one key — a retired spelling re-written canonically is NOT a material change.
+    const k = lifeEventTypeOf(typeof e === "string" ? e : (e as never)) ?? norm(t)
     if (k) out.add(k)
   }
   return out

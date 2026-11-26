@@ -1,0 +1,724 @@
+/**
+ * scripts/wave156-c-forms-directory-guard.ts — wave 156, lane 156C: THE FORMS DIRECTORY IS COMPLETE, EXTENSIBLE AND LICENSED.
+ *
+ * Owner (wave 156): "the form packet tool should list all possible forms/packets or have the capability for the user or manager to
+ * add more." Otherwise forms are found and selected from the user's connected transaction provider. Owned by the Compliance Manager
+ * (`compliance_officer`) with the forms kernel — no Forms Manager.
+ *
+ * DRIVEN, NOT SCANNED: the REAL route handlers (app/api/forms/provider-library GET, app/api/forms/directory GET/POST) and the REAL
+ * library modules run on the in-memory client (scripts/in-memory-supabase.ts) with an in-memory storage bucket. The session, the
+ * service client and the tenant's e-sign/forms provider are seams replaced by COUNTED stubs — no database, no network, no provider.
+ *
+ *   A · THE WHOLE LIBRARY — a provider with 250 forms (one unlicensed, one retired) is walked to the end: every authorized form is
+ *       discoverable, the 101st and the FINAL form are present and selectable, the total and loaded counts are real, filters work, a
+ *       provider that does not page is labelled possibly-truncated (positive control), refusals carry the five tenant codes.
+ *   B · ADDING FORMS — upload / state package / provider reference; provenance validation (rights, purpose, dates, checklist, signer
+ *       roles, field mapping); checksum; no provider bytes stored; idempotent reference; an unlicensed form refused; revision retires
+ *       the old master (a retired PDF is never usable again); a Contact / vendor / suspended / deactivated seat cannot add or overwrite
+ *       (driven through the route); signed links carry the short TTL.
+ *   C · BUNDLES — two offices' and two states' bundles never mix; required / supplemental / policy-item rules; county items only for
+ *       that county; a required form the tenant has not licensed reads not_configured with its recovery route; a retired master
+ *       resolves to its replacement.
+ *   D · THE AI READER — evidence per proposal, values transcribed not composed, nothing applied, the CDA refused (no model call).
+ *   E · ADDENDUM DOOR + WIRING — the addendum signature door is built (its own driven proof is test:addendum-signatures); m1005 /
+ *       m1006 vocabularies equal the code constants; the one-page fetch is gone (positive control).
+ *
+ * RED AT BASE: WAVE156C_ROOT=/home/user/v0-Vip-Re-OS-V1 (run with that directory as cwd so "@/" resolves there) — the base route
+ * returns ONE page of 100, so the 101st / final-form checks fail, and the new modules do not exist.
+ *
+ * BLIND SPOTS (published): RLS and storage.objects policies are asserted from migration TEXT, not executed; the provider stubs model
+ * DocuSign's documented start_position paging — no live provider was called, and the four other adapters do not page (they are
+ * labelled possibly-truncated, not proven complete); the AI reader's model is a stub — the verifier is what is proven; the FormWizard
+ * UI is checked by source scan only (no browser run).
+ */
+import { readFileSync, existsSync } from "node:fs"
+import { join } from "node:path"
+import { registerHooks } from "node:module"
+import { createHash } from "node:crypto"
+import { stripComments, blankStrings } from "./strip-comments"
+import { memSupabase, type MemClient } from "./in-memory-supabase"
+
+const ROOT = process.env.WAVE156C_ROOT ?? process.cwd()
+let passed = 0, failed = 0
+const failures: string[] = []
+function check(name: string, cond: boolean, detail?: string) {
+  if (cond) { passed++; console.log(`  ✓ ${name}`) }
+  else { failed++; failures.push(name); console.log(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`) }
+}
+const section = (t: string) => console.log(`\n[${t}]`)
+const raw = (p: string) => { try { return readFileSync(join(ROOT, p), "utf8") } catch { return "" } }
+const code = (p: string) => stripComments(raw(p))
+const bare = (p: string) => blankStrings(stripComments(raw(p)))
+const quiet = async (f: () => Promise<any>): Promise<any> => { const e = console.error, w = console.warn; console.error = () => {}; console.warn = () => {}; try { return await f() } finally { console.error = e; console.warn = w } }
+const load = async (p: string): Promise<any> => { const full = join(ROOT, p); if (!existsSync(full)) throw new Error(`${p} does not exist under ${ROOT}`); return import(full) }
+async function attempt(name: string, f: () => Promise<void>) { try { await f() } catch (e) { check(`${name} (threw)`, false, e instanceof Error ? e.message.slice(0, 200) : String(e)) } }
+
+// ── THE WORLD ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+const G = globalThis as any
+G.__156C = { db: null as any, user: null as any, provider: null as any, resolveError: null as string | null, providerName: "docusign" }
+const STUBS: Record<string, string> = {
+  "server-only": "export{}",
+  "@/lib/supabase/service": "export const createServiceClient = () => globalThis.__156C.db",
+  "@/lib/supabase/server": "export const createClient = async () => ({ auth: { getUser: async () => ({ data: { user: globalThis.__156C.user }, error: null }) }, from: (t) => globalThis.__156C.db.from(t), storage: globalThis.__156C.db.storage })",
+  // ROUND 2: the adapters' one egress (counted) — the REAL DocuSign / SkySlope listForms run against a documented-shape stub.
+  "@/lib/agentic-os/connector-gateway": "export const PROVIDER_HEALTH_POLICY = {}; export const deriveProviderHealth = () => 'healthy'; export const loadProviderHealth = async () => null; export const callConnector = async (r) => globalThis.__156C.gateway(r)",
+  // ROUND 2 (canary C05): the addendum door's notification seams are recorders (the door itself, the recorder and the ledger are REAL).
+  "@/lib/events/lifecycle-event-core": "export const recordLifecycleEvent = async (svc, brokerageId, input) => { (globalThis.__156C.events ??= []).push(input); return { ok: true, eventId: 'e', deduped: false } }",
+  "@/lib/kernel/manager-signals": "export const SIGNAL_HANDLERS = {}; export const consumeManagerSignals = async () => []; export const publishManagerSignal = async (input) => { (globalThis.__156C.signals ??= []).push(input); return { ok: true, signalId: 's' } }",
+  "@/lib/compliance/agent-readiness-gate": "export const checkAgentTransactable = async () => ({ transactable: true, blockers: [], message: null })",
+  "@/lib/integrations/resolve-esign-provider": "export const resolveESignProviderForActor = async () => { const w = globalThis.__156C; if (w.resolveError) throw new Error(w.resolveError); return { provider: w.provider, providerName: w.providerName, resolvedScope: 'brokerage', isDefault: false, credentials: { apiKey: 'x', profileId: 'p' }, accountId: null, credentialId: 'c' } }; export const resolveESignChoice = async () => ({ ok: false, error: 'stub' })",
+}
+registerHooks({
+  resolve(spec: string, ctx: any, next: any) {
+    const stub = STUBS[spec]
+    if (stub !== undefined) return { url: `data:text/javascript,${encodeURIComponent(stub)}`, shortCircuit: true }
+    return next(spec, ctx)
+  },
+})
+
+// ids
+const B = "11111111-1111-4111-8111-111111111111", B2 = "22222222-2222-4222-8222-222222222222"
+const OFF_N = "0f000000-0000-4000-8000-00000000000a", OFF_S = "0f000000-0000-4000-8000-00000000000b"
+const T1 = "7e000000-0000-4000-8000-000000000001"
+const U_BROKER = "a0000000-0000-4000-8000-000000000001", U_AG_N = "a0000000-0000-4000-8000-000000000002", U_AG_S = "a0000000-0000-4000-8000-000000000003"
+const U_CONTACT = "a0000000-0000-4000-8000-000000000004", U_VENDOR = "a0000000-0000-4000-8000-000000000005", U_SUSP = "a0000000-0000-4000-8000-000000000006"
+const U_DEACT = "a0000000-0000-4000-8000-000000000007", U_FOREIGN = "a0000000-0000-4000-8000-000000000008", U_LEAD = "a0000000-0000-4000-8000-000000000009"
+const B_SOLO = "33333333-3333-4333-8333-333333333333", U_SOLO = "a0000000-0000-4000-8000-00000000000a", U_TC = "a0000000-0000-4000-8000-00000000000b", U_DEALAG = "a0000000-0000-4000-8000-00000000000c"
+const AG_DEAL = "b0000000-0000-4000-8000-000000000001", TXN = "e0000000-0000-4000-8000-000000000001", OFFER = "d0000000-0000-4000-8000-000000000001"
+const BUYER = "c0000000-0000-4000-8000-0000000000b1", SELLER = "c0000000-0000-4000-8000-0000000000c1"
+
+function world(): any {
+  const db = memSupabase({
+    brokerages: [{ id: B, name: "Test Realty", plan_tier: "brokerage" }, { id: B2, name: "Other Realty", plan_tier: "brokerage" }, { id: B_SOLO, name: "Solo Agent Realty", plan_tier: "solo_agent" }],
+    locations: [{ id: OFF_N, brokerage_id: B, name: "North Office" }, { id: OFF_S, brokerage_id: B, name: "South Office" }],
+    teams: [{ id: T1, brokerage_id: B, name: "North Team", team_lead_id: U_LEAD, deleted_at: null }],
+    users: [
+      { id: U_BROKER, brokerage_id: B, user_type: "broker", status: "active", deleted_at: null, platform_role: null, location_id: null },
+      { id: U_AG_N, brokerage_id: B, user_type: "agent", status: "active", deleted_at: null, platform_role: null, location_id: OFF_N },
+      { id: U_AG_S, brokerage_id: B, user_type: "agent", status: "active", deleted_at: null, platform_role: null, location_id: OFF_S },
+      { id: U_CONTACT, brokerage_id: B, user_type: "contact", status: "active", deleted_at: null, platform_role: null, location_id: null },
+      { id: U_VENDOR, brokerage_id: B, user_type: "vendor", status: "active", deleted_at: null, platform_role: null, location_id: null },
+      { id: U_SUSP, brokerage_id: B, user_type: "agent", status: "suspended", deleted_at: null, platform_role: null, location_id: null },
+      { id: U_DEACT, brokerage_id: B, user_type: "agent", status: "active", deleted_at: null, platform_role: null, location_id: null },
+      { id: U_FOREIGN, brokerage_id: B2, user_type: "broker", status: "active", deleted_at: null, platform_role: null, location_id: null },
+      { id: U_LEAD, brokerage_id: B, user_type: "team_lead", status: "active", deleted_at: null, platform_role: null, location_id: null, team_id: T1 },
+      { id: U_SOLO, brokerage_id: B_SOLO, user_type: "agent", status: "active", deleted_at: null, platform_role: null, location_id: null },
+      { id: U_TC, brokerage_id: B, user_type: "tc", status: "active", deleted_at: null, platform_role: null, location_id: null },
+      { id: U_DEALAG, brokerage_id: B, user_type: "agent", status: "active", deleted_at: null, platform_role: null, location_id: null, email: "dee@testrealty.example" },
+    ],
+    agents: [{ id: "ag-deact", user_id: U_DEACT, brokerage_id: B, is_active: false }, { id: AG_DEAL, user_id: U_DEALAG, brokerage_id: B, is_active: true, status: "active" }],
+    brokerage_form_library: [], form_packet_bundles: [], form_packet_bundle_items: [], team_members: [], user_role_assignments: [], agent_action_ledger: [],
+  }, { uuidIds: true }) as MemClient & { storage: any; objects: Map<string, Uint8Array>; signed: Array<{ path: string; ttl: number }> }
+  const objects = new Map<string, Uint8Array>()
+  const signed: Array<{ path: string; ttl: number }> = []
+  ;(db as any).objects = objects
+  ;(db as any).signed = signed
+  ;(db as any).storage = {
+    from: (bucket: string) => ({
+      upload: async (path: string, buf: Uint8Array) => (objects.has(`${bucket}/${path}`) ? { data: null, error: { message: "The resource already exists" } } : (objects.set(`${bucket}/${path}`, buf), { data: { path }, error: null })),
+      remove: async (paths: string[]) => ({ data: paths.filter((p) => objects.delete(`${bucket}/${p}`)).map((name) => ({ name })), error: null }),
+      createSignedUrl: async (path: string, ttl: number) => { signed.push({ path, ttl }); return { data: { signedUrl: `https://signed.example/${bucket}/${path}?expires_in=${ttl}` }, error: null } },
+      list: async (prefix: string) => ({ data: [...objects.keys()].filter((k) => k.startsWith(`${bucket}/${prefix}/`) && !k.slice(`${bucket}/${prefix}/`.length).includes("/")).map((k) => ({ name: k.slice(`${bucket}/${prefix}/`.length), id: k })), error: null }),
+      copy: async () => ({ data: null, error: { message: "not used" } }),
+      download: async (path: string) => { const b = objects.get(`${bucket}/${path}`); return b ? { data: new Blob([b]), error: null } : { data: null, error: { message: "Object not found" } } },
+    }),
+  }
+  return db
+}
+
+/** A provider with N forms that pages by an offset cursor exactly like DocuSign's start_position (documented paging). COUNTED. */
+function pagedProvider(n: number, opts: { pages?: boolean; failStatus?: number } = {}) {
+  const forms = Array.from({ length: n }, (_, i) => {
+    const k = i + 1, id = `F${String(k).padStart(3, "0")}`
+    return {
+      formId: id, name: k === 77 ? `Broker Compliance Checklist ${id}` : `TX Residential Form ${id}`, issuer: "TXR", stateCode: k % 10 === 0 ? "FL" : "TX",
+      county: k === 120 ? "Travis" : undefined, category: k === 77 ? undefined : (["offer", "listing", "addendum", "disclosure", "agency"] as const)[k % 5], version: k === 150 ? "2026-07" : "2025-01",
+      licensed: k === 7 ? false : undefined, retired: k === 13 ? true : undefined, replacedByFormId: k === 13 ? "F014" : undefined,
+      officeIds: k === 90 ? [OFF_N] : undefined,
+    }
+  })
+  const p = {
+    calls: 0, forms,
+    async listForms(req: { pageSize?: number; cursor?: string; stateCode?: string; query?: string }) {
+      p.calls++
+      if (opts.failStatus) return { success: false, status: opts.failStatus, error: `Stub listForms ${opts.failStatus}: refused` }
+      const size = req.pageSize ?? 100
+      const start = Number(req.cursor ?? 0) || 0
+      const page = forms.slice(start, start + size)
+      if (opts.pages === false) return { success: true, forms: forms.slice(0, size) }
+      return { success: true, forms: page, total: forms.length, nextCursor: start + size < forms.length ? String(start + size) : null }
+    },
+  }
+  return p
+}
+
+async function callRoute(mod: any, method: "GET" | "POST", url: string, body?: unknown): Promise<{ status: number; json: any }> {
+  const init: RequestInit = { method }
+  if (body !== undefined) { init.body = JSON.stringify(body); init.headers = { "content-type": "application/json" } }
+  const { NextRequest } = await import("next/server")
+  const res = await quiet(() => mod[method](new NextRequest(url, init as any)))
+  return { status: res.status, json: await res.json() }
+}
+
+async function makePdf(fields: string[], marker = ""): Promise<Uint8Array> {
+  const { PDFDocument } = await import("pdf-lib")
+  const doc = await PDFDocument.create(); const page = doc.addPage(); const form = doc.getForm()
+  fields.forEach((f, i) => form.createTextField(f).addToPage(page, { x: 20, y: 700 - i * 24, width: 200, height: 18 }))
+  doc.setTitle(`specimen ${marker}`)
+  return new Uint8Array(await doc.save())
+}
+
+async function main() {
+  console.log(`wave156-c forms directory guard — ROOT=${ROOT}`)
+
+  // ═══ A · THE WHOLE PROVIDER-AUTHORIZED LIBRARY ═══════════════════════════════════════════════════════════════════════════════
+  section("A · the provider library is walked to the end")
+  await attempt("A", async () => {
+    G.__156C.db = world(); G.__156C.user = { id: U_BROKER }; G.__156C.resolveError = null
+    const prov = pagedProvider(250); G.__156C.provider = prov
+    const route = await load("app/api/forms/provider-library/route.ts")
+    // The expected set is DERIVED from the stub (authorized = not unlicensed; active = not retired; brokerage seat on no office ⇒
+    // an office-restricted form is not applicable) — never a retyped number.
+    const expected = prov.forms.filter((f) => f.licensed !== false && f.retired !== true && !f.officeIds).map((f) => f.formId)
+    const got: string[] = []
+    let cursor: string | null = null, first: any = null, rounds = 0
+    do {
+      const r = await callRoute(route, "GET", `http://x/api/forms/provider-library${cursor ? `?cursor=${cursor}` : ""}`)
+      if (!first) first = r
+      for (const f of r.json.forms ?? []) got.push(f.formId)
+      cursor = r.json.nextCursor ?? null
+      rounds++
+    } while (cursor && rounds < 20)
+    check(`TRUNCATION: every authorized active form is discoverable (${expected.length} of the stub's 250; got ${new Set(got).size})`, expected.every((id) => got.includes(id)) && new Set(got).size === expected.length)
+    check("the 101st form (F101) and the FINAL form (F250) are in the directory", got.includes("F101") && got.includes("F250"))
+    check("the response says the real total (250, the provider's own) and how many were loaded", first?.json?.total === 250 && first?.json?.loaded === (first?.json?.forms ?? []).length)
+    check("the walk ends because the provider is exhausted (exhausted, completeness complete, no cursor)", first?.json?.exhausted === true && first?.json?.completeness === "complete" && first?.json?.nextCursor === null)
+    check("the provider was paged, not sampled: 3 pages of 100 for 250 forms", prov.calls === 3, `calls=${prov.calls}`)
+    check("an UNLICENSED form (F007) is never listed; a RETIRED one (F013) is hidden by default", !got.includes("F007") && !got.includes("F013"))
+
+    const dir = await load("lib/forms/provider-form-directory.ts")
+    // chunking: maxPages 1 hands back a cursor; continuing from it reaches the end
+    const c1 = await dir.walkProviderLibrary(pagedProvider(250), {}, { maxPages: 1 })
+    const c2 = await dir.walkProviderLibrary(pagedProvider(250), {}, { maxPages: 5, cursor: c1.nextCursor })
+    check("a chunk keeps the cursor until the library is exhausted (more_available → complete)", c1.ok && c1.completeness === "more_available" && c1.nextCursor === "100" && c2.ok && c2.exhausted && c2.forms.some((f: any) => f.formId === "F250"))
+    const silent = await dir.walkProviderLibrary(pagedProvider(250, { pages: false }), {})
+    check("POSITIVE CONTROL: a provider that returns a full page with no cursor and no total is labelled unknown_possibly_truncated, never complete", silent.ok && silent.completeness === "unknown_possibly_truncated")
+    const small = await dir.walkProviderLibrary(pagedProvider(40, { pages: false }), {})
+    check("…and a short page from a non-paging provider is complete (the label is not cried wolf)", small.ok && small.completeness === "complete")
+    // filters
+    const fl = await dir.walkProviderLibrary(pagedProvider(250), { stateCode: "FL" })
+    const comp = await dir.walkProviderLibrary(pagedProvider(250), { category: "compliance" })
+    const travis = await dir.walkProviderLibrary(pagedProvider(250), { county: "Travis" })
+    const ver = await dir.walkProviderLibrary(pagedProvider(250), { version: "2026-07" })
+    const text = await dir.walkProviderLibrary(pagedProvider(250), { text: "F199" })
+    const ret = await dir.walkProviderLibrary(pagedProvider(250), { status: "retired" })
+    const north = await dir.walkProviderLibrary(pagedProvider(250), { officeId: OFF_N })
+    const south = await dir.walkProviderLibrary(pagedProvider(250), { officeId: OFF_S })
+    const flExpected = prov.forms.filter((f) => f.stateCode === "FL" && f.licensed !== false && f.retired !== true && !f.officeIds).length
+    check(`filter state: FL returns exactly the stub's applicable FL forms (${flExpected})`, fl.forms.every((f: any) => f.stateCode === "FL") && fl.forms.length === flExpected, `got ${fl.forms.length}`)
+    check("filters: category compliance, county, legal version, text, retired-only, office applicability",
+      comp.forms.map((f: any) => f.formId).join() === "F077"
+      && travis.forms.some((f: any) => f.formId === "F120") && ver.forms.map((f: any) => f.formId).join() === "F150" && text.forms.map((f: any) => f.formId).join() === "F199"
+      && ret.forms.map((f: any) => f.formId).join() === "F013" && north.forms.some((f: any) => f.formId === "F090") && !south.forms.some((f: any) => f.formId === "F090"))
+    // selection by id
+    const f101 = await dir.findProviderFormById(pagedProvider(250), "F101")
+    const f250 = await dir.findProviderFormById(pagedProvider(250), "F250")
+    const f007 = await dir.findProviderFormById(pagedProvider(250), "F007")
+    const f999 = await dir.findProviderFormById(pagedProvider(250), "F999")
+    const f013 = await dir.findProviderFormById(pagedProvider(250), "F013")
+    check("the 101st and the final form are SELECTABLE by id", f101.ok && f250.ok)
+    check("an unlicensed form is refused license_missing; an unknown id form_not_in_provider_library; a retired one names its replacement",
+      !f007.ok && f007.refusal.code === "license_missing" && !f999.ok && f999.refusal.code === "form_not_in_provider_library" && !f013.ok && /F014/.test(f013.refusal.message))
+    // refusals
+    const resolverSrc = code("lib/integrations/resolve-esign-provider.ts")
+    const notConnected = "E-sign is set to Dotloop (team setting), but no active Dotloop connection was found for you, your team or your brokerage. Connect it in Settings → Integrations, or change the e-sign selection."
+    check("POSITIVE CONTROL: the not-connected specimen is the resolver's own sentence shape", /but no active \$\{label\} connection was found/.test(resolverSrc))
+    check("refusal codes: a selected-but-unconnected provider → credentials_need_attention; nothing selectable → no_provider_selected",
+      dir.classifyResolveFailure(notConnected).code === "credentials_need_attention" && dir.classifyResolveFailure("E-sign is set to Google eSignature, which sends from your own Google window").code === "no_provider_selected")
+    check("refusal codes by status: 401 credentials, 403 license, 404 not in library, 503 temporarily unavailable — each with a recovery route",
+      dir.classifyProviderCallFailure("x", 401).code === "credentials_need_attention" && dir.classifyProviderCallFailure("x", 403).code === "license_missing"
+      && dir.classifyProviderCallFailure("x", 404).code === "form_not_in_provider_library" && dir.classifyProviderCallFailure("DocuSign listTemplates 503: down").code === "provider_unavailable"
+      && dir.classifyProviderCallFailure("x", 503).retryable === true && /^\//.test(dir.classifyProviderCallFailure("x", 403).recoverHref))
+    G.__156C.provider = pagedProvider(250, { failStatus: 503 })
+    const down = await callRoute(route, "GET", "http://x/api/forms/provider-library")
+    check("the route says provider_unavailable (retryable, 503) and still returns the tenant's own library half", down.status === 503 && down.json.refusal?.code === "provider_unavailable" && Array.isArray(down.json.entries))
+    G.__156C.resolveError = notConnected
+    const nc = await callRoute(route, "GET", "http://x/api/forms/provider-library")
+    check("the route says credentials_need_attention in tenant words when the selected provider is not connected", nc.json.refusal?.code === "credentials_need_attention" && nc.json.configured === false)
+    G.__156C.resolveError = null; G.__156C.provider = pagedProvider(250)
+    // gate
+    G.__156C.user = { id: U_CONTACT }
+    const asContact = await callRoute(route, "GET", "http://x/api/forms/provider-library")
+    G.__156C.user = { id: U_VENDOR }
+    const asVendor = await callRoute(route, "GET", "http://x/api/forms/provider-library")
+    check("a portal CONTACT and a VENDOR seat cannot browse the brokerage's licensed library (403)", asContact.status === 403 && asVendor.status === 403)
+    G.__156C.user = { id: U_BROKER }
+  })
+
+  // ═══ B · ADDING FORMS ════════════════════════════════════════════════════════════════════════════════════════════════════════
+  section("B · adding forms: upload, state package, provider reference — validated, licensed, versioned")
+  await attempt("B", async () => {
+    const db = world(); G.__156C.db = db
+    const tp = await load("lib/forms/tenant-form-packets.ts")
+    const intake = await load("lib/forms/form-directory-intake.ts")
+    const dir = await load("lib/forms/provider-form-directory.ts")
+    const actor = async (u: string) => (await quiet(() => tp.resolvePacketActor(db, u)))
+    const broker = (await actor(U_BROKER)).actor, agN = (await actor(U_AG_N)).actor, agS = (await actor(U_AG_S)).actor
+    check("the office comes from the session user's row and must be a location of the same brokerage", agN.locationId === OFF_N && agS.locationId === OFF_S && broker.oversight === true)
+    const refused = await Promise.all([U_CONTACT, U_VENDOR, U_SUSP, U_DEACT].map(actor))
+    check("a CONTACT, a VENDOR, a SUSPENDED and a DEACTIVATED seat are refused an actor — they can add or overwrite nothing", refused.every((r: any) => !r.ok))
+
+    const pdf = await makePdf(["Buyer Name", "Seller Name", "Buyer Signature", "Seller Initials"], "v1")
+    const good = { mode: "upload", owner: {}, name: "TX Brokerage Listing Agreement", state: "TX", packetType: "listing", rightsBasis: "association_membership", licenseNote: "TXR member 2026", purpose: "listing", effectiveOn: "2026-01-01", revisionDate: "2025-12-01", checklistKeys: ["listing.agreement"], signerRoles: ["seller", "listing_agent"], fieldMapping: { "Seller Name": "seller.name" }, fileName: "la.pdf", bytes: pdf }
+    const bad = async (o: Record<string, unknown>) => intake.addFormToLibrary(db, broker, { ...good, ...o })
+    const rRights = await bad({ rightsBasis: "" }), rLicense = await bad({ licenseNote: "" }), rPurpose = await bad({ purpose: "whatever" }), rEff = await bad({ effectiveOn: "soon" })
+    const rFuture = await bad({ revisionDate: "2099-01-01" }), rCheck = await bad({ checklistKeys: [] }), rSigner = await bad({ signerRoles: ["notary"] }), rMap = await bad({ fieldMapping: { "Seller Name": "Seller Name!" } })
+    check("provenance is validated by name: rights basis, the license it is held under, purpose, effective date, a future revision date, checklist mapping, signer roles, field mapping",
+      [rRights, rLicense, rPurpose, rEff, rFuture, rCheck, rSigner, rMap].every((r: any) => !r.ok) && /right/.test(rRights.error) && /license/.test(rLicense.error) && /checklist/.test(rCheck.error) && /signers/.test(rSigner.error) && db.tables.brokerage_form_library.length === 0 && db.objects.size === 0)
+    const ok = await quiet(() => intake.addFormToLibrary(db, broker, good))
+    const row = ok.ok ? ok.packet : null
+    check("a valid upload lands in the tenant's OWN folder with provenance, revision, checksum (sha256 of the bytes), purpose, signer roles and field mapping",
+      !!row && row.storage_path?.startsWith(`brokerage/${B}/packets/${row.id}/`) && row.checksum_sha256 === createHash("sha256").update(pdf).digest("hex")
+      && row.source_kind === "brokerage_upload" && row.rights_basis === "association_membership" && row.purpose === "listing" && row.effective_on === "2026-01-01"
+      && row.revision_date === "2025-12-01" && row.signer_roles?.join() === "seller,listing_agent" && row.field_mapping?.["Seller Name"] === "seller.name" && row.field_count === 4 && row.version === 1, JSON.stringify(ok).slice(0, 300))
+    const dup = await intake.addFormToLibrary(db, broker, good)
+    check("the same file again is refused as a duplicate (one record per form)", !dup.ok && /already in your library/.test(dup.error))
+    // agents
+    const agWide = await intake.addFormToLibrary(db, agN, { ...good, bytes: await makePdf(["a"], "agw") })
+    const agSupp = await quiet(async () => intake.addFormToLibrary(db, agN, { ...good, owner: { scopeUserId: U_AG_N }, packetType: "custom", purpose: "other", checklistKeys: [], name: "My buyer FAQ sheet", rightsBasis: "own_form", licenseNote: null, bytes: await makePdf(["b"], "sup") }))
+    const agSuppListing = await intake.addFormToLibrary(db, agN, { ...good, owner: { scopeUserId: U_AG_N }, packetType: "listing", bytes: await makePdf(["c"], "supl") })
+    const agForOther = await intake.addFormToLibrary(db, agN, { ...good, owner: { scopeUserId: U_AG_S }, packetType: "custom", rightsBasis: "own_form", bytes: await makePdf(["d"], "oth") })
+    check("an agent cannot add a brokerage master, cannot add a supplemental LISTING master, cannot add for another agent — but adds their own supplemental form",
+      !agWide.ok && !agSuppListing.ok && !agForOther.ok && agSupp.ok && agSupp.packet.scope_user_id === U_AG_N && agSupp.packet.source_kind === "agent_upload")
+    const usableN = await tp.usableTenantPacketPaths(db, agN, [agSupp.packet.storage_path])
+    const usableS = await tp.usableTenantPacketPaths(db, agS, [agSupp.packet.storage_path])
+    check("an agent's supplemental form is usable by that agent and NOT by another agent of the brokerage", usableN.usable.has(agSupp.packet.storage_path) && !usableS.usable.has(agSupp.packet.storage_path))
+    // office form
+    const offN = await quiet(async () => intake.addFormToLibrary(db, broker, { ...good, owner: { locationId: OFF_N }, name: "North Office Disclosure", packetType: "disclosure", purpose: "disclosure", bytes: await makePdf(["e"], "offn") }))
+    const vN = await tp.usableTenantPacketPaths(db, agN, [offN.packet.storage_path]), vS = await tp.usableTenantPacketPaths(db, agS, [offN.packet.storage_path])
+    const offByAgent = await intake.addFormToLibrary(db, agN, { ...good, owner: { locationId: OFF_N }, bytes: await makePdf(["f"], "offa") })
+    check("an OFFICE form reaches that office's agents only; only the brokerage's admins share with an office", offN.ok && vN.usable.size === 1 && vS.usable.size === 0 && !offByAgent.ok)
+    // state package
+    const sp = await quiet(() => intake.addFormToLibrary(db, broker, { ...good, mode: "state_preconfigured", name: "TXR Seller's Disclosure Notice", rightsBasis: "association_membership", bytes: null }))
+    const tx = (await import(join(ROOT, "lib/state-forms/registry.ts"))).STATE_FORMS.TX.listing
+    const txName = [...tx.required, ...tx.addenda, tx.brokerageRepresentation][0]
+    const sp2 = await quiet(() => intake.addFormToLibrary(db, broker, { ...good, mode: "state_preconfigured", name: txName, bytes: null }))
+    check("a state-package pick must be a form the STATE's package names (no universal list), and with no licensed file it reads NOT CONFIGURED — never pretends to exist",
+      !sp.ok && sp2.ok && sp2.status === "not_configured" && sp2.packet.storage_path === null && intake.libraryFormStatus(sp2.packet) === "not_configured")
+    // provider reference
+    const before = db.objects.size
+    const deps = { provider: pagedProvider(250), providerName: "docusign" }
+    const pRef = await quiet(() => intake.addFormToLibrary(db, broker, { ...good, mode: "provider_form", rightsBasis: "provider_license", providerFormId: "F101", name: "", bytes: null }, deps))
+    const pAgain = await quiet(() => intake.addFormToLibrary(db, broker, { ...good, mode: "provider_form", rightsBasis: "provider_license", providerFormId: "F101", name: "", bytes: null }, deps))
+    const pFinal = await quiet(() => intake.addFormToLibrary(db, broker, { ...good, mode: "provider_form", rightsBasis: "provider_license", providerFormId: "F250", name: "", bytes: null }, deps))
+    const pUnlic = await intake.addFormToLibrary(db, broker, { ...good, mode: "provider_form", rightsBasis: "provider_license", providerFormId: "F007", name: "", bytes: null }, deps)
+    check("a provider form is added BY ID as a REFERENCE — no PDF bytes copied into tenant storage; adopting it twice is the same row; the final form is adoptable",
+      pRef.ok && pRef.packet.storage_path === null && pRef.packet.provider_form_id === "F101" && pRef.packet.provider_name === "docusign" && db.objects.size === before && pAgain.ok && pAgain.existing === true && pAgain.packet.id === pRef.packet.id && pFinal.ok)
+    check("an UNLICENSED provider form is refused (license_missing) and nothing is written", !pUnlic.ok && pUnlic.refusal?.code === "license_missing")
+    // merge: the adopted provider form is listed once
+    const rows = await tp.listDirectoryRowsForActor(db, broker, {})
+    const merged = dir.mergeFormDirectory(rows.rows, (await dir.walkProviderLibrary(pagedProvider(250), {})).forms.map((f: any) => ({ ...f, providerName: "docusign" })))
+    const f101s = merged.filter((e: any) => e.providerFormId === "F101")
+    check("ONE picker: an adopted provider form appears ONCE (as the tenant's entry, marked adopted); the sources are labelled",
+      f101s.length === 1 && f101s[0].source === "brokerage" && f101s[0].adoptedFromProvider === true && merged.some((e: any) => e.source === "connected_provider") && merged.some((e: any) => e.source === "office"))
+    // revision
+    const pdf2 = await makePdf(["Buyer Name", "Seller Name", "Buyer Signature", "Seller Initials", "Legal Description"], "v2")
+    const same = await intake.reviseLibraryForm(db, broker, row.id, { fileName: "la.pdf", bytes: pdf, revisionDate: "2026-06-01", effectiveOn: "2026-07-01" })
+    const rev = await quiet(() => intake.reviseLibraryForm(db, broker, row.id, { fileName: "la-v2.pdf", bytes: pdf2, revisionDate: "2026-06-01", effectiveOn: "2026-07-01" }))
+    const old = db.tables.brokerage_form_library.find((r: any) => r.id === row.id)
+    const useOld = await tp.usableTenantPacketPaths(db, agN, [row.storage_path]), useNew = await tp.usableTenantPacketPaths(db, agN, [rev.packet?.storage_path])
+    check("a REVISION is a new version (2) with its provenance carried; an identical file is refused as not a revision",
+      !same.ok && rev.ok && rev.packet.version === 2 && rev.packet.rights_basis === "association_membership" && rev.packet.checklist_keys?.join() === "listing.agreement" && rev.packet.revision_date === "2026-06-01")
+    check("the old master is RETIRED with replaced_by naming the revision — a retired PDF is never usable again; the revision is", old?.is_active === false && old?.replaced_by_id === rev.packet.id && !!old?.retired_at && useOld.usable.size === 0 && useNew.usable.size === 1)
+    const urlRetired = await tp.issueTenantPacketUrl(db, agN, old, "use")
+    check("no signed link is minted for the retired master", !urlRetired.ok)
+    // signed URL expiry + revocation
+    db.signed.length = 0
+    const link = await tp.issueTenantPacketUrl(db, agN, db.tables.brokerage_form_library.find((r: any) => r.id === rev.packet.id), "use")
+    check(`a packet link is short-lived: minted per view with the ${tp.FORM_PACKET_PREVIEW_TTL_SECONDS}s TTL (never stored, never long-lived)`, link.ok && link.ttlSeconds === tp.FORM_PACKET_PREVIEW_TTL_SECONDS && db.signed.length === 1 && db.signed[0].ttl === tp.FORM_PACKET_PREVIEW_TTL_SECONDS && tp.FORM_PACKET_PREVIEW_TTL_SECONDS <= 3600)
+    db.tables.users.find((u: any) => u.id === U_AG_N).user_type = "contact"
+    const revoked = await quiet(() => tp.resolvePacketActor(db, U_AG_N))
+    check("a seat whose role is REVOKED (agent → contact) loses access on the next request — no actor, no link", !revoked.ok)
+    db.tables.users.find((u: any) => u.id === U_AG_N).user_type = "agent"
+    // the route: a contact / vendor POST is refused; the broker's add leaves ONE receipt
+    G.__156C.db = db
+    const droute = await load("app/api/forms/directory/route.ts")
+    const masterBefore = JSON.stringify(db.tables.brokerage_form_library)
+    G.__156C.user = { id: U_CONTACT }
+    const cAdd = await callRoute(droute, "POST", "http://x/api/forms/directory", { action: "add_form", mode: "state_preconfigured", name: txName, state: "TX", packet_type: "listing", rights_basis: "association_membership", purpose: "listing", effective_on: "2026-01-01", checklist_keys: ["listing.agreement"], signer_roles: ["seller"] })
+    const cRetire = await callRoute(droute, "POST", "http://x/api/forms/directory", { action: "retire_form", packet_id: rev.packet.id })
+    G.__156C.user = { id: U_VENDOR }
+    const vRev = await callRoute(droute, "POST", "http://x/api/forms/directory", { action: "retire_form", packet_id: rev.packet.id })
+    check("through the ROUTE: a Contact cannot add or retire (overwrite) a packet master and a vendor cannot either — 403, library unchanged",
+      cAdd.status === 403 && cRetire.status === 403 && vRev.status === 403 && JSON.stringify(db.tables.brokerage_form_library) === masterBefore)
+    G.__156C.user = { id: U_BROKER }
+    const ledgerBefore = (db.tables.agent_action_ledger ?? []).length
+    const bAdd = await callRoute(droute, "POST", "http://x/api/forms/directory", { action: "add_form", mode: "state_preconfigured", name: tx.brokerageRepresentation, state: "TX", packet_type: "listing", rights_basis: "state_mandated_public", purpose: "agency", effective_on: "2026-01-01", checklist_keys: ["agency.disclosure"], signer_roles: ["seller"] })
+    check("the broker's add through the route succeeds and leaves a ledger receipt (LAW 5)", bAdd.status === 200 && bAdd.json.ok === true && (db.tables.agent_action_ledger ?? []).length > ledgerBefore, JSON.stringify(bAdd.json).slice(0, 200))
+  })
+
+  // ═══ C · BUNDLES ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+  section("C · packet bundles: ordered, required/optional, per state and office — never mixed")
+  await attempt("C", async () => {
+    const db = world()
+    const tp = await load("lib/forms/tenant-form-packets.ts")
+    const intake = await load("lib/forms/form-directory-intake.ts")
+    const bun = await load("lib/forms/form-packet-bundles.ts")
+    const A = async (u: string) => (await quiet(() => tp.resolvePacketActor(db, u))).actor
+    const broker = await A(U_BROKER), agN = await A(U_AG_N), agS = await A(U_AG_S)
+    const base = { mode: "upload", owner: {}, state: "TX", packetType: "listing", rightsBasis: "own_form", purpose: "listing", effectiveOn: "2026-01-01", checklistKeys: ["listing.agreement"], signerRoles: ["seller"] }
+    const add = async (name: string, o: Record<string, unknown> = {}) => (await quiet(async () => intake.addFormToLibrary(db, broker, { ...base, name, fileName: `${name}.pdf`, bytes: await makePdf(["x"], name), ...o }))).packet
+    const la = await add("TX Listing Agreement"), sd = await add("TX Seller Disclosure", { packetType: "disclosure", purpose: "disclosure" })
+    const flForm = await add("FL Listing Agreement", { state: "FL" })
+    const northLa = await add("North Office Listing Agreement", { owner: { locationId: OFF_N } })
+    const notLicensed = (await quiet(async () => intake.addFormToLibrary(db, broker, { ...base, mode: "state_preconfigured", name: (await import(join(ROOT, "lib/state-forms/registry.ts"))).STATE_FORMS.TX.listing.required[0], bytes: null }))).packet
+
+    const wide = (await bun.createPacketBundle(db, broker, { kind: "listing", name: "TX Listing Packet", state: "TX" })).bundle
+    const north = (await bun.createPacketBundle(db, broker, { kind: "listing", name: "North TX Listing Packet", state: "TX", locationId: OFF_N })).bundle
+    const flB = (await bun.createPacketBundle(db, broker, { kind: "listing", name: "FL Listing Packet", state: "FL" })).bundle
+    const agentCreate = await bun.createPacketBundle(db, agN, { kind: "listing", name: "Mine", state: "TX" })
+    check("bundles are created by the brokerage's admins for the brokerage, an office or another state; an agent cannot create one", !!wide && !!north && !!flB && !agentCreate.ok)
+    const it = async (bundleId: string, o: Record<string, unknown>, who = broker) => bun.addBundleItem(db, who, bundleId, { requiredName: "Form", isRequired: true, requirementSource: "brokerage", ...o })
+    await it(wide.id, { libraryFormId: la.id, requiredName: "Listing agreement" })
+    await it(wide.id, { libraryFormId: sd.id, requiredName: "Seller disclosure" })
+    await it(wide.id, { libraryFormId: notLicensed.id, requiredName: "Association listing form", requirementSource: "state_policy" })
+    await it(wide.id, { requiredName: "Travis County addendum", requirementSource: "county_policy", county: "Travis" })
+    await it(north.id, { libraryFormId: northLa.id, requiredName: "North listing agreement" })
+    await it(flB.id, { libraryFormId: flForm.id, requiredName: "FL listing agreement" })
+    const mixed = await it(wide.id, { libraryFormId: flForm.id, requiredName: "FL form in a TX bundle" })
+    check("a form of ANOTHER STATE is refused into a bundle (bundles never mix jurisdictions)", !mixed.ok && /never mix states/.test(mixed.error))
+    const rS = await bun.resolveDealPacket(db, agS, { kind: "listing", state: "TX" })
+    const rN = await bun.resolveDealPacket(db, agN, { kind: "listing", state: "TX" })
+    const rFL = await bun.resolveDealPacket(db, agS, { kind: "listing", state: "FL" })
+    const namesS = rS.packet.items.map((i: any) => i.name), namesN = rN.packet.items.map((i: any) => i.name)
+    check("TWO OFFICES' bundles do not mix: the South agent gets the brokerage packet, the North agent gets the North office's — no item crosses",
+      rS.packet.bundle.id === wide.id && rN.packet.bundle.id === north.id && !namesS.includes("North listing agreement") && namesN.join() === "North listing agreement")
+    check("TWO STATES' bundles do not mix: a FL deal gets only the FL packet", rFL.packet.bundle.id === flB.id && rFL.packet.items.map((i: any) => i.name).join() === "FL listing agreement")
+    check("items come back in their order, with required markers", namesS.slice(0, 3).join("|") === "Listing agreement|Seller disclosure|Association listing form" && rS.packet.items.every((i: any) => i.required === true))
+    const unl = rS.packet.items.find((i: any) => i.name === "Association listing form")
+    check("a required form the tenant holds no licensed file for reads NOT CONFIGURED with request access / add licensed file and a recoverable route; the packet counts it missing",
+      unl.status === "not_configured" && unl.path === null && unl.actions.includes("request_access") && unl.actions.includes("add_licensed_file") && /^\//.test(unl.recoverHref) && rS.packet.missingRequired === 1)
+    const rTravis = await bun.resolveDealPacket(db, agS, { kind: "listing", state: "TX", county: "Travis" })
+    check("a COUNTY policy item applies only to a deal in that county", !namesS.includes("Travis County addendum") && rTravis.packet.items.some((i: any) => i.name === "Travis County addendum"))
+    // supplemental
+    const mine = (await quiet(async () => intake.addFormToLibrary(db, agS, { ...base, owner: { scopeUserId: U_AG_S }, packetType: "custom", purpose: "other", checklistKeys: [], name: "My cover letter", fileName: "c.pdf", bytes: await makePdf(["y"], "cov") }))).packet
+    const suppReq = await it(wide.id, { libraryFormId: mine.id, requiredName: "Cover letter", isRequired: true, requirementSource: "user_supplemental" }, agS)
+    const supp = await it(wide.id, { libraryFormId: mine.id, requiredName: "Cover letter", isRequired: false, requirementSource: "user_supplemental" }, agS)
+    const otherView = await bun.resolveDealPacket(db, await A(U_BROKER), { kind: "listing", state: "TX" })
+    const myView = await bun.resolveDealPacket(db, agS, { kind: "listing", state: "TX" })
+    check("an agent adds an OPTIONAL supplemental form (never a required one); it shows in THEIR packet only",
+      !suppReq.ok && supp.ok && myView.packet.items.some((i: any) => i.name === "Cover letter" && !i.required) && !otherView.packet.items.some((i: any) => i.name === "Cover letter"))
+    const reqItem = myView.packet.items.find((i: any) => i.name === "Listing agreement"), policyItem = myView.packet.items.find((i: any) => i.name === "Association listing form")
+    const agDel = await bun.removeBundleItem(db, agS, reqItem.itemId)
+    const brDelPolicy = await bun.removeBundleItem(db, broker, policyItem.itemId)
+    const agDelOwn = await bun.removeBundleItem(db, agS, supp.item.id)
+    check("an individual user CANNOT delete a required brokerage form; NO ONE removes a state-policy item here; the agent removes their own supplemental",
+      !agDel.ok && /required brokerage form/.test(agDel.error) && !brDelPolicy.ok && /state policy/.test(brDelPolicy.error) && agDelOwn.ok)
+    const ids = (await bun.resolveDealPacket(db, broker, { kind: "listing", state: "TX", county: "Travis" })).packet.items.map((i: any) => i.itemId)
+    const agReorder = await bun.reorderBundleItems(db, agS, wide.id, [...ids].reverse())
+    const brReorder = await bun.reorderBundleItems(db, broker, wide.id, [...ids].reverse())
+    const after = (await bun.resolveDealPacket(db, broker, { kind: "listing", state: "TX", county: "Travis" })).packet.items.map((i: any) => i.itemId)
+    check("the order is editable by the bundle's manager only", !agReorder.ok && brReorder.ok && after.join() === [...ids].reverse().join())
+    // retired master → replacement
+    const rev = await quiet(async () => intake.reviseLibraryForm(db, broker, la.id, { fileName: "la2.pdf", bytes: await makePdf(["x", "z"], "la2"), revisionDate: "2026-05-01", effectiveOn: "2026-06-01" }))
+    const afterRev = (await bun.resolveDealPacket(db, agS, { kind: "listing", state: "TX" })).packet.items.find((i: any) => i.name === "Listing agreement")
+    check("a bundle item whose master was RETIRED resolves to its replacement — the retired PDF's path is never handed out",
+      rev.ok && afterRev.status === "replaced" && afterRev.packetId === rev.packet.id && afterRev.path === rev.packet.storage_path && afterRev.path !== la.storage_path)
+  })
+
+  // ═══ D · THE AI READER ══════════════════════════════════════════════════════════════════════════════════════════════════════
+  section("D · the AI reader proposes with evidence; nothing is applied; the CDA is refused")
+  await attempt("D", async () => {
+    const rd = await load("lib/forms/form-document-reader.ts")
+    const text = "RESIDENTIAL LISTING AGREEMENT. Property: 12 Oak St. Legal description: Lot 4, Block 2, Oak Hills Addition, Travis County, Texas. Seller shall deliver the Seller's Disclosure Notice within 3 days. This agreement is governed by the laws of Texas."
+    const fields = ["Property Address", "Legal Description", "Seller Signature", "Buyer Initials", "Price"]
+    let calls = 0
+    const gen = async () => { calls++; return { proposals: [
+      { kind: "field", target: "Property Address", value: "12 Oak St", evidence: { quote: "Property: 12 Oak St." } },
+      { kind: "legal_description", target: "Legal Description", value: "Lot 4, Block 2, Oak Hills Addition", evidence: { quote: "Legal description: Lot 4, Block 2, Oak Hills Addition, Travis County, Texas." } },
+      { kind: "clause", target: "governing law", evidence: { quote: "governed by the laws of Texas" } },
+      { kind: "requirement", target: "seller disclosure", evidence: { quote: "Seller shall deliver the Seller's Disclosure Notice within 3 days" } },
+      { kind: "field", target: "Price", value: "450000", evidence: { quote: "Property: 12 Oak St." } },
+      { kind: "field", target: "Closing Date", value: "2026-12-01", evidence: { quote: "Property: 12 Oak St." } },
+      { kind: "clause", target: "invented", evidence: { quote: "Buyer waives all inspections" } },
+    ] } }
+    const r = await rd.readFormDocument({ name: "TX Listing Agreement", fields, text, brokerageId: B, userId: U_BROKER }, { generate: gen })
+    const model = r.suggestions.filter((s: any) => s.via === "model")
+    check("fields, legal description, governing clause and requirement are proposed WITH their evidence; signature / initials boxes are read from the PDF itself",
+      r.ok && model.map((s: any) => s.kind).sort().join() === "clause,field,legal_description,requirement" && r.structure.signerBoxes.join() === "Seller Signature,Buyer Initials")
+    check("an invented value (a price not in its quote), a field the PDF lacks and a quote not in the document are DROPPED with the reason", r.dropped.length === 3 && r.dropped.some((d: any) => /not stated in its evidence/.test(d.why)) && r.dropped.some((d: any) => /no field/.test(d.why)) && r.dropped.some((d: any) => /not in the document/.test(d.why)))
+    check("every surviving proposal is pending_review — the reader applies nothing", r.suggestions.length > 0 && r.suggestions.every((s: any) => s.status === "pending_review"))
+    const before = calls
+    const cda = await rd.readFormDocument({ name: "Commission Disbursement Authorization", formCode: "CDA", fields, text, brokerageId: B, userId: U_BROKER }, { generate: gen })
+    check("a CDA is REFUSED and no model is called — the agent fills the CDA", !cda.ok && /agent fills the CDA/.test(cda.refused) && calls === before && cda.suggestions.length === 0)
+    check("POSITIVE CONTROL: the CDA detector sees a CDA by code and by name, and not an ordinary form", rd.isCdaForm({ formCode: "CDA-1" }) && rd.isCdaForm({ name: "commission disbursement form" }) && !rd.isCdaForm({ name: "Seller Disclosure" }))
+  })
+
+  // ═══ E · ADDENDUM DOOR + WIRING ══════════════════════════════════════════════════════════════════════════════════════════════
+  section("E · the addendum door, the migrations' vocabularies, the one-page fetch")
+  await attempt("E", async () => {
+    const pkg = raw("package.json")
+    check("the proposed-addendum signature request is an executable door with its own driven proof (test:addendum-signatures) — not 'not implemented'",
+      /export async function/.test(code("app/actions/buyer-offer/request-addendum-signatures.ts")) && /"test:addendum-signatures"/.test(pkg) && existsSync(join(ROOT, "scripts/addendum-signatures-guard.ts")))
+    const ui = code("app/dashboard/offers/outside-offer-threads.tsx") // scripts/strip-comments.ts stripComments: comments gone (a tombstone is not UI), UI copy kept
+    const placeholder = (s: string) => /not\s+implemented/i.test(s)
+    check("POSITIVE CONTROL: the placeholder finder sees 'Not implemented' in UI copy", placeholder(`<p>Not implemented</p>`))
+    check("no 'not implemented' placeholder remains in the offer threads UI (comments stripped by scripts/strip-comments.ts — a tombstone is not UI; UI copy and strings are read)", !placeholder(ui) && /requestAddendumSignatures|request-addendum-signatures/.test(code("app/dashboard/offers/outside-offer-threads.tsx")))
+    const route = bare("app/api/forms/provider-library/route.ts")
+    const oneShot = (s: string) => /listForms\s*\(\s*\{[^}]*pageSize\s*:\s*100[^}]*\}\s*\)/.test(s) && !/cursor/.test(s)
+    check("POSITIVE CONTROL: the one-page finder sees the base route's shape", oneShot(`await resolved.provider.listForms({ stateCode: x, pageSize:  100, })`))
+    check("the provider-library route no longer fetches one page of 100 and calls it the library", !oneShot(route) && /walkProviderLibrary/.test(route))
+    check("the FormWizard continues from the provider's cursor and shows total / loaded", /params\.set\("cursor"/.test(code("app/components/form-wizard/FormWizard.tsx")) && /Load more/.test(raw("app/components/form-wizard/FormWizard.tsx")))
+    const intake = await load("lib/forms/form-directory-intake.ts"), bun = await load("lib/forms/form-packet-bundles.ts")
+    const m1005 = raw("supabase/migrations/m1005-form-library-provenance-office-agent-scope-and-provider-references.sql") // SQL: read raw — the patterns below match DDL shapes (NAME CHECK (… ARRAY[…])) no header prose carries
+    const m1006 = raw("supabase/migrations/m1006-form-packet-bundles-ordered-required-items.sql")
+    const checkList = (sql: string, name: string): string[] => { const m = new RegExp(`${name}\\s+CHECK \\([^)]*ARRAY\\[([^\\]]+)\\]`).exec(sql); return m ? m[1].split(",").map((s) => s.trim().replace(/^'|'$/g, "")) : [] }
+    const eq = (a: readonly string[], b: string[]) => a.length === b.length && a.every((x) => b.includes(x))
+    check("m1005 CHECK vocabularies equal the code constants (source kind, rights basis, purpose)",
+      eq(intake.FORM_LIBRARY_SOURCE_KINDS, checkList(m1005, "brokerage_form_library_source_kind_check")) && eq(intake.FORM_RIGHTS_BASES, checkList(m1005, "brokerage_form_library_rights_basis_check")) && eq(intake.FORM_PURPOSES, checkList(m1005, "brokerage_form_library_purpose_check")))
+    check("m1006 CHECK vocabularies equal the code constants (bundle kind, requirement source)", eq(bun.PACKET_BUNDLE_KINDS, checkList(m1006, "form_packet_bundles_bundle_kind_check")) && eq(bun.BUNDLE_REQUIREMENT_SOURCES, checkList(m1006, "form_packet_bundle_items_requirement_source_check")))
+    check("POSITIVE CONTROL: the CHECK reader parses a specimen", checkList(`x_check CHECK (k = ANY (ARRAY['a','b']))`, "x_check").join() === "a,b")
+    check("m1005: a provider reference holds no bytes (CHECK) and one live reference per owner (unique index); m1006: both tables carry brokerage_id, row security and written-out policies",
+      /provider_reference_holds_no_bytes\s+CHECK \(provider_form_id IS NULL OR \(storage_path IS NULL/.test(m1005) && /uq_brokerage_form_library_live_provider_reference/.test(m1005)
+      && ["form_packet_bundles", "form_packet_bundle_items"].every((t) => new RegExp(`ALTER TABLE public\\.${t} ENABLE ROW LEVEL SECURITY`).test(m1006) && new RegExp(`CREATE POLICY ${t}_tenant_select`).test(m1006) && new RegExp(`CREATE TABLE IF NOT EXISTS public\\.${t} \\([\\s\\S]*?brokerage_id\\s+uuid NOT NULL`).test(m1006)))
+    check("no storage.objects policy is written as a migration (owner SQL)", !/ON\s+storage\.objects/.test(m1005 + m1006))
+  })
+
+  // ═══ F · ROUND 2 — PROVIDER PAGING, VERIFIED, THROUGH THE REAL ADAPTERS ══════════════════════════════════════════════════════
+  section("F · the REAL DocuSign and SkySlope adapters page a 250-form library by their documented parameters")
+  await attempt("F", async () => {
+    const forms = Array.from({ length: 250 }, (_, i) => ({ id: `T${String(i + 1).padStart(3, "0")}`, name: `TX Form ${i + 1}` }))
+    // DocuSign GET /templates — count + start_position (zero-based); endPosition / totalSetSize (the documented shape, read 2026-11-25).
+    let dsCalls = 0
+    const docusignGateway = async (r: any) => {
+      dsCalls++
+      const count = Number(r.query?.count ?? 2000), start = Number(r.query?.start_position ?? 0)
+      const page = forms.slice(start, start + count)
+      return { ok: true, status: 200, data: { envelopeTemplates: page.map((f) => ({ templateId: f.id, name: f.name })), resultSetSize: String(page.length), startPosition: String(start), endPosition: String(start + page.length - 1), totalSetSize: String(forms.length) }, headers: {}, drift: null, error: null }
+    }
+    // SkySlope GET /forms — page (1-based, default 1) + pageSize (default 10); totalRecords (OpenAPI read 2026-11-25).
+    let skCalls = 0
+    const skyslopeGateway = async (r: any) => {
+      skCalls++
+      const page = Number(r.query?.page ?? 1), size = Number(r.query?.pageSize ?? 10)
+      const slice = forms.slice((page - 1) * size, page * size)
+      return { ok: true, status: 200, data: { totalRecords: forms.length, forms: slice.map((f) => ({ formId: Number(f.id.slice(1)), name: f.name, libraryId: 1 })) }, headers: {}, drift: null, error: null }
+    }
+    const dir = await load("lib/forms/provider-form-directory.ts")
+    const { DocusignProvider } = await load("lib/integrations/providers/docusign-provider.ts")
+    const { SkyslopeProvider } = await load("lib/integrations/providers/skyslope-provider.ts")
+    G.__156C.gateway = docusignGateway
+    const ds = await dir.walkProviderLibrary(new DocusignProvider({ apiKey: "k", profileId: "acct" }), {})
+    check(`DocuSign: 250 templates walked through the real adapter by start_position (${dsCalls} calls), F101-equivalent and the final one present, total 250, complete`,
+      ds.ok && ds.forms.length === 250 && ds.forms.some((f: any) => f.formId === "T101") && ds.forms.some((f: any) => f.formId === "T250") && ds.providerTotal === 250 && ds.completeness === "complete" && dsCalls === 3, JSON.stringify({ n: ds.forms?.length, dsCalls, total: ds.providerTotal }))
+    G.__156C.gateway = skyslopeGateway
+    const sk = await dir.walkProviderLibrary(new SkyslopeProvider({ apiKey: "k", profileId: "office" }), {})
+    check(`SkySlope: 250 forms walked through the real adapter by page + pageSize (${skCalls} calls), the 101st and the final form present, total 250, complete`,
+      sk.ok && sk.forms.length === 250 && sk.forms.some((f: any) => f.formId === "101") && sk.forms.some((f: any) => f.formId === "250") && sk.providerTotal === 250 && sk.completeness === "complete" && skCalls === 3, JSON.stringify({ n: sk.forms?.length, skCalls, total: sk.providerTotal }))
+    const ev = dir.PROVIDER_PAGING_EVIDENCE
+    check("paging evidence: DocuSign and SkySlope VERIFIED with their documentation URL; Dotloop, Authentisign and Form Simplicity say 'not verified — no public documentation'",
+      ev.docusign.verified && /developers\.docusign\.com/.test(ev.docusign.source) && ev.skyslope.verified && /skyslope/.test(ev.skyslope.source)
+      && ["dotloop", "authentisign", "formsimplicity"].every((k) => ev[k].verified === false && /not verified — no public documentation/.test(ev[k].note)))
+    // a provider that reports a total ABOVE what it returned, with no cursor, is never "complete" (Dotloop's meta.total)
+    const short = await dir.walkProviderLibrary({ listForms: async () => ({ success: true, forms: forms.slice(0, 20).map((f) => ({ formId: f.id, name: f.name })), total: 250 }) }, {})
+    check("POSITIVE CONTROL: a total of 250 with 20 returned and no cursor reads unknown_possibly_truncated", short.ok && short.completeness === "unknown_possibly_truncated")
+  })
+
+  // ═══ G · ROUND 2 — THE SEAM FOR LANE 156B: formLicenseStanding ══════════════════════════════════════════════════════════════
+  section("G · formLicenseStanding — licensed and current · retired (with replacement) · license expired · unknown")
+  await attempt("G", async () => {
+    const db = world()
+    const tp = await load("lib/forms/tenant-form-packets.ts"), intake = await load("lib/forms/form-directory-intake.ts")
+    const broker = (await quiet(() => tp.resolvePacketActor(db, U_BROKER))).actor
+    const base = { mode: "upload", owner: {}, state: "TX", packetType: "listing", rightsBasis: "own_form", purpose: "listing", effectiveOn: "2026-01-01", checklistKeys: ["listing.agreement"], signerRoles: ["seller"] }
+    const v1 = (await quiet(async () => intake.addFormToLibrary(db, broker, { ...base, name: "TX Listing Agreement", formCode: "TXR-1101", fileName: "a.pdf", bytes: await makePdf(["a"], "s1") }))).packet
+    const v2 = (await quiet(async () => intake.reviseLibraryForm(db, broker, v1.id, { fileName: "a2.pdf", bytes: await makePdf(["a", "b"], "s2"), revisionDate: "2026-05-01", effectiveOn: "2026-06-01" }))).packet
+    const exp = (await quiet(async () => intake.addFormToLibrary(db, broker, { ...base, name: "TX Lapsed Form", formCode: "TXR-9", licenseExpiresAt: "2026-01-31", fileName: "e.pdf", bytes: await makePdf(["e"], "s3") }))).packet
+    const st = (ref: Record<string, unknown>, extra: Record<string, unknown> = {}) => intake.formLicenseStanding(db, { brokerageId: B, state: "TX", ref, now: new Date("2026-11-25T12:00:00Z"), ...extra })
+    const cur = await st({ formCode: "TXR-1101" }), old = await st({ packetId: v1.id }), oldByVersion = await st({ formCode: "TXR-1101" }, { version: 1 }), curByVersion = await st({ formCode: "TXR-1101" }, { version: 2 })
+    const lapsed = await st({ formCode: "TXR-9" }), otherState = await intake.formLicenseStanding(db, { brokerageId: B, state: "FL", ref: { formCode: "TXR-1101" } }), unk = await st({ formCode: "NOPE" })
+    const foreign = await intake.formLicenseStanding(db, { brokerageId: B2, state: "TX", ref: { formCode: "TXR-1101" } })
+    check("licensed and current: the active revision by code and by its version", cur.ok && cur.result.standing === "licensed_current" && cur.result.packetId === v2.id && curByVersion.result.standing === "licensed_current")
+    check("retired WITH its replacement: the old row by id, and the superseded version number the paperwork carries", old.result.standing === "retired" && old.result.replacementPacketId === v2.id && oldByVersion.result.standing === "retired" && oldByVersion.result.replacementPacketId === v2.id)
+    check("license expired: named with the date", lapsed.result.standing === "license_expired" && lapsed.result.expiredOn === "2026-01-31" && lapsed.result.packetId === exp.id)
+    check("unknown to the directory: an unknown code, the same code in ANOTHER STATE, and another TENANT's directory", unk.result.standing === "unknown" && otherState.result.standing === "unknown" && foreign.result.standing === "unknown")
+    const refused = await intake.formLicenseStanding(memSupabase({}, { refuse: { brokerage_form_library: "permission denied" } }) as any, { brokerageId: B, state: "TX", ref: { formCode: "TXR-1101" } })
+    check("a refused directory read is an ERROR, never 'unknown' (fail closed)", !refused.ok)
+  })
+
+  // ═══ H · ROUND 2 — AI READ → FILL, BY A PERSON ═══════════════════════════════════════════════════════════════════════════════
+  section("H · accepted suggestions reach the Step 3 fill fields; rejected / undecided never do; the CDA stays refused")
+  await attempt("H", async () => {
+    const ap = await load("lib/forms/form-read-apply.ts")
+    const rd = await load("lib/forms/form-document-reader.ts")
+    const sugg = [
+      { kind: "field", target: "Property Address", value: "12 Oak St", evidence: { quote: "Property: 12 Oak St." }, status: "pending_review" },
+      { kind: "legal_description", target: "Legal Description", value: "Lot 4, Block 2", evidence: { quote: "Legal description: Lot 4, Block 2" }, status: "pending_review" },
+      { kind: "field", target: "Price", value: "450000", evidence: { quote: "Price 450000 stated" }, status: "pending_review" },
+      { kind: "clause", target: "governing law", value: null, evidence: { quote: "laws of Texas" }, status: "pending_review" },
+    ]
+    const fields = ["Property Address", "Legal Description", "Price", "Seller Name"]
+    const current = { "Seller Name": "Sam Seller", Price: "typed by the agent" }
+    const none = ap.applyAcceptedSuggestions(current, sugg, {}, { name: "TX Listing", fields })
+    check("NOTHING is applied without a click (no decisions → the fill values are exactly what the agent had)", none.ok && JSON.stringify(none.values) === JSON.stringify(current) && none.applied.length === 0)
+    const r = ap.applyAcceptedSuggestions(current, sugg, { 0: "accept", 1: "accept", 2: "reject", 3: "accept" }, { name: "TX Listing", fields })
+    check("accepted field + legal description go into the fill; the REJECTED price never overwrites what the agent typed; a clause is never a fill value",
+      r.ok && r.values["Property Address"] === "12 Oak St" && r.values["Legal Description"] === "Lot 4, Block 2" && r.values.Price === "typed by the agent" && r.values["Seller Name"] === "Sam Seller" && r.applied.join() === "Property Address,Legal Description")
+    const cda = ap.applyAcceptedSuggestions({}, sugg, { 0: "accept" }, { name: "Commission Disbursement Authorization", formCode: "CDA", fields })
+    check("the CDA stays refused at the apply step too", !cda.ok && /agent fills the CDA/.test(cda.refused))
+    check("ONE CDA detector: the reader re-exports the apply module's own function", rd.isCdaForm === ap.isCdaForm && rd.applyAcceptedSuggestions === ap.applyAcceptedSuggestions)
+    const wiz = code("app/components/form-wizard/FormWizard.tsx")
+    check("the FormWizard reviewer: per-suggestion accept / reject; only 'Use accepted' asks the apply step and writes its values into state.fieldValues (Step 3)",
+      /action: "apply"/.test(wiz) && /decisions \}\)/.test(wiz) && /update\("fieldValues", \{ \.\.\.\(state\.fieldValues \?\? \{\}\), \[f\.path\]: values \}\)/.test(wiz) && /"accept"/.test(wiz) && /"reject"/.test(wiz))
+    // the apply step THROUGH ITS ROUTE (the wizard's own door), as a signed-in agent
+    G.__156C.db = world(); G.__156C.user = { id: U_AG_N }
+    const rr = await load("app/api/forms/document-read/route.ts")
+    const viaRoute = await callRoute(rr, "POST", "http://x/api/forms/document-read", { action: "apply", form_name: "TX Listing", fields, current, suggestions: sugg, decisions: { 0: "accept", 2: "reject" } })
+    const viaRouteCda = await callRoute(rr, "POST", "http://x/api/forms/document-read", { action: "apply", form_name: "CDA", fields, current: {}, suggestions: sugg, decisions: { 0: "accept" } })
+    G.__156C.user = { id: U_CONTACT }
+    const viaRouteContact = await callRoute(rr, "POST", "http://x/api/forms/document-read", { action: "apply", form_name: "TX Listing", fields, current, suggestions: sugg, decisions: { 0: "accept" } })
+    check("DRIVEN through the route: the accepted address comes back, the rejected price does not, the CDA is refused (422), a Contact is refused (403)",
+      viaRoute.status === 200 && viaRoute.json.values["Property Address"] === "12 Oak St" && viaRoute.json.values.Price === "typed by the agent" && viaRouteCda.status === 422 && viaRouteContact.status === 403, JSON.stringify([viaRoute.status, viaRouteCda.status, viaRouteContact.status]))
+    G.__156C.user = { id: U_BROKER }
+  })
+
+  // ═══ I · ROUND 2 — CANARY C05 (first half): a TC adds an addendum from the directory; the addendum door executes it ══════════
+  section("I · C05: TC stages a directory addendum on the deal → the existing addendum door → executed version retained, master unchanged")
+  await attempt("I", async () => {
+    const db = world(); G.__156C.db = db
+    db.tables.contacts = [{ id: BUYER, brokerage_id: B, first_name: "Bea", last_name: "Buyer", email: "bea.buyer@mail.example" }, { id: SELLER, brokerage_id: B, first_name: "Sam", last_name: "Seller", email: "sam.seller@mail.example" }]
+    db.tables.offers = [{ id: OFFER, brokerage_id: B, agent_id: AG_DEAL, contact_id: BUYER, listing_id: null, parent_offer_id: null, offer_type: "standard", current_round: 1, status: "accepted", property_address: "12 Oak St", transaction_id: TXN, metadata: {}, created_at: "2026-10-01T00:00:00Z" }]
+    db.tables.transactions = [{ id: TXN, brokerage_id: B, agent_id: AG_DEAL, buyer_agent_id: null, seller_agent_id: null, offer_id: OFFER, buyer_contact_id: BUYER, seller_contact_id: SELLER, property_address: "12 Oak St", property_state: "TX", contract_date: "2026-10-01", contract_closing_date: "2026-12-01", stage: "under_contract" }]
+    db.tables.transaction_participants = []
+    db.tables.contract_term_versions = [{ id: "ctv-offer-1", brokerage_id: B, root_offer_id: OFFER, transaction_id: TXN, offer_id: OFFER, document_id: null, version_no: 1, source: "offer", status: "executed", terms: { purchase_price: 500000, closing_date: "2026-12-01" }, executed_at: "2026-10-01T12:00:00Z", recorded_by: U_DEALAG, evidence: {}, created_at: "2026-10-01T12:00:00Z" }]
+    db.tables.documents = []; db.tables.signature_requests = []; db.tables.notifications = []; db.tables.document_field_extractions = []
+    const tp = await load("lib/forms/tenant-form-packets.ts"), intake = await load("lib/forms/form-directory-intake.ts"), bun = await load("lib/forms/form-packet-bundles.ts")
+    const C = await load("lib/esign/addendum-signature-request.ts"), T = await load("lib/offers/governing-terms.ts")
+    const A = async (u: string) => (await quiet(() => tp.resolvePacketActor(db, u)))
+    const broker = (await A(U_BROKER)).actor
+    const master = (await quiet(async () => intake.addFormToLibrary(db, broker, { mode: "upload", owner: {}, name: "TX Amendment to Contract", state: "TX", packetType: "transaction", rightsBasis: "association_membership", licenseNote: "TXR 2026", purpose: "addendum", effectiveOn: "2026-01-01", checklistKeys: ["contract.amendment"], signerRoles: ["buyer", "seller"], fileName: "amendment.pdf", bytes: await makePdf(["Closing Date", "Buyer Signature", "Seller Signature"], "amend") }))).packet
+    const bundle = (await bun.createPacketBundle(db, broker, { kind: "closing", name: "TX Closing Packet", state: "TX" })).bundle
+    const masterRowBefore = JSON.stringify(db.tables.brokerage_form_library.find((r: any) => r.id === master.id))
+    const masterKey = `brokerage-forms/${master.storage_path}`
+    const masterSum = createHash("sha256").update(db.objects.get(masterKey)).digest("hex")
+    const tc = await A(U_TC)
+    check("the coordinator is a forms seat (TC) — resolved from the session user", tc.ok && tc.actor.userType === "tc")
+    const fileDep = { file: async (svc: any, i: any) => { db.objects.set(`documents/${i.path}`, i.bytes); const id = globalThis.crypto.randomUUID(); svc.tables.documents.push({ id, brokerage_id: i.brokerageId, transaction_id: i.transactionId, storage_url: `https://x.supabase.co/storage/v1/object/sign/documents/${i.path}?token=t`, document_type: "addendum", metadata: { file_name: i.fileName, ...i.metadata }, signature_completeness: null }); return { ok: true, documentId: id } } }
+    const staged = await quiet(() => intake.stageLibraryFormOnDeal(db, tc.actor, { packetId: master.id, transactionId: TXN }, fileDep))
+    const doc = db.tables.documents.find((d: any) => d.id === staged.documentId)
+    check("the TC puts the directory addendum on the deal as a WORKING COPY that records the master id, version and checksum it came from",
+      staged.ok && !!doc && doc.transaction_id === TXN && doc.metadata.source_library_form_id === master.id && doc.metadata.source_checksum_sha256 === masterSum && doc.metadata.source_library_version === 1, JSON.stringify(staged))
+    const agS = await A(U_AG_S)
+    const notMine = await quiet(() => intake.stageLibraryFormOnDeal(db, agS.actor, { packetId: master.id, transactionId: TXN }, fileDep))
+    check("an agent NOT on the deal is refused by the deal desk (nothing staged)", !notMine.ok && db.tables.documents.length === 1)
+    // the existing door is asked — first by the TC (its own rule decides), then by the deal's agent with the TC-staged document
+    const tcAsk = await quiet(() => C.proposeContractAddendumVersion(db, { userId: U_TC, brokerageId: B, userType: "tc", teamId: null }, { ref: { transactionId: TXN }, kind: "addendum", documentId: staged.documentId, terms: { closing_date: "2026-12-20" }, effectiveOn: "2026-11-30", termEvidence: null }))
+    check("the addendum door is ASKED by the TC and answers by its own rule (the contract's agent or a brokerage admin proposes) — refused by name, nothing recorded",
+      !tcAsk.ok && /contract's agent or a brokerage admin/.test(tcAsk.reason ?? tcAsk.error ?? JSON.stringify(tcAsk)) && db.tables.contract_term_versions.length === 1, JSON.stringify(tcAsk))
+    const agent = { userId: U_DEALAG, brokerageId: B, userType: "agent", teamId: null }
+    const prop = await quiet(() => C.proposeContractAddendumVersion(db, agent, { ref: { transactionId: TXN }, kind: "addendum", documentId: staged.documentId, terms: { closing_date: "2026-12-20" }, effectiveOn: "2026-11-30", termEvidence: null }))
+    const signers = new Map<string, Set<string>>(); let envSeq = 0
+    const sb: any = {
+      async getSignatureStatus() { return { success: true, total: 2, signed: 2, pending: 0, percentComplete: 100 } },
+      async syncDocuments(req: any) { const s = signers.get(req.externalTransactionId) ?? new Set(); return { success: true, documents: [{ externalDocumentId: "d", documentName: "Amendment.pdf", folderName: "", isSigned: s.size >= 2, url: "https://provider.example/signed.pdf", signers: [{ name: "Bea Buyer", email: "bea.buyer@mail.example", role: "buyer", signedAt: s.has("bea.buyer@mail.example") ? "2026-11-25T10:00:00Z" : undefined }, { name: "Sam Seller", email: "sam.seller@mail.example", role: "seller", signedAt: s.has("sam.seller@mail.example") ? "2026-11-25T11:00:00Z" : undefined }] }] } },
+      async voidTransaction() { return { success: true } },
+    }
+    const deps: any = {
+      esignChoice: async () => ({ ok: true, kind: "api", providerName: "docusign" }), readiness: async () => ({ transactable: true, blockers: [], message: null }), documentUrl: async (_s: any, u: string) => u,
+      dispatch: async () => { envSeq++; return { ok: true, status: "sent", envelopeId: `ENV-C05-${envSeq}`, providerName: "docusign" } },
+      provider: async () => sb, fetchBytes: async () => ({ ok: true, bytes: new TextEncoder().encode("%PDF signed amendment") }),
+      storeSignedCopy: async (svc: any, i: any) => { const id = globalThis.crypto.randomUUID(); svc.tables.documents.push({ id, brokerage_id: i.brokerageId, transaction_id: i.transactionId, storage_url: "signed", metadata: { sha256: i.sha256 }, signature_completeness: null }); return { ok: true, documentId: id } },
+      event: async () => ({}), signal: async () => ({ ok: true }),
+    }
+    const sent = prop.ok ? await quiet(() => C.requestAddendumSignatures(db, agent, { versionId: prop.versionId, choices: { includeAttorneys: false } }, deps)) : prop
+    check("the deal's agent proposes the addendum ON the TC-staged document and the existing signature door SENDS it (one tracked request)",
+      prop.ok && sent.ok && db.tables.signature_requests.length === 1 && db.tables.signature_requests[0].contract_term_version_id === prop.versionId, JSON.stringify(sent).slice(0, 300))
+    const unsigned = await quiet(() => C.syncAddendumSignatureRequest(db, { brokerageId: B, requestId: sent.requestId, source: "cron" }, { ...deps, recordExecuted: (svc: any, input: any) => T.recordContractTermsVersion(svc, input, { consequenceDeps: { runClosingCompliance: async () => ({ ran: true, openBlocking: 0, reason: null }) } }) }))
+    const executedBefore = db.tables.contract_term_versions.filter((v: any) => v.status === "executed" && v.source === "addendum").length
+    check("UNSIGNED, the addendum does not govern — no executed addendum version", executedBefore === 0 && !(unsigned as any).executed)
+    signers.set(`ENV-C05-1`, new Set(["bea.buyer@mail.example", "sam.seller@mail.example"]))
+    const rec = (svc: any, input: any) => T.recordContractTermsVersion(svc, input, { consequenceDeps: { runClosingCompliance: async () => ({ ran: true, openBlocking: 0, reason: null }) } })
+    const done = await quiet(() => C.syncAddendumSignatureRequest(db, { brokerageId: B, requestId: sent.requestId, source: "webhook" }, { ...deps, recordExecuted: rec }))
+    const again = await quiet(() => C.syncAddendumSignatureRequest(db, { brokerageId: B, requestId: sent.requestId, source: "cron" }, { ...deps, recordExecuted: rec }))
+    const executed = db.tables.contract_term_versions.filter((v: any) => v.status === "executed" && v.source === "addendum")
+    check("SIGNED: the executed version is RETAINED exactly once (a replay records nothing twice), carrying the signed copy, and the working copy stays on file",
+      (done as any).ok && executed.length === 1 && !!executed[0].document_id && executed[0].document_id !== staged.documentId && !(again as any).executedNow && db.tables.documents.some((d: any) => d.id === staged.documentId), JSON.stringify({ done, n: executed.length }).slice(0, 300))
+    check("the PACKET MASTER is unchanged — its library row and its stored bytes (sha256) are exactly as before",
+      JSON.stringify(db.tables.brokerage_form_library.find((r: any) => r.id === master.id)) === masterRowBefore && createHash("sha256").update(db.objects.get(masterKey)).digest("hex") === masterSum)
+    // a Contact and a vendor seat: neither overwrites the master nor adds to the bundle — through the ROUTE
+    const route = await load("app/api/forms/directory/route.ts")
+    const libBefore = JSON.stringify(db.tables.brokerage_form_library), itemsBefore = db.tables.form_packet_bundle_items.length, docsBefore = db.tables.documents.length
+    const tries: number[] = []
+    for (const u of [U_CONTACT, U_VENDOR]) {
+      G.__156C.user = { id: u }
+      tries.push((await callRoute(route, "POST", "http://x/api/forms/directory", { action: "add_bundle_item", bundle_id: bundle.id, library_form_id: master.id, required_name: "Amendment", is_required: false, requirement_source: "user_supplemental" })).status)
+      tries.push((await callRoute(route, "POST", "http://x/api/forms/directory", { action: "retire_form", packet_id: master.id })).status)
+      tries.push((await callRoute(route, "POST", "http://x/api/forms/directory", { action: "stage_on_deal", packet_id: master.id, transaction_id: TXN })).status)
+    }
+    check("a CONTACT seat and a VENDOR seat can neither add to the bundle, nor retire / overwrite the master, nor stage it on the deal (403 each; nothing changed)",
+      tries.every((s) => s === 403) && JSON.stringify(db.tables.brokerage_form_library) === libBefore && db.tables.form_packet_bundle_items.length === itemsBefore && db.tables.documents.length === docsBefore, tries.join(","))
+    G.__156C.user = { id: U_BROKER }
+  })
+
+  // ═══ J · ROUND 2 — THE SCREENS ══════════════════════════════════════════════════════════════════════════════════════════════
+  section("J · the screens: who sees which owners (solo agent, team, brokerage, multi-office), and every refusal renders with its link")
+  await attempt("J", async () => {
+    const db = world(); G.__156C.db = db
+    const route = await load("app/api/forms/directory/route.ts")
+    const view = async (u: string) => { G.__156C.user = { id: u }; return callRoute(route, "GET", "http://x/api/forms/directory?view=manage") }
+    const broker = await view(U_BROKER), lead = await view(U_LEAD), agent = await view(U_AG_N), solo = await view(U_SOLO), contact = await view(U_CONTACT)
+    check("MULTI-OFFICE BROKERAGE: the broker may add for the brokerage, BOTH offices and the team", broker.status === 200 && broker.json.owners.brokerage === true && broker.json.owners.offices.length === 2 && broker.json.owners.teams.length === 1)
+    check("TEAM: the team lead may add for THEIR team only — not the brokerage, not an office", lead.status === 200 && lead.json.owners.brokerage === false && lead.json.owners.offices.length === 0 && lead.json.owners.teams.map((t: any) => t.id).join() === T1)
+    check("AN AGENT sees only 'add for myself'", agent.status === 200 && agent.json.owners.brokerage === false && agent.json.owners.offices.length === 0 && agent.json.owners.teams.length === 0 && agent.json.owners.self === true)
+    check("A SOLO AGENT (plan tier solo_agent, user_type agent) is their own principal: may add for their brokerage and manage its bundles — no new role",
+      solo.status === 200 && solo.json.owners.brokerage === true && /plan_tier === "solo_agent"/.test(code("lib/forms/tenant-form-packets.ts")), JSON.stringify(solo.json.owners ?? solo.json))
+    G.__156C.user = { id: U_SOLO }
+    const soloBundle = await callRoute(route, "POST", "http://x/api/forms/directory", { action: "create_bundle", kind: "listing", name: "My TX listing packet", state: "TX" })
+    check("…and the solo agent's bundle is created through the screen's door", soloBundle.status === 200 && soloBundle.json.ok === true)
+    check("a Contact gets 403 on the manage view", contact.status === 403)
+    check("the vocabulary the screens offer is the server's own constants", JSON.stringify(broker.json.vocab.signerRoles) === JSON.stringify((await load("lib/forms/form-directory-intake.ts")).FORM_SIGNER_ROLES))
+    const wiz = code("app/components/form-wizard/FormWizard.tsx"), add = code("app/components/forms/add-form-or-packet.tsx"), mgr = code("app/components/forms/packet-bundle-manager.tsx"), page = code("app/dashboard/admin/transaction-forms/page.tsx"), note = code("app/components/forms/refusal-notice.tsx")
+    const formsPage = code("app/dashboard/forms/page.tsx")
+    check("SCREEN (a): FormWizard's My Forms tab MOUNTS 'Add a form or packet' with the deal's state (re-hosted by 156L) and the Forms page keeps its mount (?add=1 deep link); upload / state package / provider id; owners from the server; revision and retire on managed forms",
+      /<AddFormOrPacket defaultState=\{state\.propertyState\}/.test(wiz) && /<AddFormOrPacket \/>/.test(formsPage) && /get\("add"\) === "1"/.test(add) && /"\/api\/forms\/directory\?view=manage"/.test(add) && /upload a PDF/.test(add) && /pick from the state package/.test(add) && /link a provider form by id/.test(add) && /revise_form/.test(add) && /retire_form/.test(add) && /myself \(supplemental\)/.test(add))
+    check("SCREEN (b): the admin transaction-forms page mounts the bundle manager (create per state / office / team, add, order, required, status + recovery link)",
+      /<PacketBundleManager \/>/.test(page) && /create_bundle/.test(mgr) && /add_bundle_item/.test(mgr) && /reorder_bundle/.test(mgr) && /remove_bundle_item/.test(mgr) && /recoverHref/.test(mgr) && /required/.test(mgr))
+    const dir = await load("lib/forms/provider-form-directory.ts")
+    const codes = ["no_provider_selected", "credentials_need_attention", "provider_unavailable", "license_missing", "form_not_in_provider_library"]
+    const notice = (await load("app/components/forms/refusal-notice.tsx")).refusalOf
+    check("EVERY refusal code renders as a plain sentence WITH its recovery link (the screens' one notice reads refusal.message + refusal.recoverHref)",
+      codes.every((c) => { const r = dir.providerRefusal(c); const n = notice({ refusal: r }); return n.message === r.message && !!n.href && /^\//.test(n.href) && /[a-z]\./.test(n.message) }) && /recoverHref/.test(note) && /refusalHref/.test(wiz))
+    G.__156C.user = { id: U_BROKER }
+  })
+
+  // ═══ K · ROUND 3 — ONE VOCABULARY: the code constants ARE the live CHECKs (the generated cache), and the screens read them ═════════
+  section("K · source kinds / rights / purposes / bundle kinds / requirement sources equal the live CHECKs; the add doors come FROM the source kinds")
+  await attempt("K", async () => {
+    const intake = await load("lib/forms/form-directory-intake.ts"), bun = await load("lib/forms/form-packet-bundles.ts")
+    const cachePath = join(ROOT, "scripts/check-vocabularies.ts")
+    const live: Record<string, Record<string, string[]>> = existsSync(cachePath) ? (await import(cachePath)).CHECK_VOCABULARIES : {}
+    const same = (a: readonly string[], b: string[] | undefined) => !!b && a.length === b.length && a.every((x) => b.includes(x))
+    check("FORM_LIBRARY_SOURCE_KINDS = the LIVE brokerage_form_library.source_kind CHECK (scripts/check-vocabularies.ts, generated)", same(intake.FORM_LIBRARY_SOURCE_KINDS, live.brokerage_form_library?.source_kind), JSON.stringify(live.brokerage_form_library?.source_kind))
+    check("FORM_RIGHTS_BASES and FORM_PURPOSES = the live rights_basis / purpose CHECKs", same(intake.FORM_RIGHTS_BASES, live.brokerage_form_library?.rights_basis) && same(intake.FORM_PURPOSES, live.brokerage_form_library?.purpose))
+    check("PACKET_BUNDLE_KINDS and BUNDLE_REQUIREMENT_SOURCES = the live form_packet_bundles / _items CHECKs", same(bun.PACKET_BUNDLE_KINDS, live.form_packet_bundles?.bundle_kind) && same(bun.BUNDLE_REQUIREMENT_SOURCES, live.form_packet_bundle_items?.requirement_source))
+    check("POSITIVE CONTROL: the comparison refuses a list that differs by one value", !same([...intake.FORM_LIBRARY_SOURCE_KINDS, "made_up"], live.brokerage_form_library?.source_kind))
+    check("the add doors come FROM the source kinds: upload / state package / provider id; a vocabulary without connected_provider offers no provider door",
+      intake.addModesOffered().join() === "upload,state_preconfigured,provider_form" && intake.addModesOffered(intake.FORM_LIBRARY_SOURCE_KINDS.filter((k: string) => k !== "connected_provider")).join() === "upload,state_preconfigured"
+      && intake.sourceKindForAdd("upload", true) === "agent_upload" && intake.sourceKindForAdd("upload", false) === "brokerage_upload" && intake.sourceKindForAdd("catalogue", false) === null)
+    const db = world(); const tp = await load("lib/forms/tenant-form-packets.ts")
+    const broker = (await quiet(() => tp.resolvePacketActor(db, U_BROKER))).actor
+    const bad = await intake.addFormToLibrary(db, broker, { mode: "catalogue", owner: {}, name: "X form", state: "TX", packetType: "listing", rightsBasis: "own_form", purpose: "listing", effectiveOn: "2026-01-01", checklistKeys: ["a.b"], signerRoles: [] })
+    check("the intake refuses an add door outside the vocabulary (nothing written)", !bad.ok && /not a way to add a form/.test(bad.error) && db.tables.brokerage_form_library.length === 0)
+    G.__156C.db = db; G.__156C.user = { id: U_AG_N }
+    const route = await load("app/api/forms/directory/route.ts")
+    const v = await callRoute(route, "GET", "http://x/api/forms/directory?view=manage")
+    check("the screen's 'How' choices are the route's vocab.addModes, derived from vocab.sourceKinds (= FORM_LIBRARY_SOURCE_KINDS)",
+      v.status === 200 && same(intake.FORM_LIBRARY_SOURCE_KINDS, v.json.vocab.sourceKinds) && v.json.vocab.addModes.join() === "upload,state_preconfigured,provider_form" && /view\.vocab\.addModes\.map/.test(code("app/components/forms/add-form-or-packet.tsx")))
+    G.__156C.user = { id: U_BROKER }
+  })
+
+  console.log(`\n${passed} passed, ${failed} failed`)
+  console.log("BLIND SPOTS: RLS / storage policies asserted from migration text only; providers are counted stubs (DocuSign-style offset paging; round 2: the REAL DocuSign and SkySlope adapters behind a documented-shape gateway stub) — no live provider; Dotloop / Authentisign / Form Simplicity publish no paging for the adapters' paths and stay labelled possibly-truncated; the AI model is a stub (the verifier and the accept step are proven); the screens are driven through their API door and checked by source scan (no browser run); C05 runs the addendum door with injected provider seams (the addendum guard drives the real dispatch core).")
+  if (failed > 0) { console.log("FAILED:\n  - " + failures.join("\n  - ")); process.exit(1) }
+}
+main().catch((e) => { console.error(e); process.exit(1) })

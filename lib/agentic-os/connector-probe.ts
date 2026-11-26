@@ -12,6 +12,7 @@ import {
   type ConnectorShapeSpec,
   type ShapeDrift,
 } from "./connector-shape"
+import { QBO_MINOR_VERSION } from "./connector-registry"
 
 export type ProbeStatus =
   | "ok"             // reachable, authed, shape healthy
@@ -31,6 +32,7 @@ export type AuthStyle =
   | "query_access_token"  // ?access_token=<accessToken>  (Meta Graph)
   | "query_api_key"       // ?apiKey=<apiKey>  (newsapi.ai / Event Registry)
   | "basic_sid_token"     // Authorization: Basic base64(apiKey:apiSecret)  (Twilio)
+  | "query_access_token_api_key" // ?access_token=<apiKey>  (Mapbox — the platform token IS the key; wave 140, 140I)
 
 export interface ResolvedConn {
   apiKey?: string | null
@@ -51,6 +53,15 @@ export interface ProbeSpec {
 /** Health-endpoint probes for the connectors with a known liveness call. Each shape lists
  *  the canonical identity fields + the aliases a vendor might rename them to. */
 export const PROBE_SPECS: Record<string, ProbeSpec> = {
+  // Mapbox (wave 140, lane 140I — the map_render primary): GET the classic style document the Static
+  // Images API renders (scope styles:read, a default public-token scope); the token rides as
+  // ?access_token= (docs.mapbox.com/api/maps/styles/). A 401 = token revoked / scope lost.
+  mapbox: {
+    provider: "mapbox",
+    url: "https://api.mapbox.com/styles/v1/mapbox/streets-v12",
+    auth: "query_access_token_api_key",
+    shape: { connector: "mapbox", fields: [{ canonical: "version", aliases: ["id", "name"], required: false }] },
+  },
   idxbroker: {
     provider: "idxbroker",
     url: "https://api.idxbroker.com/clients/accountinfo",
@@ -91,7 +102,7 @@ export const PROBE_SPECS: Record<string, ProbeSpec> = {
     provider: "quickbooks",
     url: (conn) => {
       const realmId = conn.config?.realmId as string | undefined
-      return realmId ? `https://quickbooks.api.intuit.com/v3/company/${realmId}/companyinfo/${realmId}?minorversion=73` : null
+      return realmId ? `https://quickbooks.api.intuit.com/v3/company/${realmId}/companyinfo/${realmId}?minorversion=${QBO_MINOR_VERSION}` : null
     },
     auth: "bearer_access_token",
     shape: { connector: "quickbooks", fields: [{ canonical: "CompanyInfo", aliases: ["companyInfo", "company"], required: true }] },
@@ -163,9 +174,27 @@ export const PLATFORM_PROVIDER_KEYS: Record<string, string> = {
   did: "DID_API_KEY",
   rentcast: "RENTCAST_API_KEY",
   newsapi_ai: "NEWSAPI_AI_KEY",
+  // Mapbox (wave 140, 140I): the server/probe token. MAPBOX_PUBLIC_TOKEN is the browser token the
+  // heatmap and static-image URLs carry (lib/property/street-view.ts) — set both (they may be equal).
+  mapbox: "MAPBOX_TOKEN",
   // web-push (VAPID browser push) has no GET-probeable endpoint — like the
   // Exa/BatchData POST-only exemption above, it is key-presence-audited only.
   web_push: "VAPID_PRIVATE_KEY",
+  // Simli — the BACKUP live face-render provider (lib/live-agent/face-render.ts,
+  // lib/providers/simli/client.ts). Lane 76C: the key was in .env.example and
+  // the seam failed closed on it ("SIMLI_API_KEY is not configured"), but the
+  // provider-readiness board derived from THIS list + the tenancy matrix never
+  // showed the seam dark, so an absent key read as nothing rather than as a
+  // platform_dark row. Key-presence-audited only (no PROBE_SPEC: Simli's
+  // documented surface is the POST /compose/token mint — a probe would MINT a
+  // session; probeConnector returns null for it and the guardian moves on).
+  simli: "SIMLI_API_KEY",
+  // Ringless voicemail (wave 145, lane 145D — owner ruling 13, voice drop). lib/voicedrop/orchestrate-voicedrop-send.ts
+  // reads this platform key and delivers through the connector gateway, but NO registry source named it, so the
+  // readiness row 'voicedrop' (registered only by its VENDOR_PRICING rate) had no env home and read platform_dark
+  // FOREVER — the arbiter could never offer a voice drop even with the key set (lane 144F notes: "unresolved").
+  // Key-presence-audited only: no PROBE_SPEC (the provider's only documented call LEAVES a voicemail).
+  voicedrop: "VOICEDROP_API_KEY",
 }
 
 export interface ProbeResult {
@@ -243,6 +272,13 @@ function buildRequest(spec: ProbeSpec, conn: ResolvedConn, params?: Record<strin
       url = u.toString()
       break
     }
+    case "query_access_token_api_key": {
+      if (!conn.apiKey) return null
+      const u = new URL(url)
+      u.searchParams.set("access_token", conn.apiKey)
+      url = u.toString()
+      break
+    }
     case "basic_sid_token":
       if (!conn.apiKey || !conn.apiSecret) return null
       headers.Authorization = `Basic ${Buffer.from(`${conn.apiKey}:${conn.apiSecret}`).toString("base64")}`
@@ -273,23 +309,43 @@ export async function probeConnector(
   let httpStatus: number | null = null
   let networkError = false
   let drift: ShapeDrift | null = null
+  let drifted = false
   let error: string | null = null
+
+  // Wave 156 (156G round 2): a BILLED probe (RentCast bills every successful request, its /markets health call included)
+  // reserves against the platform's own RentCast ceiling first and is booked on success only — never an unmetered paid
+  // request. Over the ceiling the probe is NOT run and returns null (the caller falls back to credential-posture health,
+  // exactly as for a connector with no probe — never a fabricated status).
+  const billed = BILLED_PROBE_PROVIDERS.has(provider)
+  let slot: { settle: (ok: boolean) => void } | null = null
+  if (billed) {
+    const r = await (await import("@/lib/property/rentcast-eligibility")).reserveRentcastPlatformRequest()
+    if (!r.allowed) return null
+    slot = r
+  }
 
   try {
     const res = await fetch(req.url, { headers: req.headers, signal: AbortSignal.timeout(10_000) })
     httpStatus = res.status
+    slot?.settle(res.ok)
+    if (billed && res.ok) await bookBilledProbe(provider)
     if (res.ok) {
       const json = (await res.json().catch(() => ({}))) as Record<string, unknown>
       const adapted = adaptResponse(json, spec.shape)
       drift = adapted.drift
+      drifted = adapted.drifted
     } else {
       error = `HTTP ${res.status}`
     }
   } catch (err) {
     networkError = true
     error = err instanceof Error ? err.message : String(err)
+    if (httpStatus === null) slot?.settle(false)
   }
 
+  // shapeHealthy(drift) is stricter than !drifted (an aliased-but-present field still
+  // counts as "drifted" for the UI notice but is HEALTHY for classification — see its
+  // own doc) — so classifyProbe reads missingRequired directly, not the drifted flag.
   const status = classifyProbe({
     configured: true,
     httpStatus,
@@ -300,9 +356,27 @@ export async function probeConnector(
     provider,
     status,
     httpStatus,
-    drifted: !!drift && (drift.aliased.length > 0 || drift.missingRequired.length > 0),
+    // ONE VOCABULARY (§6): reuse adaptResponse's own `drifted` rather than recomputing
+    // the same aliased/missingRequired formula a second time.
+    drifted,
     drift,
     checkedAt,
     error: status === "ok" ? null : error,
+  }
+}
+
+// ─── Wave 156 (156G round 2): probes that cost money ──────────────────────────────────────────────────────────────────
+/** Providers whose health call is a BILLED request (RentCast: "every successful API request" — billing-and-pricing, read
+ *  2026-11-25). Each reserves against the platform's RentCast ceiling and is booked on success only. */
+const BILLED_PROBE_PROVIDERS: ReadonlySet<string> = new Set(["rentcast"])
+
+/** Book one successful billed probe on the ONE cost ledger — platform-paid (no tenant), at the same per-request constant. */
+async function bookBilledProbe(provider: string): Promise<void> {
+  try {
+    const [{ logVendorUsage }, { RENTCAST_USD_PER_REQUEST }] = await Promise.all([import("@/lib/vendor-governance/usage-logger"), import("@/lib/property/rentcast")])
+    const r = await logVendorUsage({ vendorName: provider, usageType: "health_probe", unitCount: 1, estimatedCost: RENTCAST_USD_PER_REQUEST, systemSource: "connector_health", brokerageId: null, platformPaid: true, metadata: { endpoint: "/markets" } })
+    if (!r.success) console.warn(`[connector-probe] ${provider} health probe NOT booked: ${r.error ?? "refused"}`)
+  } catch (e) {
+    console.warn(`[connector-probe] ${provider} health probe booking threw: ${e instanceof Error ? e.message : String(e)}`)
   }
 }

@@ -47,7 +47,7 @@ export function MediaReadinessCard({
               {photosComplete ? (
                 <CheckCircle2 className="h-3.5 w-3.5 text-green-600" />
               ) : (
-                <XCircle className="h-3.5 w-3.5 text-amber-500" />
+                <XCircle className="h-3.5 w-3.5 text-amber-600" />
               )}
               Photos
             </span>

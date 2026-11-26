@@ -8,6 +8,7 @@ import {
 } from "@/app/actions/cron-kernel"
 import { verifyCronAuth } from "@/lib/cron-auth"
 import { runFireDrills } from "@/lib/kernel/fire-drills"
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 
 /**
  * FIRE DRILL cron (every 30 min) — the 9pm save. Scans live deals for UNCOVERED
@@ -24,6 +25,7 @@ export async function GET(req: NextRequest) {
     cron_name: "fire-drill",
     cron_path: "/app/api/cron/fire-drill/route.ts",
   })
+  if (contextResult.data?.held) return NextResponse.json({ success: true, held: true, decision: contextResult.data.decision }) // cron decision door (155R1): held before any domain write
   if (!contextResult.success || !contextResult.data) {
     return NextResponse.json({ error: "Failed to create cron context" }, { status: 500 })
   }
@@ -39,7 +41,7 @@ export async function GET(req: NextRequest) {
     const today = new Date().toISOString().slice(0, 10)
     const { data: rows, error } = await supabase
       .from("transactions").select("brokerage_id")
-      .in("status", ["active", "under_contract", "closing"]).is("deleted_at", null)
+      .in("status", [...TRANSACTION_STATUSES_OPEN]).is("deleted_at", null)
       .or(`and(inspection_deadline.gte.${today},inspection_deadline.lte.${horizon}),and(appraisal_deadline.gte.${today},appraisal_deadline.lte.${horizon}),and(financing_deadline.gte.${today},financing_deadline.lte.${horizon})`)
       .limit(1000)
     if (error) throw error

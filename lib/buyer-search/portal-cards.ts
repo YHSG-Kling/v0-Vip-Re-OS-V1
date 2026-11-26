@@ -19,6 +19,16 @@ export interface PortalSearchCard {
   bathrooms?: number
   primary_photo_url?: string
   current_interest?: PortalInterestLevel
+  /**
+   * WHERE THIS LISTING CAME FROM (wave 70) — carried through from
+   * BuyerSearchResult.source so the widget can render the required RentCast/
+   * IDX attribution line (lib/listings/attribution.ts::listingAttributionLine).
+   * This field DID NOT EXIST before wave 70: the source was resolved by the
+   * search engine and then dropped on the floor between there and the card the
+   * buyer actually sees — a RentCast-fed result rendered with no attribution
+   * at all, which is the legal defect the owner's ruling names.
+   */
+  source?: 'platform' | 'rentcast' | 'idx'
 }
 
 /**
@@ -36,6 +46,7 @@ export function toPortalCards(
     if (r.bedrooms != null) card.bedrooms = r.bedrooms
     if (r.bathrooms != null) card.bathrooms = r.bathrooms
     if (r.primary_photo_url) card.primary_photo_url = r.primary_photo_url
+    if (r.source) card.source = r.source
     const interest = interestByListing[r.listing_id]
     if (interest) card.current_interest = interest
     return card

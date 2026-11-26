@@ -9,6 +9,7 @@
 // (never re-pings the same standing state). Complements — does not replace — the post-hoc
 // monitorTRIDComplianceService. Read-mostly; the only write is the status flag + alerts.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { computeTridClock, mostUrgentDeadline, type TridClockResult } from "./trid-disclosure-clock"
@@ -30,9 +31,13 @@ export interface TridClockRunResult {
   scanned: number
   flagged: number
   escalated: number
+  /** WAVE 153 (lane 153C): deals whose receipt-ledger summary was synced, coaching tasks opened, syncs that could not run. */
+  synced: number
+  coachingOpened: number
+  syncFailures: number
 }
 
-export interface SingleClockResult { result: TridClockResult; escalated: boolean; transitioned: boolean }
+interface SingleClockResult { result: TridClockResult; escalated: boolean; transitioned: boolean }
 
 /** Map the forward clock verdict to the trid_timeline.compliance_status enum (it already
  *  carries 'at_risk' and 'violation'; we never downgrade a standing 'violation'/'closed'). */
@@ -42,7 +47,8 @@ function statusForVerdict(overall: TridClockResult["overall"], prior: string | n
   return null // ok/insufficient → leave whatever the post-hoc monitor set
 }
 
-export async function runTridClockForTimeline(
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+async function runTridClockForTimeline(
   input: { brokerageId: string; timeline: any; today: string; copyGenerator?: CopyGenerator; escalate?: boolean },
   svc: Svc,
 ): Promise<SingleClockResult> {
@@ -64,7 +70,7 @@ export async function runTridClockForTimeline(
   if (!transitioned) return { result, escalated: false, transitioned: false }
 
   // Flip the long-unused forward status so the dashboard + post-hoc monitor agree.
-  await svc.from("trid_timeline").update({ compliance_status: nextStatus }).eq("id", tl.id).then(() => {}, () => {})
+  await sentinelWrite(svc, svc.from("trid_timeline").update({ compliance_status: nextStatus }).eq("id", tl.id), { table: "trid_timeline", flow: "trid_forward_status", reason: "forward status flip for the dashboard; the escalation below runs regardless and a lost flip is ledgered" })
 
   const urgent = mostUrgentDeadline(result)
   const fallback = urgent
@@ -88,14 +94,23 @@ export async function runTridClockForTimeline(
 
   let escalated = false
   try {
-    const agentUserId = tl.transactions?.agent_id ?? null
+    // WAVE 152 (lane 152G) — CORRECTED: transactions.agent_id is an AGENTS id and notifications.user_id a USERS id (disjoint —
+    // CLAUDE.md §3, 23503). The bell used the agents id as the user, so every TRID alert was refused by the FK (or reached nobody).
+    // Cross via agents.user_id, tenant-pinned; a refused read rings no bell and says so (the bus signal below still carries it).
+    const agentRecordId = (tl.transactions?.agent_id as string | null | undefined) ?? null
+    let agentUserId: string | null = null
+    if (agentRecordId) {
+      const { data: agentRow, error: agentErr } = await svc.from("agents").select("user_id").eq("id", agentRecordId).eq("brokerage_id", input.brokerageId).maybeSingle()
+      if (agentErr) console.error(`[trid-clock] the deal's agent could not be resolved to a user (${agentErr.message}) — no bell; the deal coordinator signal still goes`)
+      agentUserId = ((agentRow as { user_id?: string | null } | null)?.user_id as string | null) ?? null
+    }
     if (agentUserId) {
-      await svc.from("notifications").insert({
+      await sentinelWrite(svc, svc.from("notifications").insert({
         user_id: agentUserId, brokerage_id: input.brokerageId, type: "trid_disclosure_clock",
         title: result.overall === "violation" ? "⛔ TRID disclosure deadline missed — closing at risk" : "⏳ TRID disclosure deadline approaching",
         body: draft.body, entity_type: "transaction", entity_id: tl.transaction_id,
         priority: result.overall === "violation" ? "critical" : "high",
-      }).then(() => {}, () => {})
+      }), { table: "notifications", flow: "trid_disclosure_clock_runner_notify", brokerageId: input.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
     }
     const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
     const sig = await publishManagerSignal({
@@ -115,7 +130,7 @@ export async function runTridDisclosureClock(input: TridClockRunInput, client?: 
   const svc = client ?? createServiceClient()
   const today = input.today ?? new Date().toISOString().slice(0, 10)
   const horizon = new Date(Date.now() + (input.withinDays ?? 30) * 86_400_000).toISOString().slice(0, 10)
-  const out: TridClockRunResult = { scanned: 0, flagged: 0, escalated: 0 }
+  const out: TridClockRunResult = { scanned: 0, flagged: 0, escalated: 0, synced: 0, coachingOpened: 0, syncFailures: 0 }
 
   // Active deals closing within the horizon (or with an open loan-application clock).
   const { data: timelines } = await svc
@@ -126,6 +141,7 @@ export async function runTridDisclosureClock(input: TridClockRunInput, client?: 
     .or(`scheduled_close_date.lte.${horizon},and(scheduled_close_date.is.null,loan_application_date.not.is.null)`)
     .limit(500)
 
+  const swept = new Set<string>()
   for (const tl of (timelines ?? []) as any[]) {
     out.scanned++
     const r = await runTridClockForTimeline(
@@ -134,6 +150,37 @@ export async function runTridDisclosureClock(input: TridClockRunInput, client?: 
     )
     if (r.result.flagged) out.flagged++
     if (r.escalated) out.escalated++
+    if (tl.transaction_id) swept.add(String(tl.transaction_id))
+  }
+
+  // WAVE 153 (lane 153C) — THE RECEIPT LEDGER RIDES THIS SWEEP (no new cron). For every deal above AND every financed deal closing
+  // inside the horizon that has no timeline yet, bring the existing readers in line with the ledger (lib/compliance/
+  // trid-disclosure-clock-evidence.ts syncTridSummary): the verified receipt mirror, the seeded `trid_timing` compliance row the
+  // closing gate reads, and — when the lender is NOT on the platform — the agent / TC coaching task ("Confirm with the lender
+  // when the buyer received the initial Closing Disclosure …"). A sync that cannot run is counted, never reported as clean.
+  const { data: financed, error: finErr } = await svc
+    .from("transactions")
+    .select("id, financing_type")
+    .eq("brokerage_id", input.brokerageId)
+    .in("status", ["under_contract", "pending", "active", "clear_to_close"])
+    .gte("close_date", today)
+    .lte("close_date", horizon)
+    .limit(500)
+  if (finErr) { console.error(`[trid-clock] financed deals could not be read (${finErr.message}) — only timelines were synced`); out.syncFailures++ }
+  const { financingKindFor } = await import("@/lib/compliance/checklist-dimensions")
+  for (const t of (financed ?? []) as Array<{ id: string; financing_type: string | null }>) {
+    if (financingKindFor(t.financing_type) === "financed") swept.add(t.id)
+  }
+  const { syncTridSummary } = await import("./trid-disclosure-clock-evidence")
+  // The lender-required INSURANCE checkpoint is time-driven too (it becomes due around the appraisal deadline by the tenant's
+  // setting), so the same financed-deal sweep re-settles it (lib/transactions/lender-insurance-checkpoint.ts) — no second cron.
+  const { syncLenderInsuranceCheckpoint } = await import("@/lib/transactions/lender-insurance-checkpoint")
+  for (const transactionId of swept) {
+    const s = await syncTridSummary(svc as any, { brokerageId: input.brokerageId, transactionId, today })
+    if (!s.ok) { out.syncFailures++; console.error(`[trid-clock] receipt-ledger sync for ${transactionId} could not run: ${s.error}`) }
+    else { out.synced++; out.coachingOpened += s.coachingOpened }
+    const ins = await syncLenderInsuranceCheckpoint(svc as any, { brokerageId: input.brokerageId, transactionId, today })
+    if (!ins.ok) { out.syncFailures++; console.error(`[trid-clock] insurance checkpoint sync for ${transactionId} could not run: ${ins.error}`) }
   }
 
   return out

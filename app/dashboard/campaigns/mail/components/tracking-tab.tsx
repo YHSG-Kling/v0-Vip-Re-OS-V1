@@ -21,7 +21,11 @@ import {
 import { Truck, Package, CheckCircle, AlertCircle, Clock, QrCode, ScanLine } from "lucide-react"
 import { formatDistanceToNow, format } from "date-fns"
 import type { Campaign, TrackingRecord } from "../mail-dashboard"
-import { getCampaignQrScans, type QrScanEvent } from "@/app/actions/direct-mail"
+import { getCampaignQrScans } from "@/app/actions/direct-mail"
+// Delivery truth (wave 151, lane 151H): the row's provider status is Lob's raw event type ("postcard.in_transit"); the ONE
+// mapping reads what it proves, and the six truths are shown separately — an accepted piece is not mailed, a mailed piece is
+// not delivered, a carrier scan is not household receipt. piece-type.ts is client-safe.
+import { mailOutcomeFromLobEvent, mailPieceTruth } from "@/lib/direct-mail/mail-piece-rules"
 
 interface TrackingTabProps {
   tracking: TrackingRecord[]
@@ -90,7 +94,7 @@ export function TrackingTab({
     return (
       <div className="space-y-4">
         <div className="h-10 w-64 bg-muted rounded animate-pulse" />
-        <div className="grid grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           {[...Array(4)].map((_, i) => (
             <div key={i} className="h-24 bg-muted rounded-xl animate-pulse" />
           ))}
@@ -259,7 +263,11 @@ export function TrackingTab({
               <TableBody>
                 {tracking.map((record) => {
                   const status = record.provider_delivery_status || "unknown"
-                  const config = STATUS_CONFIG[status] || STATUS_CONFIG.unknown
+                  // The raw Lob event ("letter.delivered") folds onto the one outcome vocabulary, then onto the six truths.
+                  const truth = mailPieceTruth(mailOutcomeFromLobEvent(status).outcome)
+                  const configKey = truth.returned ? "returned" : truth.delivered === "carrier_scan" ? "delivered"
+                    : truth.outcome === "processed_for_delivery" ? "processed" : truth.mailed ? "in_transit" : truth.apiAccepted ? "pending" : "unknown"
+                  const config = STATUS_CONFIG[configKey] || STATUS_CONFIG.unknown
                   const StatusIcon = config.icon
 
                   return (
@@ -272,6 +280,9 @@ export function TrackingTab({
                           <StatusIcon className="h-3 w-3" />
                           {config.label}
                         </Badge>
+                        <div className="mt-1 text-[10px] text-muted-foreground">
+                          accepted {truth.apiAccepted ? "yes" : "no"} · printed {truth.printed === "implied_by_mailed" ? "implied" : "not reported"} · mailed {truth.mailed ? "yes" : "no"} · delivered {truth.delivered === "carrier_scan" ? "carrier scan" : "no"} · returned {truth.returned ? "yes" : "no"}
+                        </div>
                       </TableCell>
                       <TableCell>
                         {record.mailed_at

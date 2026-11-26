@@ -81,6 +81,50 @@ export function checkPublicRateLimit(
   return { allowed: true, retryAfterSeconds: 0 }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// THE PUBLIC-DOOR DECISION (wave 155, lane 155R18 — the decisions lane 155R5 established, named once).
+// A door a visitor must reach without signing in is never put behind a login wall. It decides from two facts, in this order,
+// BEFORE the caller writes or spends anything:
+//   1. the per-surface CAP (checkPublicRateLimit above) — evaluated first, so a flood never reaches the database read;
+//   2. the TENANT'S OWN OPT-IN, read by the caller's `optIn` function: a row the tenant itself published (an event, a blog
+//      post, a landing page, a publicly visible listing), a sealed one-time credential the tenant issued (an intake token, a
+//      collaborator token, a widget-minted session id), or the live tenant a public slug names. The read returns the tenant
+//      it proves (the brokerage of THAT row — never a body field) and the basis in words, or null.
+// Fail closed: no opt-in, a tenant-less opt-in on a tenant door, or a read that throws → refused. Only the platform's OWN
+// funnel (no tenant exists) passes `platform: true`. The verdict carries the proven tenant so the write uses it.
+export interface PublicDoorOptIn {
+  /** The tenant the opt-in row proves (that row's brokerage_id). Null only on the platform's own funnel. */
+  brokerageId: string | null
+  /** What was read, in words — e.g. "open_house_events.is_published". */
+  basis: string
+  /** The platform's own public funnel (no tenant exists). Never set on a tenant's door. */
+  platform?: boolean
+}
+export type PublicDoorVerdict =
+  | { allowed: true; brokerageId: string | null; basis: string; retryAfterSeconds: 0 }
+  | { allowed: false; reason: "rate_limited" | "not_opted_in"; status: 404 | 429; retryAfterSeconds: number; basis: string | null }
+
+export async function decidePublicDoor(input: {
+  surface: string
+  callerKey: string
+  cap: { limit: number; windowMs: number }
+  optIn: () => Promise<PublicDoorOptIn | null>
+}): Promise<PublicDoorVerdict> {
+  const rate = checkPublicRateLimit(input.surface, input.callerKey || "unknown", input.cap)
+  if (!rate.allowed) return { allowed: false, reason: "rate_limited", status: 429, retryAfterSeconds: rate.retryAfterSeconds, basis: null }
+  let o: PublicDoorOptIn | null = null
+  try { o = await input.optIn() } catch { o = null }
+  if (!o || !o.basis || (!o.brokerageId && o.platform !== true)) {
+    return { allowed: false, reason: "not_opted_in", status: 404, retryAfterSeconds: 0, basis: o?.basis ?? null }
+  }
+  return { allowed: true, brokerageId: o.brokerageId ?? null, basis: o.basis, retryAfterSeconds: 0 }
+}
+
+/** The caller IP from a route handler's own request headers (no `headers()` call — a route already holds its request). */
+export function callerIpFrom(h: { get(name: string): string | null }): string {
+  return h.get("x-forwarded-for")?.split(",")[0]?.trim() || h.get("x-real-ip")?.trim() || "unknown"
+}
+
 /**
  * Best-effort caller IP for server actions / route handlers behind Vercel's
  * proxy. Falls back to "unknown" (still throttled — as ONE shared bucket —

@@ -6,7 +6,8 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Checkbox } from "@/components/ui/checkbox"
+// C15 (wave 148, lane 148B): the ONE consent component — this page no longer renders its own consent checkbox.
+import { ConsentBoxes, useConsentBoxes, type ConsentBoxesProps } from "@/app/components/forms/ConsentBoxes"
 import { evaluatePropertyAction } from "@/app/actions/property-evaluation"
 import { captureHomeValueLead } from "@/app/actions/home-value-lead"
 import type { PropertyEvaluation, EvaluationAudience } from "@/lib/property/property-evaluation"
@@ -52,7 +53,8 @@ export function HomeValueClient({ branding }: { branding: BrandingProps }) {
   const [fullName, setFullName] = useState("")
   const [email, setEmail] = useState("")
   const [phone, setPhone] = useState("")
-  const [consent, setConsent] = useState(false)
+  // THE one brand rule (resolveConsentBrand): the brokerage by name, else the agent — what captureHomeValueLead re-renders.
+  const consent = useConsentBoxes("home_value", branding.brokerageName?.trim() || branding.agentName, ["email", "sms", "voice", "direct_mail"])
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
 
@@ -71,6 +73,10 @@ export function HomeValueClient({ branding }: { branding: BrandingProps }) {
         state: state.trim().toUpperCase(),
         zip: zip.trim() || undefined,
         audience,
+        // Investor mode pulls REAL rental comparables, which are metered against
+        // a tenant. The action resolves the brokerage from this id server-side —
+        // it deliberately does not accept a brokerage id from the browser.
+        agentId: branding.agentId,
       })
       setEvaluation(result)
       setStage("results")
@@ -83,8 +89,8 @@ export function HomeValueClient({ branding }: { branding: BrandingProps }) {
   async function submitLead(e: React.FormEvent) {
     e.preventDefault()
     setSubmitError(null)
-    if (!fullName.trim() || (!email.trim() && !phone.trim()) || !consent) {
-      setSubmitError("Name, contact info, and consent are all required.")
+    if (!fullName.trim() || (!email.trim() && !phone.trim()) || !consent.serviceGiven) {
+      setSubmitError("Name, contact info, and the first consent box are all required.")
       return
     }
     setSubmitting(true)
@@ -95,7 +101,7 @@ export function HomeValueClient({ branding }: { branding: BrandingProps }) {
       fullName: fullName.trim(),
       email: email.trim(),
       phone: phone.trim() || undefined,
-      consentToContact: consent,
+      consent: consent.submission,
       property: {
         address: address.trim(),
         city: city.trim(),
@@ -185,7 +191,7 @@ export function HomeValueClient({ branding }: { branding: BrandingProps }) {
             fullName={fullName} setFullName={setFullName}
             email={email} setEmail={setEmail}
             phone={phone} setPhone={setPhone}
-            consent={consent} setConsent={setConsent}
+            consentBoxes={consent.boxProps}
             submitting={submitting}
             submitError={submitError}
             onSubmit={submitLead}
@@ -317,7 +323,7 @@ function ResultsStage(props: {
   fullName: string; setFullName: (v: string) => void
   email: string; setEmail: (v: string) => void
   phone: string; setPhone: (v: string) => void
-  consent: boolean; setConsent: (v: boolean) => void
+  consentBoxes: Pick<ConsentBoxesProps, "door" | "brandName" | "value" | "onChange" | "offered">
   submitting: boolean
   submitError: string | null
   onSubmit: (e: React.FormEvent) => void
@@ -370,8 +376,15 @@ function ResultsStage(props: {
         </CardContent>
       </Card>
 
-      {/* Investor metrics */}
-      {props.audience === "investor" && e.investor && !insufficient && (
+      {/* Investor metrics.
+          The `!insufficient` condition was removed deliberately. The rent and
+          the rental listings are PROVIDER-SOURCED and do not depend on the
+          model's comparable SALES, so hiding them because the sales side was
+          thin would delete real data to hide the absence of other data — the
+          silent-omission failure. The four ratios need a value estimate, which
+          the quality gate nulls, so they simply read "—" and the derivation note
+          beneath says what they are made of. */}
+      {props.audience === "investor" && e.investor && (
         <Card>
           <CardContent className="p-6">
             <div className="flex items-center gap-2 mb-3">
@@ -379,7 +392,7 @@ function ResultsStage(props: {
               <h3 className="text-sm font-semibold">Investor Metrics</h3>
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
-              <Metric label="Estimated Rent / mo" value={fmt(e.investor.estimatedMonthlyRent)} />
+              <Metric label="Median Asking Rent / mo" value={fmt(e.investor.estimatedMonthlyRent)} />
               <Metric label="Cap Rate" value={e.investor.capRate ? `${e.investor.capRate.toFixed(2)}%` : "—"} />
               <Metric label="Gross Yield" value={e.investor.grossYield ? `${e.investor.grossYield.toFixed(2)}%` : "—"} />
               <Metric label="Cash-on-Cash" value={e.investor.cashOnCashReturn ? `${e.investor.cashOnCashReturn.toFixed(2)}%` : "—"} />
@@ -387,6 +400,59 @@ function ResultsStage(props: {
               <Metric label="Est. Rehab" value={fmt(e.investor.estimatedRehab)} />
               <Metric label="DSCR" value={e.investor.dscr ? e.investor.dscr.toFixed(2) : "—"} />
             </div>
+
+            {/* WHERE THE RENT CAME FROM — or that it came from nowhere.
+                These numbers used to be authored by a language model and shown
+                with no attribution at all. A rent on an agent-branded page is
+                read as market data, so the source is stated on the same card as
+                the figure, and an ABSENT rent is stated too rather than leaving
+                a dash the reader has to interpret. */}
+            {e.investor.rentSource.available ? (
+              <div className="mt-3 rounded-md bg-gray-50 border border-gray-200 p-3">
+                <p className="text-[11px] text-gray-600">
+                  <span className="font-medium">Rent source:</span> median asking rent of{" "}
+                  {e.investor.rentSource.sampleSize} comparable rental listing
+                  {e.investor.rentSource.sampleSize === 1 ? "" : "s"} published by RentCast
+                  {e.investor.rentSource.rangeLow != null && e.investor.rentSource.rangeHigh != null
+                    ? ` (range ${fmt(e.investor.rentSource.rangeLow)}–${fmt(e.investor.rentSource.rangeHigh)}/mo)`
+                    : ""}
+                  . These are asking rents, not an appraisal and not a guarantee of rental income.
+                </p>
+                <p className="text-[11px] text-gray-500 mt-2">{e.investor.derivationNote}</p>
+              </div>
+            ) : (
+              <div className="mt-3 rounded-md bg-amber-50 border border-amber-200 p-3">
+                <p className="text-[11px] text-amber-900">
+                  <span className="font-medium">No rental data available.</span>{" "}
+                  {e.investor.rentSource.unavailableNote}
+                </p>
+                <p className="text-[11px] text-amber-800 mt-1">
+                  No rent was estimated in its place, so the rent-based figures above are blank
+                  rather than approximated.
+                </p>
+              </div>
+            )}
+
+            {/* The rental listings the median was measured over — real published
+                listings, shown so the figure can be checked. */}
+            {e.investor.rentComps.length > 0 && (
+              <div className="mt-3">
+                <h4 className="text-xs font-semibold mb-2">
+                  Comparable rental listings ({e.investor.rentComps.length})
+                </h4>
+                <div className="space-y-1 text-xs">
+                  {e.investor.rentComps.slice(0, 5).map((r, i) => (
+                    <div key={i} className="flex justify-between border-b last:border-0 pb-1.5">
+                      <div className="text-gray-600 truncate flex-1">{r.address}</div>
+                      <div className="font-medium ml-3">{fmt(r.monthlyRent)}/mo</div>
+                      <div className="text-gray-400 ml-2 text-right w-16">
+                        {r.beds != null ? `${r.beds} bd` : ""}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </CardContent>
         </Card>
       )}
@@ -443,17 +509,8 @@ function ResultsStage(props: {
               </div>
             </div>
 
-            <label className="flex items-start gap-2 text-xs text-gray-600 pt-1">
-              <Checkbox
-                checked={props.consent}
-                onCheckedChange={(c) => props.setConsent(Boolean(c))}
-                className="mt-0.5"
-              />
-              <span>
-                I agree to be contacted by {props.agentName} about real estate services
-                via the contact methods I provided. I understand I can opt out at any time.
-              </span>
-            </label>
+            {/* C15 — the ONE consent component (service delivery required; marketing optional, per channel). */}
+            <ConsentBoxes {...props.consentBoxes} idPrefix="hv-agent-consent" compact className="pt-1" />
 
             {props.submitError && (
               <p className="text-xs text-red-600">{props.submitError}</p>

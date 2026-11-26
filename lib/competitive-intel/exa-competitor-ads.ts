@@ -26,6 +26,12 @@
  * (lib/competitive-intel/promote-to-topic-bank.ts) then picks the
  * top N fresh ones into the topic bank — same pipeline as before,
  * different upstream.
+ *
+ * WAVE 154 CORRECTION (lane 154C — directive C5.3, binding): the paragraph above overstates what a search rank is. A
+ * long-running, much-indexed ad is NOT evidence of profitability, virality or effectiveness, and Exa's relevance × recency is
+ * a RESEARCH-PRIORITY PROXY, not engagement. engagement_score on these rows is therefore carried downstream as proxy evidence
+ * in its own unit (promote-to-topic-bank.ts → topic-intake.ts, unit "search_relevance_0_100"), never as a performance figure;
+ * conversion, CPA, CTR, impressions and spend stay unknown unless a platform reports them.
  */
 import "server-only"
 import { exaSearch } from "@/lib/content-intel/exa-scraper"

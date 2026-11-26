@@ -74,6 +74,26 @@ async function main() {
     }
   }
 
+  // ── WAVE 153 (lane 153I — owner ruling 17): stage transitions — one vocabulary, a provisioned recruit stays Joined ──
+  console.log("\n[wave 153 · recruiting stage transitions — the pipeline never contradicts a working seat]")
+  {
+    const { RECRUIT_STATUSES, recruitStageChange } = await import("../lib/recruiting/stale-recruit-policy")
+    const { readFileSync } = await import("node:fs")
+    const { stripComments } = await import("./strip-comments")
+    const vocab = readFileSync("scripts/check-vocabularies.ts", "utf8")
+    const liveCheck = /recruits:\s*\{\s*status:\s*\[([^\]]*)\]/.exec(vocab)?.[1].replace(/"/g, "").split(",").map((s) => s.trim()).filter(Boolean).sort() ?? []
+    check("RECRUIT_STATUSES is exactly the live recruits.status CHECK (one spelling)", JSON.stringify([...RECRUIT_STATUSES].sort()) === JSON.stringify(liveCheck) && liveCheck.length === 6)
+    check("an active recruit moves freely between stages in either direction (every tenant's process differs)", recruitStageChange({ from: "interviewing", to: "contacted", provisioned: false }).ok && recruitStageChange({ from: "prospect", to: "offer_extended", provisioned: false }).ok)
+    check("ADVERSE: a PROVISIONED recruit cannot be moved back to prospect or declined (a working seat exists)", !recruitStageChange({ from: "joined", to: "declined", provisioned: true }).ok && !recruitStageChange({ from: "joined", to: "prospect", provisioned: true }).ok)
+    check("…its refusal names the real path (the seat's offboarding), in plain words", /offboarding/.test((recruitStageChange({ from: "joined", to: "declined", provisioned: true }) as { reason: string }).reason))
+    check("POSITIVE CONTROL: an UNprovisioned joined recruit may still be corrected (provisioning not done yet)", recruitStageChange({ from: "joined", to: "offer_extended", provisioned: false }).ok)
+    check("an unknown stage is refused", !recruitStageChange({ from: "prospect", to: "hired", provisioned: false }).ok)
+    const route = stripComments(readFileSync("app/api/recruiting/advance-stage/route.ts", "utf8"))
+    check("the stage route validates against RECRUIT_STATUSES (no local copy), applies recruitStageChange, and pins + COUNTS its update",
+      /RECRUIT_STATUSES/.test(route) && !/const VALID_STATUSES/.test(route) && /recruitStageChange\(\{/.test(route) && /\.update\(updatePayload\)\s*\.eq\("id", recruitId\)\s*\.eq\("brokerage_id"/.test(route) && /moved\.length !== 1/.test(route))
+    check("POSITIVE CONTROL: the local-copy finder sees the old shape", /const VALID_STATUSES/.test('const VALID_STATUSES = ["prospect"]'))
+  }
+
   console.log("\n──────────────────────────────────────────────────")
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
   console.log(` RESULT: ${pass} passed, ${fail} failed`)

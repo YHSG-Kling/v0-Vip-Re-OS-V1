@@ -50,14 +50,14 @@ export function SetupCompletenessPanel({ items, completionPct }: SetupCompletene
         {/* High Priority Items */}
         {highPriority.length > 0 && (
           <div className="space-y-2">
-            <p className="text-xs font-medium text-amber-600">Needs Attention</p>
+            <p className="text-xs font-medium text-amber-700">Needs Attention</p>
             {highPriority.slice(0, 3).map((item) => (
               <div
                 key={item.key}
                 className="flex items-center justify-between py-1"
               >
                 <div className="flex items-center gap-2">
-                  <Circle className="h-3 w-3 text-amber-500" />
+                  <Circle className="h-3 w-3 text-amber-600" />
                   <span className="text-sm">{item.label}</span>
                 </div>
                 <Link href={item.href}>
@@ -73,7 +73,7 @@ export function SetupCompletenessPanel({ items, completionPct }: SetupCompletene
         {/* Completed Items Summary */}
         <div className="flex items-center justify-between pt-2 border-t">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <CheckCircle2 className="h-4 w-4 text-green-500" />
+            <CheckCircle2 className="h-4 w-4 text-green-600" />
             <span>{items.filter((i) => i.completed).length} of {items.length} complete</span>
           </div>
           {incompleteItems.length > 0 && (

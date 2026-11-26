@@ -1,21 +1,19 @@
 import Link from "next/link"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
-import { determinePortalView } from "@/lib/kernel/portal"
+import { resolvePortalLayouts, portalShowsLayout } from "@/lib/kernel/portal"
 import { getVendorResources } from "@/app/actions/portal-lifetime"
 import { getCalculatorHistory } from "@/app/actions/calculators"
 import { PortalFinancialTools } from "./portal-financial-tools"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Input } from "@/components/ui/input"
 import {
   ArrowLeft,
   Star,
   Phone,
   Globe,
   Mail,
-  Search,
   Wrench,
   Zap,
   Droplets,
@@ -95,13 +93,15 @@ export default async function ResourcesPage({
   const supabase = await createClient()
 
   // Verify lifetime portal access
-  const portalView = await determinePortalView(supabase, { contactId })
-  if (portalView.view !== "lifetime") {
+  // The KERNEL's layouts (wave 94) — a dual client's portal shows every layout it carries.
+  const portalLayouts = await resolvePortalLayouts(supabase, { contactId })
+  if (!portalShowsLayout(portalLayouts, "lifetime")) {
     redirect(`/portal/${contactId}`)
   }
 
-  // contactId is the authoritative identity — getCalculatorHistory takes it as leadId
-  // because the action parameter predates the portal contact model
+  // contactId is the authoritative identity — getCalculatorHistory reads on BOTH
+  // calculator_history columns (lead_id, contact_id), so a contacts.id finds the
+  // portal's own saves (written to contact_id since lane W3 2026-09-01)
   const [vendors, calcHistory] = await Promise.all([
     getVendorResources(contactId),
     getCalculatorHistory(contactId),
@@ -166,7 +166,7 @@ export default async function ResourcesPage({
                               <div className="flex items-center gap-2">
                                 <p className="font-medium">{v.name}</p>
                                 {v.preferred && (
-                                  <Star className="h-4 w-4 text-yellow-500 fill-yellow-500" />
+                                  <Star className="h-4 w-4 text-yellow-700 fill-yellow-500" />
                                 )}
                               </div>
                               <p className="text-sm text-muted-foreground">
@@ -175,7 +175,7 @@ export default async function ResourcesPage({
                             </div>
                             {v.rating && (
                               <Badge variant="secondary" className="text-xs">
-                                <Star className="h-3 w-3 mr-1 text-yellow-500 fill-yellow-500" />
+                                <Star className="h-3 w-3 mr-1 text-yellow-700 fill-yellow-500" />
                                 {Number(v.rating).toFixed(1)}
                               </Badge>
                             )}

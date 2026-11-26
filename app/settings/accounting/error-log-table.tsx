@@ -37,15 +37,20 @@ export function ErrorLogTable({ errors, brokerageId }: ErrorLogTableProps) {
   const handleRetry = async (errorId: string) => {
     setRetrying(errorId)
     try {
-      await retrySyncError({ errorId, brokerageId })
-      toast({
-        title: "Retry Queued",
-        description: "The record has been re-queued for sync",
-      })
+      const result = await retrySyncError({ errorId, brokerageId })
+      if (!result.success) {
+        toast({ title: "Not sent", description: result.error, variant: "destructive" })
+      } else {
+        toast({
+          title: result.landed ? "Sent" : "Still not accepted",
+          description: result.message,
+          variant: result.landed ? undefined : "destructive",
+        })
+      }
     } catch (error) {
       toast({
-        title: "Retry Failed",
-        description: "Failed to retry sync",
+        title: "Not sent",
+        description: "This didn't finish because of a problem on our side. Try again.",
         variant: "destructive",
       })
     } finally {

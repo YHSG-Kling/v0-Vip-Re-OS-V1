@@ -1,7 +1,6 @@
 "use client"
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
 import { 
   Inbox, 
   Mail, 
@@ -65,7 +64,7 @@ export function InboxRadar({
 }: InboxRadarProps) {
   const getUrgencyColor = (hours: number) => {
     if (hours > 24) return "text-destructive"
-    if (hours > 4) return "text-amber-600"
+    if (hours > 4) return "text-amber-700"
     return "text-muted-foreground"
   }
 

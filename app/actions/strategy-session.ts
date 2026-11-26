@@ -10,6 +10,8 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { assertCanActOnContact } from "@/lib/auth/contact-access"
+import { requireCaller } from "@/lib/auth/require-caller"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { resolveAddressing } from "@/lib/kernel/addressing"
 import {
   composeStrategySession,
@@ -21,7 +23,10 @@ export async function getStrategySessionAction(input: { contactId: string }): Pr
   | { ok: true; session: StrategySession | null; listingId?: string | null }
   | { ok: false; error: string }
 > {
-  const gate = await assertCanActOnContact(input.contactId)
+  // Read intent: composing the agenda mutates nothing. Scheduling (below) keeps
+  // the fail-closed write default, so a read_only act-as grant can inspect the
+  // session but never create the task.
+  const gate = await assertCanActOnContact(input.contactId, { intent: "read" })
   if (!gate.ok) return { ok: false, error: gate.error }
   const svc = createServiceClient()
 
@@ -102,6 +107,8 @@ export async function scheduleStrategySessionAction(input: {
 }): Promise<{ ok: true } | { ok: false; error: string }> {
   const gate = await assertCanActOnContact(input.contactId)
   if (!gate.ok) return { ok: false, error: gate.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction<{ ok: true } | { ok: false; error: string }>({ brokerageId: gate.contact.brokerage_id as string, action: "crm.strategy_session.schedule", actor: { type: "user", userId: gate.actorUserId }, subject: { type: "contact", id: input.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { duration_min: input.session.durationMin } }, async () => {
   const svc = createServiceClient()
 
   // tasks.assigned_to_agent_id is NOT NULL (live contract) — the contact's
@@ -136,6 +143,8 @@ export async function scheduleStrategySessionAction(input: {
   })
   if (error) return { ok: false, error: error.message }
   return { ok: true }
+  })
+  return "ok" in lr ? lr : { ok: false, error: lr.error ?? "This change was not recorded — nothing was saved" }
 }
 
 
@@ -144,20 +153,35 @@ export async function setSellerFloorAction(input: {
   /** the seller's walk-away floor in dollars; null clears it. */
   floor: number | null
 }): Promise<{ ok: true } | { ok: false; error: string }> {
-  const gate = await (await import("@/lib/supabase/server")).createClient().then(async (sb) => {
-    const { data: { user } } = await sb.auth.getUser()
-    if (!user) return null
-    const { data: me } = await sb.from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
-    return (me as any)?.brokerage_id ? { brokerageId: (me as any).brokerage_id as string } : null
-  })
-  if (!gate) return { ok: false, error: "Not authenticated" }
+  // WAVE 155 (lane 155S2): THE LISTING'S OWN AGENT OR TENANT STAFF — not any seat. Any seat in the tenant could set any
+  // listing's seller floor (a hand-written brokerage comparison was the only check). Now: the SESSION (requireCaller —
+  // error-checked reads, the tenant from the session); the listing read with the session tenant's PREDICATE (another
+  // tenant's id finds nothing — no hand comparison); then the caller must hold the tenant roster (isAdminOrBroker →
+  // TENANT_ADMIN_USER_TYPES) or be the listing's own agent (agents.id crossed from the session's users.id via
+  // agents.user_id, CLAUDE.md §3). The update keeps the tenant predicate and counts its rows (§3).
+  const caller = await requireCaller()
+  if (!caller.ok) return { ok: false, error: "Not authenticated" }
+  const gate = { brokerageId: caller.brokerageId, userId: caller.userId }
   const svc = createServiceClient()
-  const { data: listing } = await svc.from("listings")
-    .select("id, brokerage_id").eq("id", input.listingId).maybeSingle()
-  if (!listing || (listing as any).brokerage_id !== gate.brokerageId) return { ok: false, error: "Listing not found" }
+  const { data: listing, error: listingError } = await svc.from("listings")
+    .select("id, agent_id").eq("id", input.listingId).eq("brokerage_id", gate.brokerageId).maybeSingle()
+  if (listingError) return { ok: false, error: "Could not read that listing" }
+  if (!listing) return { ok: false, error: "Listing not found" }
+  if (!isAdminOrBroker({ user_type: caller.userType })) {
+    const { data: own, error: ownError } = await svc.from("agents").select("id").eq("user_id", gate.userId).eq("brokerage_id", gate.brokerageId).maybeSingle()
+    if (ownError) return { ok: false, error: "Could not resolve your agent record" }
+    if (!own || (own as { id: string }).id !== (listing as { agent_id?: string | null }).agent_id) {
+      return { ok: false, error: "Only the listing's agent or brokerage staff can set the seller's floor" }
+    }
+  }
   const floor = input.floor != null && input.floor > 0 ? Math.round(input.floor) : null
-  const { error } = await svc.from("listings")
-    .update({ seller_walkaway_price: floor }).eq("id", input.listingId)
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction<{ ok: true } | { ok: false; error: string }>({ brokerageId: gate.brokerageId, action: "listing.seller_floor.set", actor: { type: "user", userId: gate.userId }, subject: { type: "listing", id: input.listingId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { cleared: floor === null } }, async () => {
+  const { data: updated, error } = await svc.from("listings")
+    .update({ seller_walkaway_price: floor }).eq("id", input.listingId).eq("brokerage_id", gate.brokerageId).select("id")
   if (error) return { ok: false, error: error.message }
+  if (!updated?.length) return { ok: false, error: "Listing not found" }
   return { ok: true }
+  })
+  return "ok" in lr ? lr : { ok: false, error: lr.error ?? "This change was not recorded — nothing was saved" }
 }

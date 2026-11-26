@@ -9,6 +9,8 @@
  *   apify/instagram-profile-scraper       — top posts from a competitor's profile
  *   streamers/youtube-scraper             — videos from a channel + recent
  *   apidojo/tiktok-scraper                — TikTok hashtag/profile scrape
+ *   apify/facebook-groups-scraper         — PUBLIC group questions, IDEAS ONLY (wave 154, R3)
+ *   apify/facebook-ads-scraper            — Meta Ad Library creatives, IDEAS ONLY (wave 154, R3)
  *
  * Each source_config carries:
  *   {
@@ -19,91 +21,47 @@
  *     "engagement_fields": ["likesCount","commentsCount","viewsCount"]
  *   }
  *
- * The scraper runs the actor synchronously (Apify has a run-sync endpoint
- * for short crawls), normalizes the items into our TopicCandidate shape,
- * and the cron upserts them into content_topic_bank.
+ * Routes through the official Apify SDK adapter (lib/providers/apify/client.ts,
+ * wave 70B) for canonical egress; auth via the existing 'apify' connector
+ * registry entry (Bearer APIFY_API_TOKEN — the registry's envKey; this file
+ * alone spelled it APIFY_TOKEN until 2026-09-03, so a tenant with the
+ * registry's spelling set had a topic scraper that no-op'd forever. Resolved
+ * through lib/env/aliases.ts; the old spelling is accepted for one release).
  *
- * Routes through callConnector for canonical egress; auth via the existing
- * 'apify' connector registry entry (Bearer APIFY_TOKEN).
+ * WAVE 154 (lane 154C — owner R1 / R3, directive C5.6): this file used to normalize the dataset into a TopicCandidate whose
+ * `title` WAS the post's own caption and whose engagement was log-compressed into a 20–95 band (a floor of 20 for a post
+ * nobody engaged with — an invented number). Both are gone. runApifyScrape now returns the dataset items IN MEMORY only; the
+ * cron (app/api/cron/content-intel-apify/route.ts) fences them, rewords them (lib/content-intel/public-chatter-topics.ts) and
+ * files the reworded topic through THE ONE intake (lib/content-intel/topic-intake.ts). A public count an actor reports is
+ * MEASURED evidence in its own unit (apifySocialIdeas below); nothing is invented when no count exists.
  */
 import "server-only"
-import { callConnector } from "@/lib/agentic-os/connector-gateway"
-
-export interface ApifyTopicItem {
-  item_id:          string
-  title:            string
-  url:              string
-  summary:          string
-  engagement_score: number
-  published_date:   string | null
-  categories:       string[]
-}
+import { runActorSyncGetDatasetItems } from "@/lib/providers/apify/client"
+import { apifyToken } from "@/lib/env/aliases"
+import { deriveRewordedTopic, fenceUntrusted, observationDigest, type Rewording } from "./public-chatter-topics"
+import type { TopicIdea } from "./topic-intake"
 
 interface ApifyRunInput {
   actor:              string
   input:              Record<string, unknown>
-  title_field:        string
-  url_field:          string
-  engagement_fields?: string[]
 }
 
-interface ApifyDatasetItem {
-  [key: string]: unknown
-}
+export interface ApifyRunResult { ok: boolean; items: Array<Record<string, any>>; error: string | null; called: boolean }
 
-export async function runApifyScrape(args: ApifyRunInput): Promise<ApifyTopicItem[]> {
-  const token = process.env.APIFY_TOKEN
-  if (!token) return [] // graceful no-op when not configured
+/** The run seam: the SDK adapter by default; a proof injects a counting fake. */
+export type ApifyRunner = (token: string, actor: string, input: Record<string, unknown>) => Promise<{ ok: boolean; data: any[] | null; error?: string | null }>
+const defaultRunner: ApifyRunner = (token, actor, input) => runActorSyncGetDatasetItems(token, actor, input, { timeoutSecs: 60 })
 
-  // Apify's run-sync-get-dataset-items returns the dataset directly when the
-  // run finishes within the timeout. We bound it tight (60s) — anything
-  // longer we re-queue as async in a future cron.
-  const path = `acts/${encodeURIComponent(args.actor)}/run-sync-get-dataset-items`
-  const res = await callConnector<ApifyDatasetItem[]>({
-    connector: "apify",
-    baseUrl:   "https://api.apify.com/v2",
-    path,
-    method:    "POST",
-    auth:      { style: "bearer", token },
-    query:     { timeout: "60", format: "json" },
-    body:      args.input,
-    responseType: "json",
-    timeoutMs: 80_000,
-  })
-  if (!res.ok || !Array.isArray(res.data)) return []
-
-  const out: ApifyTopicItem[] = []
-  for (const item of res.data.slice(0, 50)) {
-    const title = String(item[args.title_field] ?? "").trim()
-    const url   = String(item[args.url_field] ?? "").trim()
-    if (!title || !url) continue
-
-    // Normalize engagement across actors — sum the configured fields,
-    // log-compress to a 0-100 score so a viral post (100k likes) lands
-    // in the 80-95 band and a typical top post in the 50-70 band.
-    let raw = 0
-    for (const f of args.engagement_fields ?? ["likesCount", "viewsCount", "commentsCount", "shareCount"]) {
-      const v = item[f]
-      if (typeof v === "number" && v > 0) raw += v
-    }
-    const score = Math.min(95, Math.max(20, Math.round(15 * Math.log10(raw + 10))))
-
-    // Date when available — Apify actors expose either timestamp (ms),
-    // takenAt (ISO), publishedTime (Date), etc. Best-effort.
-    const dateRaw = item.timestamp ?? item.takenAt ?? item.publishedTime ?? item.uploadDate ?? null
-    const published_date = dateRaw ? safeIso(dateRaw) : null
-
-    out.push({
-      item_id:          String(item.id ?? url),
-      title:            title.slice(0, 240),
-      url,
-      summary:          (String(item.caption ?? item.text ?? item.description ?? "")).slice(0, 4000),
-      engagement_score: score,
-      published_date,
-      categories:       inferCategories(`${title} ${item.caption ?? ""} ${item.description ?? ""}`),
-    })
-  }
-  return out
+/**
+ * Run an actor synchronously (run-sync-get-dataset-items semantics, 60 s bound) and return its items IN MEMORY (≤ 50).
+ * No token → no call (`called: false`). The items are untrusted and are never stored as returned.
+ */
+export async function runApifyScrape(args: ApifyRunInput, deps: { runner?: ApifyRunner; token?: string | null } = {}): Promise<ApifyRunResult> {
+  const token = deps.token === undefined ? apifyToken() : deps.token
+  if (!token) return { ok: false, items: [], error: "APIFY_API_TOKEN not configured — connect Apify in the integrations settings", called: false }
+  const res = await (deps.runner ?? defaultRunner)(token, args.actor, args.input)
+  if (!res.ok || !Array.isArray(res.data)) return { ok: false, items: [], error: res.error ?? "actor run failed", called: true }
+  return { ok: true, items: res.data.slice(0, 50), error: null, called: true }
 }
 
 function safeIso(v: unknown): string | null {
@@ -120,16 +78,33 @@ function safeIso(v: unknown): string | null {
   return null
 }
 
-function inferCategories(text: string): string[] {
-  const t = text.toLowerCase()
-  const cats: string[] = []
-  const add = (c: string) => { if (!cats.includes(c)) cats.push(c) }
-  if (/\b(just listed|new listing|just sold|coming soon|open house)\b/.test(t)) add("market_education")
-  if (/\b(buyer|first[- ]time|down payment|closing cost)\b/.test(t)) add("buyer_advice")
-  if (/\b(seller|cma|listing agreement|stage|stag)\b/.test(t)) add("seller_advice")
-  if (/\b(rate|mortgage|interest|fha|va loan)\b/.test(t)) add("finance")
-  if (/\b(neighborhood|school|walkable|downtown|hoa)\b/.test(t)) add("neighborhood")
-  if (/\b(renovation|remodel|home improvement|diy|inspection)\b/.test(t)) add("home_improvement")
-  if (cats.length === 0) add("market_education")
-  return cats
+/**
+ * Generic social-handle / hashtag items → REWORDED TopicIdeas (kind apify_social). The caption is fenced, reworded (rule-
+ * derived unless a rewording seam is wired) and discarded; the configured engagement fields, when present, are MEASURED public
+ * counts in their own unit. An item with no real-estate theme is held, never stored.
+ */
+export async function apifySocialIdeas(items: readonly Record<string, any>[], cfg: { title_field?: string; url_field?: string; engagement_fields?: string[]; geo?: TopicIdea["geo"]; sourceId: string; now: Date; reword?: Rewording | null }): Promise<{ ideas: TopicIdea[]; held: number; excluded: number }> {
+  const out = { ideas: [] as TopicIdea[], held: 0, excluded: 0 }
+  const geoLabel = cfg.geo?.label ?? cfg.geo?.city ?? null
+  for (const item of items) {
+    const fenced = fenceUntrusted(`${item[cfg.title_field ?? "caption"] ?? ""} ${item.caption ?? item.text ?? item.description ?? ""}`)
+    const url = String(item[cfg.url_field ?? "url"] ?? "").trim() || null
+    if (!fenced.text) { out.held++; continue }
+    const d = await deriveRewordedTopic(fenced, { geoLabel, reword: cfg.reword ?? null, sourceKind: "apify_social" })
+    if (d.status === "excluded") { out.excluded++; continue }
+    if (d.status === "held") { out.held++; continue }
+    let raw = 0, any = false
+    for (const f of cfg.engagement_fields ?? ["likesCount", "viewsCount", "commentsCount", "shareCount"]) {
+      const v = item[f]
+      if (typeof v === "number" && v >= 0) { raw += v; any = true }
+    }
+    out.ideas.push({
+      sourceKind: "apify_social", sourceId: cfg.sourceId, title: d.title, angle: d.angle, categories: d.categories, geo: cfg.geo ?? null,
+      sourceUrl: url, publishedAt: safeIso(item.timestamp ?? item.takenAt ?? item.publishedTime ?? item.uploadDate ?? null), observedAt: cfg.now.toISOString(),
+      evidence: any ? { kind: "measured", metric: (cfg.engagement_fields ?? ["likesCount", "viewsCount", "commentsCount", "shareCount"]).join("+"), value: raw, unit: "count", note: "platform-reported public counts" } : { kind: "unknown", note: "no public count reported" },
+      rights: "public_read_reworded",
+      brief: { observation_key: observationDigest(fenced), transport: "apify", consumer_question: d.consumerQuestion, topic_concept: d.title, theme_keys: d.themeKeys, rewording: d.status, apify_item_id: String(item.id ?? url ?? "") || null },
+    })
+  }
+  return out
 }

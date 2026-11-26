@@ -8,8 +8,11 @@
 //      (into the gate) a short, control-affirming note on the channel they still allow:
 //      "texts are off, you're in control, the portal is always yours."
 //   2. ENRICH — no channel left? The Data Steward queues an enrichment re-run
-//      (contact_enrichment_queue) to check for UPDATED contact info before giving up —
-//      people change numbers; a revoked line is often just a stale line.
+//      through the ONE contact-enrichment queue writer
+//      (lib/enrichment/contact-enrichment-core.ts :: queueContactEnrichment) to check for
+//      UPDATED contact info before giving up — people change numbers; a revoked line is
+//      often just a stale line. It used to write `contact_enrichment_queue` directly;
+//      see the tombstone at the enrich branch below.
 //   3. WITHDRAW — only after enrichment comes back empty does the Data Steward signal
 //      the Sphere to mark the relationship withdrawn (nurture_status, never a delete —
 //      the history stays; nothing further is proposed).
@@ -114,9 +117,22 @@ export async function runConsentRecovery(
       if (!revokedChannels.includes(label)) revokedChannels.push(label)
     }
 
-    const { data: enrichRows } = await supabase
-      .from("contact_enrichment_queue").select("id, status")
-      .eq("contact_id", c.id).eq("source", "consent_recovery").limit(5)
+    // TOMBSTONE (orphan doctrine §1.1, 2026-09-04) — this read was against
+    // `contact_enrichment_queue`. SURVIVOR: `lead_enrichment_queue`, the queue
+    // lib/lead-pipeline/enrichment-orchestrator.ts:processEnrichmentQueue
+    // actually drains. Provenance moved from the retired table's `source`
+    // column onto the survivor's `trigger_type` (free-form, no CHECK — see the
+    // parameter doc on queueContactEnrichment). Statuses map across unchanged
+    // except 'running' → 'processing', which is the survivor's spelling.
+    const { data: enrichRows, error: enrichReadError } = await supabase
+      .from("lead_enrichment_queue").select("id, status")
+      .eq("contact_id", c.id).eq("trigger_type", "consent_recovery").limit(5)
+    // §3 — a refused read must not read as "no enrichment has ever been
+    // queued", which would send the chain round the enrich step again.
+    if (enrichReadError) {
+      console.error("[consent-recovery] enrichment history unreadable:", enrichReadError.message)
+      continue
+    }
     const enrichment = (enrichRows ?? []) as Array<{ id: string; status: string }>
 
     const plan = planConsentRecovery({
@@ -147,11 +163,36 @@ export async function runConsentRecovery(
       }, supabase)
       if (res.ok) fallbacksProposed += 1
     } else if (plan.step === "enrich") {
-      const { error } = await supabase.from("contact_enrichment_queue").insert({
-        brokerage_id: brokerageId, contact_id: c.id, source: "consent_recovery",
-        status: "pending", metadata: { reason: plan.reason, revoked_channels: revokedChannels },
+      // TOMBSTONE (orphan doctrine §1.1, 2026-09-04) — this used to
+      // `.insert()` straight into `contact_enrichment_queue`.
+      // SURVIVOR: lib/enrichment/contact-enrichment-core.ts ::
+      // queueContactEnrichment, whose own header states it is THE ONE WRITER of
+      // a contact-triggered enrichment queue row and names the four earlier
+      // lanes that broke that rule. This was the fifth, and the worst of them:
+      // the other four at least wrote into the table the drain reads, while
+      // `contact_enrichment_queue` HAS NO DRAIN ANYWHERE IN THE TREE — two
+      // writers, an existence check, and nothing that ever processes a row. So
+      // step 2 of this chain queued an enrichment that could never run, step 3
+      // waited on it forever, and the contact was never withdrawn either. The
+      // `metadata` column this file wrote (`{ reason, revoked_channels }`) is
+      // what the census flagged; the reason survives as the survivor's
+      // `trigger_type`, and `revoked_channels` is re-derivable from the same
+      // contact flags this loop just read.
+      //
+      // The survivor also brings gates this insert had none of: freshness,
+      // live-deal suppression (§5), a pending-row idempotency guard and a
+      // backlog cap. A refusal from any of them is NOT counted as queued.
+      const { queueContactEnrichment } = await import("@/lib/enrichment/contact-enrichment-core")
+      const q = await queueContactEnrichment({
+        contactId: c.id,
+        brokerageId,
+        triggerType: "consent_recovery",
+        supabase,
       })
-      if (!error) enrichmentsQueued += 1
+      if (q.queued) enrichmentsQueued += 1
+      else if (q.reason === "error") {
+        console.error(`[consent-recovery] enrichment queue refused for ${c.id}: ${q.error ?? "unknown"}`)
+      }
     } else if (plan.step === "withdraw") {
       // contact_id stays NULL on purpose: a withdraw must NEVER be folded into a
       // Team Play client message — entity_id carries the contact for the handler.

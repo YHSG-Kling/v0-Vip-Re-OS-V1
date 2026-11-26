@@ -30,11 +30,11 @@ export function QualificationOutcomes({ outcomes, stats, chartData }: Props) {
   }
 
   const statCards = [
-    { label: "Qualified",        value: stats.qualified,        color: "text-green-600" },
+    { label: "Qualified",        value: stats.qualified,        color: "text-green-700" },
     { label: "Not Qualified",    value: stats.not_qualified,    color: "text-red-600"   },
     { label: "Appointment Set",  value: stats.appointment_set,  color: "text-blue-600"  },
     { label: "No Response",      value: stats.no_response,      color: "text-gray-600"  },
-    { label: "Needs Follow-Up",  value: stats.needs_follow_up,  color: "text-yellow-600"},
+    { label: "Needs Follow-Up",  value: stats.needs_follow_up,  color: "text-yellow-700"},
   ]
 
   return (

@@ -4,15 +4,26 @@
 // Reads the m228 first_touched_at / first_touch_channel truth on leads + contacts:
 //   · how many leads/contacts are AWAITING their first touch right now,
 //   · median time-to-first-touch + the share that met the under-5-min SLA,
-//   · channel breakdown of recent first touches.
-// All brokerage-scoped, real rows, no fabrication. Pure math lives in the policy module.
+//     overall AND per channel (lane 90C — 89D P2-8's "per lead per channel"),
+//   · channel breakdown of recent first touches,
+// and (lane 90C) the three PROOF NUMBERS competitors publish and this OS only
+// recorded — response rate (isa_outreach_log), connect rate (voice_calls) and
+// days of follow-up (isa_outreach_log span per lead) — over a 30-day window.
+// All brokerage-scoped, real rows, no fabrication. Pure math lives in the policy
+// module. EVERY read destructures `error` (CLAUDE.md §3): a refused ledger is
+// reported in `refused` and rendered as such, never as a clean zero.
 
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
 import {
+  preferMeasuredFirstTouch,
   summarizeFirstTouchLatency,
+  summarizeIsaProofNumbers,
+  readArbitrationResponsiveness,
+  type ArbitrationResponsivenessRead,
   type FirstTouchLatencySummary,
+  type IsaProofNumbers,
 } from "@/lib/ai-isa/speed-to-lead-policy"
 
 export interface SpeedToLeadMetrics {
@@ -21,15 +32,27 @@ export interface SpeedToLeadMetrics {
   recent: FirstTouchLatencySummary
   /** ISO timestamp of the lookback window start. */
   since: string
+  /** Lane 90C — the published proof numbers (30-day window). */
+  proof: IsaProofNumbers
+  proofSince: string
+  /** Lane 90C — ledger reads that were REFUSED (message per read); the panel says so. */
+  refused: string[]
+  /** Wave 153 (lane 153T, B12): the responder's arbitration responsiveness over the 7-day window — a refused read is
+   *  { ok: false } and the panel renders "could not be loaded", never zeros. */
+  arbitration: ArbitrationResponsivenessRead
 }
 
 const LOOKBACK_DAYS = 7
+/** The proof numbers use the same 30-day window getQualificationOutcomes uses. */
+const PROOF_LOOKBACK_DAYS = 30
 
 export async function getSpeedToLeadMetrics(brokerageId: string): Promise<SpeedToLeadMetrics> {
   const supabase = await createClient()
   const since = new Date(Date.now() - LOOKBACK_DAYS * 86_400_000).toISOString()
+  const proofSince = new Date(Date.now() - PROOF_LOOKBACK_DAYS * 86_400_000).toISOString()
+  const refused: string[] = []
 
-  const [awaitLeads, awaitContacts, touchedLeads, touchedContacts] = await Promise.all([
+  const [awaitLeads, awaitContacts, touchedLeads, touchedContacts, outreach, calls, measured, arbitration] = await Promise.all([
     // Leads owned by the ISA that have not yet been first-touched.
     supabase
       .from("leads")
@@ -48,30 +71,91 @@ export async function getSpeedToLeadMetrics(brokerageId: string): Promise<SpeedT
     // Recently first-touched leads (for latency + channel mix).
     supabase
       .from("leads")
-      .select("created_at, first_touched_at, first_touch_channel")
+      .select("id, created_at, first_touched_at, first_touch_channel")
       .eq("brokerage_id", brokerageId)
       .not("first_touched_at", "is", null)
       .gte("first_touched_at", since)
       .limit(500),
     supabase
       .from("contacts")
-      .select("created_at, first_touched_at, first_touch_channel")
+      .select("id, created_at, first_touched_at, first_touch_channel")
       .eq("brokerage_id", brokerageId)
       .not("first_touched_at", "is", null)
       .gte("first_touched_at", since)
       .limit(500),
+    // The ISA's own send/reply ledger — response rate + days of follow-up.
+    supabase
+      .from("isa_outreach_log")
+      .select("lead_id, contact_id, channel, sent_at, replied_at, status")
+      .eq("brokerage_id", brokerageId)
+      .gte("sent_at", proofSince)
+      .limit(5000),
+    // The ISA's outbound dials — connect rate.
+    supabase
+      .from("voice_calls")
+      .select("status, direction")
+      .eq("brokerage_id", brokerageId)
+      .eq("call_type", "ai_isa_call")
+      .eq("direction", "outbound")
+      .gte("created_at", proofSince)
+      .limit(5000),
+    // WAVE 153 (153F): the MEASURED first responses — each speed-to-lead decision's own timeline (received → dispatched), written by
+    // lib/ai-isa/speed-to-lead.ts on its completion. Preferred over the claim-based inference below.
+    supabase
+      .from("manager_completions")
+      .select("subject_id, context")
+      .eq("brokerage_id", brokerageId)
+      .eq("owner_manager", "ai_isa")
+      .like("source_ref", "speed_to_lead:%")
+      .gte("created_at", since)
+      .limit(1000),
+    // WAVE 153 (153T, B12): the responder's decisions + late-result settlements — the SAME session client (RLS-scoped).
+    readArbitrationResponsiveness(supabase, brokerageId, since),
   ])
 
-  const rows = [...(touchedLeads.data ?? []), ...(touchedContacts.data ?? [])].map((r: any) => ({
+  for (const [label, res] of [
+    ["leads awaiting first touch", awaitLeads],
+    ["contacts awaiting first touch", awaitContacts],
+    ["leads first-touched", touchedLeads],
+    ["contacts first-touched", touchedContacts],
+    ["isa_outreach_log", outreach],
+    ["voice_calls", calls],
+    ["measured first responses (manager_completions)", measured],
+  ] as const) {
+    if (res.error) refused.push(`${label}: ${res.error.message}`)
+  }
+
+  const touched = [...(touchedLeads.data ?? []), ...(touchedContacts.data ?? [])].map((r: any) => ({
+    id: (r.id as string | null) ?? null,
     createdAt: r.created_at,
     firstTouchedAt: r.first_touched_at,
     channel: r.first_touch_channel,
   }))
+  const measuredRows = ((measured.data ?? []) as Array<{ subject_id?: string | null; context?: { timeline?: { received_at?: string | null; dispatched_at?: string | null } } | null }>)
+    .map((m) => ({ subjectId: m.subject_id ?? "", receivedAt: m.context?.timeline?.received_at ?? null, dispatchedAt: m.context?.timeline?.dispatched_at ?? null }))
+  const merged = preferMeasuredFirstTouch(touched, measuredRows)
+  const rows = merged.rows
+
+  const proof = summarizeIsaProofNumbers({
+    outreach: ((outreach.data ?? []) as any[]).map((r) => ({
+      leadId: r.lead_id ?? null,
+      contactId: r.contact_id ?? null,
+      channel: r.channel ?? null,
+      sentAt: r.sent_at ?? null,
+      repliedAt: r.replied_at ?? null,
+      status: r.status ?? null,
+    })),
+    calls: ((calls.data ?? []) as any[]).map((c) => ({ status: c.status ?? null, direction: c.direction ?? null })),
+  })
 
   return {
     awaitingLeads: awaitLeads.count ?? 0,
     awaitingContacts: awaitContacts.count ?? 0,
-    recent: summarizeFirstTouchLatency(rows),
+    recent: { ...summarizeFirstTouchLatency(rows), measuredCount: merged.measuredCount, inferredCount: merged.inferredCount },
     since,
+    proof,
+    proofSince,
+    refused,
+    arbitration,
   }
 }

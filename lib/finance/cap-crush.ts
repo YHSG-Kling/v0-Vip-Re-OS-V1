@@ -9,6 +9,7 @@
 // The detector is pure/unit-tested; the celebration does the I/O.
 
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { usd } from "@/lib/format/money"
 
 type Svc = SupabaseClient<any, any, any>
 
@@ -30,7 +31,7 @@ export function detectCapCrush(input: {
   return { crushed, justCrossed }
 }
 
-const usd = (n: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n)
+// TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd
 
 /**
  * Celebrate an agent crushing their cap: an agent-facing notification ("you keep 100% now") + the
@@ -60,7 +61,7 @@ export async function celebrateCapCrush(
   const { data: agent } = await svc.from("agents").select("user_id").eq("id", params.agentId).maybeSingle()
   const userId = (agent as { user_id?: string | null } | null)?.user_id ?? null
   if (userId) {
-    await svc.from("notifications").insert({
+    const { error: notifyError } = await svc.from("notifications").insert({
       user_id: userId,
       brokerage_id: params.brokerageId,
       type: "cap_crushed",
@@ -70,7 +71,8 @@ export async function celebrateCapCrush(
       entity_id: params.agentId,
       priority: "high",
       channel: "in_app",
-    }).then(() => { celebrated = true }, () => {})
+    })
+    if (notifyError) console.warn("[cap-crush.ts] notifications insert refused — the bell will not ring:", notifyError.message)
   }
 
   let signaled = false

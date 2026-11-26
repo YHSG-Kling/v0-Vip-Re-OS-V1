@@ -18,7 +18,7 @@ import { executeAssetManagerAction } from "@/lib/agents/asset-manager-actions"
 import { executeAdManagerAction } from "@/lib/ads/ad-manager"
 import { approveContentSource, rejectContentSource, type ContentQueue } from "@/lib/kernel/approval-sources"
 
-type Queue = "marketing" | "asset" | "ads" | "client_message" | ContentQueue
+type Queue = "marketing" | "asset" | "ads" | "client_message" | "held_send" | ContentQueue
 type AgentQueue = "marketing" | "asset" | "ads"
 const TABLE: Record<AgentQueue, "marketing_agent_actions" | "asset_manager_actions" | "ad_manager_actions"> = {
   marketing: "marketing_agent_actions",
@@ -37,7 +37,11 @@ async function requireApprover(): Promise<{ userId: string; brokerageId: string 
     .eq("id", user.id)
     .maybeSingle()
   const role = u?.user_type ?? "agent"
-  if (!["admin", "broker", "superadmin"].includes(role)) return { error: "Not authorized to approve agent actions" }
+  // SCOPE LADDER (kept inline — isSuperadmin below hands wider scope): dead
+  // 'superadmin' removed from the array only — 0 live rows store that
+  // users.user_type, so it admitted nobody (isSuperadmin stays dead-false,
+  // unchanged behavior). broker_owner added: storable seat that owns the brokerage.
+  if (!["admin", "broker", "broker_owner"].includes(role)) return { error: "Not authorized to approve agent actions" }
   return { userId: user.id, brokerageId: u?.brokerage_id ?? null, isSuperadmin: role === "superadmin", role }
 }
 
@@ -110,6 +114,48 @@ async function recordContentDecision(
   } catch { /* audit is best-effort — never breaks the decision */ }
 }
 
+/** The approver-facing sentence for a kernel refusal code (the code itself stays on the ledger row). */
+function heldSendRefusal(error: string | undefined): string {
+  const e = error ?? ""
+  if (/hold_not_found|approval_not_found/.test(e)) return "This held message is not in your brokerage."
+  if (/hold_closed/.test(e)) return "This held message was already closed — it was not sent."
+  if (/already_approved/.test(e)) return "This held message was already approved — declining it now changes nothing."
+  if (/no_envelope/.test(e)) return "This hold kept no message to send — ask for a new draft."
+  if (/thread_unreadable/.test(e)) return "The conversation could not be read, so nothing was sent. Try again in a moment."
+  return e || "Not sent."
+}
+
+/**
+ * WAVE 156 (lane 156M, round 3) — release or close ONE held send from the approval queue. The tenant and the approver come from the
+ * SESSION (requireApprover — the same rule every approve here uses: admin / broker / broker_owner of the session's brokerage; a contact,
+ * vendor, ISA or agent seat is refused before this runs). Approve: approveHeldSend (one expiring decision bound to the conversation the
+ * proposal was drafted against) → releaseApprovedSend (re-dispatched CARRYING that decision; the sink refuses it if the thread moved on
+ * or the approval lapsed, and the hold is then closed). Decline: declineHeldSend (a terminal decision). Both under ledgerSessionAction,
+ * keyed on the hold, so a double click acts once. Module-private: the two exported doors above are the only entry points.
+ */
+async function heldSendDecision(kind: "approve" | "decline", holdId: string, actor: { userId: string; brokerageId: string | null; role: string }) {
+  if (!actor.brokerageId) return { ok: false, error: "Your account has no brokerage — nothing to approve." }
+  const brokerageId = actor.brokerageId
+  const svc = createServiceClient()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const D = await import("@/lib/providers/dispatch")
+  const r = await ledgerSessionAction({
+    brokerageId, action: kind === "approve" ? "comms.held_send.approve" : "comms.held_send.decline", actor: { type: "user", userId: actor.userId },
+    subject: { type: "held_send", id: holdId }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED", cycle: holdId,
+  }, async (): Promise<{ success: boolean; error?: string; status?: string }> => {
+    if (kind === "decline") {
+      const d = await D.declineHeldSend(svc, { brokerageId, holdId, deciderUserId: actor.userId, reason: "declined" })
+      return d.ok ? { success: true, status: "declined" } : { success: false, error: heldSendRefusal(d.error) }
+    }
+    const ap = await D.approveHeldSend(svc, { brokerageId, holdId, approverUserId: actor.userId, authority: `command-center approver (${actor.role})` })
+    if (!ap.ok) return { success: false, error: heldSendRefusal(ap.error) }
+    const sent = await D.releaseApprovedSend(svc, { brokerageId, approvalId: ap.approvalId })
+    return sent.success ? { success: true, status: "sent" } : { success: false, error: heldSendRefusal(sent.error) }
+  })
+  revalidatePath("/dashboard/admin/command-center")
+  return { ok: r.success === true, status: (r as { status?: string }).status ?? (kind === "approve" ? "sent" : "declined"), error: r.success ? undefined : r.error }
+}
+
 /** Confirm the action exists, is still proposed, and is in the approver's scope. */
 async function loadScopedAction(queue: AgentQueue, actionId: string, brokerageId: string | null, isSuperadmin: boolean) {
   const svc = createServiceClient()
@@ -144,6 +190,8 @@ export async function approveAgentAction(params: { queue: Queue; actionId: strin
     revalidatePath("/dashboard/admin/command-center")
     return { ok: res.ok, status: res.status, error: res.error }
   }
+  // WAVE 156 (156M, round 3): a send the sink HELD for a person — approving releases it CARRYING the approval's decision.
+  if (params.queue === "held_send") return heldSendDecision("approve", params.actionId, actor)
   // Deal-critical managers' client messages: approving SENDS the seller/buyer update.
   if (params.queue === "client_message") {
     const { approveClientMessage } = await import("@/lib/agents/agent-client-messages")
@@ -183,6 +231,7 @@ export async function rejectAgentAction(params: { queue: Queue; actionId: string
     revalidatePath("/dashboard/admin/command-center")
     return { ok: res.ok, status: "rejected" as const, error: res.error }
   }
+  if (params.queue === "held_send") return heldSendDecision("decline", params.actionId, actor)
   if (params.queue === "client_message") {
     await recordClientMessageDecision(params.actionId, actor, "rejected")
     const { rejectClientMessage } = await import("@/lib/agents/agent-client-messages")
@@ -221,13 +270,41 @@ export async function runTeamCommand(
   if (!user) return { ok: false, spoken: "You're not signed in." }
   const { data: u } = await supabase
     .from("users")
-    .select("brokerage_id, first_name")
+    .select("brokerage_id, first_name, user_type, platform_role")
     .eq("id", user.id)
     .maybeSingle()
   if (!u?.brokerage_id) return { ok: false, spoken: "I can't find your brokerage — contact your admin." }
 
-  const { parseTeamCommandText } = await import("@/lib/voice/parse-team-command")
-  const parsed = parseTeamCommandText(text)
+  // C17 FIRST (wave 148, lane 148D): the ONE intent interface hears the sentence before the team-command
+  // floor. A request the OS answers through a domain capability — an ad, a market blog, an open house, a
+  // buyer search, who may need help — is said back as its plan (what I'll do, what I still need, that it
+  // waits for a yes) and finished on the one affordance, instead of "I didn't catch a team command".
+  // Rules only here (no model spend on the bar). Everything else is the team-command floor — and since wave
+  // 148Z C17 names THAT too (interpretation.teamCommand), so this bar picks nothing itself.
+  const { interpretIntent } = await import("@/lib/voice-admin/intent-interface")
+  const { resolveAgentId } = await import("@/lib/kernel/agent-identity")
+  const agentId = await resolveAgentId(supabase as never, user.id)
+  // Wave 149 (149J): tenant capability GRANTS join the seat — read on the session client (a person reads their own
+  // grant rows); a refused read leaves the seat alone (fail closed).
+  const { withTenantRoleGrants } = await import("@/lib/auth/role-grants")
+  const granted = await withTenantRoleGrants(supabase as never, { userId: user.id, userType: (u as { user_type?: string | null }).user_type ?? null, platformRole: (u as { platform_role?: string | null }).platform_role ?? null, agentId }, u.brokerage_id)
+  if (granted.note) console.warn(`[command-center] ${granted.note}`)
+  const interpretation = interpretIntent({
+    utterance: text, modality: "text", screen: "assistant",
+    actor: granted.actor,
+    tenant: { brokerageId: u.brokerage_id },
+  })
+  if (interpretation.family === "domain") {
+    const spoken = interpretation.authority_check.allowed
+      ? `${interpretation.plan.summary} Finish it on the assistant bar — it asks for anything missing and waits for your yes.`
+      : (interpretation.authority_check.reasons[0] ?? interpretation.plan.summary)
+    return { ok: interpretation.authority_check.allowed, spoken, command: "intent_interface", acting: false }
+  }
+
+  // TOMBSTONE (wave 148, 148Z): this bar called `parseTeamCommandText(text)` (lib/voice/parse-team-command.ts) itself — a
+  // second place that picked commands outside the one module. SURVIVOR: lib/voice-admin/intent-interface.ts interpretIntent →
+  // `teamCommand` (teamCommandFloor), read here; dispatchTeamCommand below is unchanged and keeps its own gates.
+  const parsed = interpretation.teamCommand
   if (!parsed) {
     return { ok: false, spoken: "I didn't catch a team command in that. Try \"what should I do today\", \"what do you know about <name>\", \"anything near <address>\", or \"cut a reel for <listing>\"." }
   }

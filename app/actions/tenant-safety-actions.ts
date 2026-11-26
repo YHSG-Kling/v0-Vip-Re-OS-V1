@@ -103,7 +103,9 @@ export async function resolveTenantSafetyFindingAction(params: {
   if (!auth.ok) return { success: false, error: auth.error }
 
   const supabase = await createClient()
-  const { error } = await supabase
+  // COUNTED (CLAUDE.md §3, lane 155R23): an UPDATE that RLS filtered to nothing, or a finding already gone, resolves exactly like
+  // one that worked — and this answered "resolved". `.select("id")` and count; zero rows is a refusal.
+  const { data: resolvedRows, error } = await supabase
     .from("tenant_safety_findings")
     .update({
       resolved:        true,
@@ -112,8 +114,14 @@ export async function resolveTenantSafetyFindingAction(params: {
       resolution_note: params.resolutionNote ?? null,
     })
     .eq("id", params.findingId)
+    .select("id")
 
   if (error) return { success: false, error: error.message }
+  if (((resolvedRows ?? []) as unknown[]).length === 0) return { success: false, error: "That finding was not found or is not yours to resolve — nothing was changed." }
+  // LAW 5 (lane 155R23, no tenant): tenant_safety_findings is the PLATFORM-WIDE scan's table (no brokerage_id column, verified
+  // live), so the act's record is the platform's evidence door — never the resolver's own brokerage stamped onto a platform row.
+  const { recordPlatformEvidence } = await import("@/lib/platform/staff-action-gate")
+  await recordPlatformEvidence({ actorUserId: auth.userId, actorEmail: null, action: "tenant_safety.finding_resolved", targetType: "tenant_safety_finding", targetId: params.findingId, details: { resolver_user_type: auth.userType, note_given: !!params.resolutionNote } })
   revalidatePath("/dashboard/admin/tenant-safety")
   return { success: true }
 }

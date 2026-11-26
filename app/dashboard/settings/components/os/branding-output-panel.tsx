@@ -72,7 +72,7 @@ export function BrandingOutputPanel({ branding }: BrandingOutputPanelProps) {
         <div className="space-y-2">
           <div className="flex items-center justify-between py-1">
             <div className="flex items-center gap-2">
-              <Image className={`h-4 w-4 ${hasLogo ? "text-green-500" : "text-muted-foreground"}`} />
+              <Image className={`h-4 w-4 ${hasLogo ? "text-green-600" : "text-muted-foreground"}`} />
               <span className="text-sm">Logo</span>
             </div>
             <Badge variant={hasLogo ? "default" : "secondary"} className="text-xs">
@@ -82,7 +82,7 @@ export function BrandingOutputPanel({ branding }: BrandingOutputPanelProps) {
           
           <div className="flex items-center justify-between py-1">
             <div className="flex items-center gap-2">
-              <Mail className={`h-4 w-4 ${hasEmailSignature ? "text-green-500" : "text-muted-foreground"}`} />
+              <Mail className={`h-4 w-4 ${hasEmailSignature ? "text-green-600" : "text-muted-foreground"}`} />
               <span className="text-sm">Email Signature</span>
             </div>
             <Badge variant={hasEmailSignature ? "default" : "secondary"} className="text-xs">
@@ -92,7 +92,7 @@ export function BrandingOutputPanel({ branding }: BrandingOutputPanelProps) {
           
           <div className="flex items-center justify-between py-1">
             <div className="flex items-center gap-2">
-              <FileText className={`h-4 w-4 ${hasLetterhead ? "text-green-500" : "text-muted-foreground"}`} />
+              <FileText className={`h-4 w-4 ${hasLetterhead ? "text-green-600" : "text-muted-foreground"}`} />
               <span className="text-sm">Letterhead</span>
             </div>
             <Badge variant={hasLetterhead ? "default" : "secondary"} className="text-xs">

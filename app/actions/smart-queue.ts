@@ -11,7 +11,7 @@
  *   💎 Likely seller — predicted to list within ~90 days (PLS engine)
  */
 
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveActingContext } from "@/lib/platform/acting-context"
 import { createServiceClient } from "@/lib/supabase/service"
 
 export type SmartSegment = "hot" | "at_risk" | "new" | "likely_seller"
@@ -35,8 +35,8 @@ export interface SmartQueueData {
 const PER_SEGMENT_LIMIT = 25
 
 export async function getSmartQueue(): Promise<SmartQueueData> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.agentId) {
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.agentId) {
     return EMPTY
   }
   const svc = createServiceClient()

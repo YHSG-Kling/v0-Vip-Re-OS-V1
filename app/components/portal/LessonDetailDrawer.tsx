@@ -356,10 +356,13 @@ export function LessonDetailDrawer({
               )}
             </Button>
           ) : (
-            <Button disabled className="w-full sm:w-auto min-h-[44px] bg-green-600">
+            /* Not a control — the lesson is already marked read, and there is
+               no "un-read" capability (markLessonRead only sets read). Rendered
+               as the status it is rather than as a permanently dead button. */
+            <div className="w-full sm:w-auto min-h-[44px] px-4 inline-flex items-center justify-center rounded-md bg-green-600 text-white text-sm font-medium">
               <Check className="w-4 h-4 mr-2" />
               Completed
-            </Button>
+            </div>
           )}
         </SheetFooter>
       </SheetContent>

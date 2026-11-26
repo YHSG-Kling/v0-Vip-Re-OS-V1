@@ -43,29 +43,35 @@ export async function searchStockImagesAction(query: string): Promise<
     const { data: cred } = await createServiceClient().from("platform_credentials")
       .select("api_key").eq("brokerage_id", ctx.brokerageId)
       .eq("platform", "pexels").eq("is_active", true).maybeSingle()
-    tenantKey = (cred as any)?.api_key ?? null
+    tenantKey = decryptSecret((cred as any)?.api_key ?? null)
   }
-  return searchPexels(query, 12, tenantKey)
+  return searchPexels(query, 12, tenantKey, ctx?.isAuthenticated ? ctx.brokerageId ?? null : null)
 }
 
 // ─── Tenant stock-provider key (Settings → Stock Library) ────────────────────
-const TENANT_ADMIN_TYPES = new Set(["broker", "broker_admin", "admin", "superadmin"])
+// TRUE ADMIN GATE (operational: marketing) — repointed to the ONE tenant roster
+// (isAdminOrBroker). 'superadmin' was dead: 0 live rows store that users.user_type.
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { encryptSecret, decryptSecret } from "@/lib/security/secret-crypto"
 
 export async function setStockProviderKeyAction(input: { apiKey: string }): Promise<{ ok: boolean; error?: string }> {
   const p = await callerProfile()
   const ctx = await getAgentContext().catch(() => null)
   if (!p || !ctx?.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
-  if (!TENANT_ADMIN_TYPES.has(p.userType ?? "")) return { ok: false, error: "Forbidden — brokerage admin only" }
+  if (!isAdminOrBroker({ user_type: p.userType })) return { ok: false, error: "Forbidden — brokerage admin only" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof setStockProviderKeyAction>>>({ brokerageId: ctx.brokerageId, action: "marketing.stock_provider_key.set", actor: { type: "user", userId: p.userId }, subject: { type: "brokerage", id: ctx.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { platform: "pexels" } }, async () => {
   const apiKey = input.apiKey?.trim()
   if (!apiKey || apiKey.length < 10) return { ok: false, error: "That doesn't look like a valid API key" }
   const svc = createServiceClient()
   const { data: existing } = await svc.from("platform_credentials").select("id")
     .eq("brokerage_id", ctx.brokerageId).eq("platform", "pexels").maybeSingle()
-  const row = { brokerage_id: ctx.brokerageId, platform: "pexels", api_key: apiKey, is_active: true, updated_at: new Date().toISOString() }
+  const row = { brokerage_id: ctx.brokerageId, platform: "pexels", api_key: encryptSecret(apiKey), is_active: true, updated_at: new Date().toISOString() }
   const { error } = existing
     ? await svc.from("platform_credentials").update(row).eq("id", (existing as any).id)
     : await svc.from("platform_credentials").insert(row)
   return error ? { ok: false, error: error.message } : { ok: true }
+  }).then((r) => ("success" in r ? { ok: false as const, error: r.error ?? "Not recorded" } : r))
 }
 
 export async function getStockProviderStatusAction(): Promise<{ ok: boolean; tenantKeySet: boolean; platformKeySet: boolean }> {
@@ -108,6 +114,8 @@ export async function saveLibraryImageAction(input: {
     visibilityScope = "brokerage"
   }
 
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async (): Promise<Awaited<ReturnType<typeof saveLibraryImageAction>>> => {
   const { data, error } = await svc.from("marketing_assets").insert({
     brokerage_id: brokerageId,
     created_by: p.userId,
@@ -129,6 +137,8 @@ export async function saveLibraryImageAction(input: {
   }).select("id").single()
   if (error || !data) return { ok: false, error: error?.message ?? "insert failed" }
   return { ok: true, id: (data as any).id }
+  }
+  return brokerageId ? ledgerSessionAction({ brokerageId: brokerageId, action: "marketing.library_image.save", actor: { type: "user", userId: p.userId }, subject: { type: "marketing_asset", id: null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { scope: v.scope } }, ledgered).then((r) => ("success" in r ? { ok: false as const, error: r.error ?? "Not recorded" } : r)) : ledgered()
 }
 
 // ─── The union list every picker uses: platform-shared + (optionally) mine ────
@@ -153,7 +163,7 @@ export async function listImageLibraryAction(): Promise<
   const brokerageId = ctx?.isAuthenticated ? ctx.brokerageId : null
 
   let q = svc.from("marketing_assets")
-    .select("id, asset_name, asset_url, thumbnail_url, visibility_scope, metadata, brokerage_id")
+    .select("id, asset_name, asset_url, thumbnail_url, visibility_scope, metadata, brokerage_id, tags")
     .eq("asset_type", "image").eq("approval_status", "approved")
     .order("created_at", { ascending: false }).limit(200)
   q = brokerageId
@@ -162,9 +172,25 @@ export async function listImageLibraryAction(): Promise<
   const { data, error } = await q
   if (error) return { ok: false, error: error.message }
 
+  // WAVE 84B — a SCREENSHOT enters the library only when THE ONE USE RULE
+  // admits it for "image_library" (lib/assets/screenshot-uses.ts
+  // screenshotRowUseAllowed: the row's subject AND its recorded uses). Owner:
+  // "screenshots can be used for all marketing/assets/videos/guides/education
+  // … only the zillow zestimate screenshot can be used for marketing campaigns
+  // including video" — so a general still (an OS surface, product UI) is
+  // library stock unless a person narrowed it out, while a Zestimate still
+  // (campaign + campaign video only) and another portal's page never are: the
+  // library feeds every creative picker, not only campaigns. The estimate
+  // comparison COMPOSITE embeds the Zillow still, so it is judged as the
+  // Zestimate and stays inside its campaign too (82D-83C let it in).
+  // Non-screenshot images pass untouched.
+  const { screenshotRowUseAllowed, isScreenshotRuleRow } = await import("@/lib/assets/screenshot-uses")
+  const admitted = ((data ?? []) as any[]).filter((r) =>
+    isScreenshotRuleRow(r) ? screenshotRowUseAllowed(r, "image_library") : true)
+
   return {
     ok: true,
-    assets: ((data ?? []) as any[]).map((r) => ({
+    assets: admitted.map((r) => ({
       id: r.id,
       name: r.asset_name,
       url: r.asset_url,
@@ -191,6 +217,11 @@ export async function removeLibraryImageAction(id: string): Promise<{ ok: boolea
     const ctx = await getAgentContext()
     if (!ctx.isAuthenticated || ctx.brokerageId !== (row as any).brokerage_id) return { ok: false, error: "Forbidden" }
   }
+  const rowTenant = (row as { visibility_scope?: string }).visibility_scope === "platform" ? null : (row as { brokerage_id?: string | null }).brokerage_id ?? null
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async (): Promise<Awaited<ReturnType<typeof removeLibraryImageAction>>> => {
   const { error } = await svc.from("marketing_assets").delete().eq("id", id)
   return error ? { ok: false, error: error.message } : { ok: true }
+  }
+  return rowTenant ? ledgerSessionAction({ brokerageId: rowTenant, action: "marketing.library_image.remove", actor: { type: "user", userId: p.userId }, subject: { type: "marketing_asset", id: id }, riskClass: "IRREVERSIBLE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => ("success" in r ? { ok: false as const, error: r.error ?? "Not recorded" } : r)) : ledgered()
 }

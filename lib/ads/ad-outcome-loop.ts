@@ -22,7 +22,8 @@
  *      Manager proposes a GATED rebalance on the inter-manager bus (money
  *      moves only through a human, same governance as every client send).
  *
- * Nothing here spends or publishes — it reads ledgers, conditions the next
+ * Nothing here spends or publishes (EXCEPT the wave-108F envelope-bound shift of a
+ * PROVEN rebalance — autonomousShift below) — it reads ledgers, conditions the next
  * generation, and raises gated proposals. ads_manager owns the loop.
  */
 import { publishManagerSignal } from "@/lib/kernel/manager-signals"
@@ -140,6 +141,24 @@ export interface CampaignCplRow {
   campaignName: string | null
   spend: number
   leads: number
+  /** Wave 108F — the proof inputs: clicks (exposures for the significance test) and the live daily budget. */
+  clicks?: number
+  dailyBudget?: number
+}
+
+/** Wave 108F — the share of the lagging campaign's daily budget one autonomous shift may move. */
+const AUTONOMOUS_SHIFT_SHARE = 0.25
+
+/**
+ * PURE — is the rebalance PROVEN? The producer's lead rate per click must beat the lagging campaign's at 95 %
+ * (strategySignificance — the ONE deterministic statistician, sample floor included). CPL alone is a ratio, not proof.
+ * @proofSeam scripts/autonomous-budgeting-guard.ts asserts the proven / unproven controls directly.
+ */
+export function provenRebalance(rows: CampaignCplRow[], d: { fromCampaignId: string; toCampaignId: string }, significance: (a: { exposures: number; conversions: number }, b: { exposures: number; conversions: number }) => { verdict: string; why: string }): { proven: boolean; why: string } {
+  const to = rows.find((r) => r.campaignId === d.toCampaignId), from = rows.find((r) => r.campaignId === d.fromCampaignId)
+  if (!to || !from) return { proven: false, why: "campaign rows missing" }
+  const s = significance({ exposures: Number(to.clicks ?? 0), conversions: to.leads }, { exposures: Number(from.clicks ?? 0), conversions: from.leads })
+  return s.verdict === "a_better" ? { proven: true, why: s.why } : { proven: false, why: `not proven — ${s.why}` }
 }
 
 /** PURE: the rebalance decision. Both campaigns need real spend (≥$50) and
@@ -172,22 +191,30 @@ export function decideBudgetRebalance(rows: CampaignCplRow[]): { fromCampaignId:
 /** GATED distribution intelligence: budget-shift proposals ride the
  *  inter-manager bus — a human approves before any money moves. One open
  *  proposal per (from,to) pair (dedup via the signal payload). */
-export async function proposeBudgetRebalance(svc: any, brokerageId: string): Promise<{ proposed: boolean }> {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+async function proposeBudgetRebalance(svc: any, brokerageId: string): Promise<{ proposed: boolean; shifted?: boolean }> {
   const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
   const { data: campaigns } = await svc.from("ad_campaigns")
-    .select("id, campaign_name")
+    .select("id, campaign_name, daily_budget")
     .eq("brokerage_id", brokerageId).eq("status", "live").limit(50)
   const rows: CampaignCplRow[] = []
-  for (const c of ((campaigns ?? []) as Array<{ id: string; campaign_name: string | null }>)) {
+  for (const c of ((campaigns ?? []) as Array<{ id: string; campaign_name: string | null; daily_budget: number | null }>)) {
     const { data: perf } = await svc.from("ad_performance")
-      .select("spend, leads")
-      .eq("ad_campaign_id", c.id).gte("captured_at", since).limit(200)
+      .select("spend, leads, clicks")
+      .eq("ad_campaign_id", c.id).eq("brokerage_id", brokerageId).gte("captured_at", since).limit(200)
     const spend = ((perf ?? []) as any[]).reduce((s, p) => s + (Number(p.spend) || 0), 0)
     const leads = ((perf ?? []) as any[]).reduce((s, p) => s + (Number(p.leads) || 0), 0)
-    rows.push({ campaignId: c.id, campaignName: c.campaign_name, spend, leads })
+    const clicks = ((perf ?? []) as any[]).reduce((s, p) => s + (Number(p.clicks) || 0), 0)
+    rows.push({ campaignId: c.id, campaignName: c.campaign_name, spend, leads, clicks, dailyBudget: Number(c.daily_budget ?? 0) })
   }
   const decision = decideBudgetRebalance(rows)
   if (!decision) return { proposed: false }
+
+  // Wave 108F — CONTROLLED AUTONOMOUS BUDGETING: a PROVEN rebalance inside the tenant's ads_budget_shift envelope
+  // (≤ pct of the live monthly budget, consumed atomically through the ONE enforcement function) moves without a
+  // human; anything unproven, over the envelope, or refused falls through to the gated proposal below — unchanged.
+  const shifted = await autonomousShift(svc, brokerageId, rows, decision)
+  if (shifted) return { proposed: false, shifted: true }
 
   // Dedup: an unactioned rebalance for the same pair inside 14 days stands.
   const dedupSince = new Date(Date.now() - 14 * 86_400_000).toISOString()
@@ -206,6 +233,37 @@ export async function proposeBudgetRebalance(svc: any, brokerageId: string): Pro
     payload: { from_campaign_id: decision.fromCampaignId, to_campaign_id: decision.toCampaignId, reason: decision.reason },
   }, svc)
   return { proposed: true }
+}
+
+/** Wave 108F — try the envelope-bound shift; true only when money moved. Never throws. */
+async function autonomousShift(svc: any, brokerageId: string, rows: CampaignCplRow[], decision: { fromCampaignId: string; toCampaignId: string; reason: string }): Promise<boolean> {
+  try {
+    const { strategySignificance } = await import("@/lib/intelligence/strategy-learning")
+    const proof = provenRebalance(rows, decision, strategySignificance)
+    if (!proof.proven) return false
+    const from = rows.find((r) => r.campaignId === decision.fromCampaignId)!
+    const basisUsd = rows.reduce((s, r) => s + Number(r.dailyBudget ?? 0), 0) * 30
+    const dailyShift = Math.floor(Number(from.dailyBudget ?? 0) * AUTONOMOUS_SHIFT_SHARE)
+    if (!(dailyShift >= 1)) return false
+    const { consumeAutonomyEnvelope, releaseAutonomyEnvelope } = await import("@/lib/kernel/autonomy-budgets")
+    const env = await consumeAutonomyEnvelope(svc, {
+      brokerageId, envelope: "ads_budget_shift", amount: dailyShift * 30, basisUsd, reasonCode: "CAMPAIGN_STEP",
+      reasonDetail: `shift $${dailyShift}/day: ${decision.reason}; ${proof.why}`, subject: { type: "ad_campaign", id: decision.toCampaignId },
+      idempotencyKey: `ads.shift:${decision.fromCampaignId}:${decision.toCampaignId}:${new Date().toISOString().slice(0, 10)}`,
+    })
+    if (!env.allowed) return false
+    const { executeAutonomousBudgetShift } = await import("@/lib/ads/ad-manager")
+    const r = await executeAutonomousBudgetShift(svc, { brokerageId, fromCampaignId: decision.fromCampaignId, toCampaignId: decision.toCampaignId, dailyShiftUsd: dailyShift, policyRef: env.policyRef, reason: `${decision.reason}; ${proof.why}` })
+    if (!r.ok) {
+      const rel = await releaseAutonomyEnvelope(svc, { brokerageId, consumptionId: env.consumptionId, reason: `shift not executed: ${r.error ?? "refused"}` })
+      if (!rel.ok) console.error(`[ad-outcome-loop] envelope not released after a failed shift: ${rel.error}`)
+      return false
+    }
+    return true
+  } catch (e) {
+    console.error(`[ad-outcome-loop] autonomous shift skipped: ${(e as Error).message}`)
+    return false
+  }
 }
 
 /** The weekly loop pass per brokerage with live campaigns. */

@@ -94,7 +94,9 @@ export function AiOpsConsole({ data }: { data: AiOps }) {
           <div className="space-y-1">
             {data.heldActions.slice(0, 20).map((h, i) => (
               <div key={i} className="flex items-center gap-3 text-sm">
-                <span className={"shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium " + (h.oldestHours >= 72 ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-slate-600")}>{h.oldestHours}h</span>
+                {/* stale is computed server-side against STALE_HELD_HOURS (lib/platform/ai-ops.ts) — this
+                    className used to respell the threshold as a literal 72, free to drift from the constant. */}
+                <span className={"shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium " + (h.stale ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-slate-600")}>{h.oldestHours}h</span>
                 <span className="flex-1 truncate">{h.managerKind}{h.brokerageId ? ` · ${h.brokerageId.slice(0, 8)}` : ""}</span>
                 <span className="text-xs text-muted-foreground">{h.count} awaiting approval</span>
               </div>

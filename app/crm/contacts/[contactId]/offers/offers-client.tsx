@@ -4,6 +4,8 @@ import { useState, useTransition, useEffect } from "react"
 import Link from "next/link"
 import { cn } from "@/lib/utils"
 import { MultiOfferStatusBanner } from "@/app/components/offer/multi-offer-status-banner"
+import { BuyerOfferRequestsList } from "@/app/components/offer/buyer-offer-requests-list"
+import type { OfferIntentRow } from "@/app/actions/offer-intents"
 import { OfferInitiationFlow } from "./components/offer-initiation-flow"
 import { recordOfferOutcome, getConnectedEsignProvider } from "@/app/actions/buyer-offers"
 import { getMlsNumberByAddress } from "@/app/actions/seller-offers"
@@ -41,6 +43,9 @@ interface Offer {
   earnest_money: number | null
   contingencies: string[] | null
   listing_id?: string | null
+  /** offers.metadata — read here for `esign_dispatch` (lane 88C): the Google Drive
+   *  eSignature window the send placed the packet in, reopened from the panel. */
+  metadata?: { esign_dispatch?: { handoff_urls?: Array<{ label: string; url: string }> } } | null
 }
 
 interface OutcomeForm {
@@ -56,13 +61,16 @@ interface OffersClientProps {
   contactName:  string
   contactEmail: string
   initialOffers: Offer[]
+  /** Pending offer_intents (m619) for THIS buyer — "submit an offer" clicks
+   *  from their portal that have not yet been acknowledged/converted/dismissed. */
+  initialOfferIntents?: OfferIntentRow[]
   buyerStage:   string
   disableOfferCreation?: boolean
 }
 
 export function OffersClient({
   contactId, brokerageId, agentUserId, contactName, contactEmail,
-  initialOffers, buyerStage, disableOfferCreation = false,
+  initialOffers, initialOfferIntents = [], buyerStage, disableOfferCreation = false,
 }: OffersClientProps) {
   const [offers, setOffers]               = useState<Offer[]>(initialOffers)
   const [showFlow, setShowFlow]           = useState(false)
@@ -105,10 +113,12 @@ export function OffersClient({
       setWinStratLoading(prev => ({ ...prev, [offer.id]: false }))
       return
     }
+    // No person is passed: the winning-offer prediction is about the PROPERTY,
+    // and the identity argument this used to carry gated nothing (owner ruling —
+    // see predictWinningOffer's header).
     const result = await predictWinningOffer({
       propertyMlsId: mlsNumber,
       listPrice:     offer.offer_price,   // buyer's offer price as reference; IDX provides actual list price
-      leadId:        contactId,
     })
     setWinStrategy(prev => ({ ...prev, [offer.id]: result }))
     setWinStratLoading(prev => ({ ...prev, [offer.id]: false }))
@@ -292,6 +302,15 @@ export function OffersClient({
           )}
         </div>
 
+        {initialOfferIntents.length > 0 && (
+          <div className="px-6 pt-4">
+            <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+              Buyer offer requests
+            </h3>
+            <BuyerOfferRequestsList initialIntents={initialOfferIntents} />
+          </div>
+        )}
+
         {offers.length > 0 && (
           <div className="px-6 pt-4">
             <MultiOfferStatusBanner contactId={contactId} />
@@ -376,6 +395,7 @@ export function OffersClient({
                         esignSentAt={offer.esign_sent_at}
                         esignCompletedAt={offer.esign_completed_at}
                         buyerSignedAt={offer.buyer_signed_at}
+                        providerSigningUrl={offer.metadata?.esign_dispatch?.handoff_urls?.[0]?.url ?? null}
                         onSent={() => setOffers(prev => prev.map(o => o.id === offer.id
                           ? { ...o, esign_status: "sent", esign_sent_at: new Date().toISOString() }
                           : o

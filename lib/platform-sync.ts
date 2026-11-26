@@ -40,6 +40,13 @@ const PLATFORM_CONFIGS: Record<string, PlatformConfig> = {
   },
 }
 
+/**
+ * `transactionId` NAMES THE DEAL THIS SYNDICATION BELONGS TO — accepted here and
+ * read by NOTHING until 2026-08-24. Every exit was anonymous, so a syndication
+ * failure in the marketing-package sweep
+ * (app/actions/marketing-package-automation.ts:509 loops over platforms per
+ * transaction) could not be traced back to the deal that produced it.
+ */
 export async function syncToPlatform(
   platformName: string,
   transactionId: string,
@@ -72,18 +79,29 @@ export async function syncToPlatform(
     })
 
     if (!response.ok) {
-      console.error(`[v0] ${platformName} API error:`, response.error)
+      console.error(`[v0] ${platformName} API error (transaction ${transactionId}):`, response.error)
       return { success: false, error: `API error: ${response.status}` }
     }
 
     const result = response.data ?? {}
 
-    return {
-      success: true,
-      listingUrl: result.listing_url || result.url || `https://${normalizedPlatform}.com/listing/${result.id}`
+    // HONESTY FIX, same class as the two the rest of this file already carries:
+    // the third branch of this fallback BUILT a listing URL out of the platform
+    // name and `result.id`, so a response that carried neither a url nor an id
+    // returned `https://zillow.com/listing/undefined` — a fabricated syndication
+    // link the caller then stored as proof the listing was live. A post that
+    // succeeded but told us no URL is a post with no URL, not a guessable one.
+    const listingUrl: string | undefined =
+      result.listing_url || result.url || (result.id ? `https://${normalizedPlatform}.com/listing/${result.id}` : undefined)
+    if (!listingUrl) {
+      console.warn(
+        `[v0] ${platformName} accepted the post for transaction ${transactionId} but returned no listing URL or id`,
+      )
     }
+
+    return { success: true, ...(listingUrl ? { listingUrl } : {}) }
   } catch (error) {
-    console.error(`[v0] Error syncing to ${platformName}:`, error)
+    console.error(`[v0] Error syncing to ${platformName} (transaction ${transactionId}):`, error)
     return { success: false, error: error instanceof Error ? error.message : `${platformName} sync failed` }
   }
 }
@@ -132,6 +150,16 @@ function formatListingForPlatform(platform: string, listing: any) {
   }
 }
 
+/**
+ * Withdraw a listing from a syndication platform.
+ *
+ * HONESTY FIX (orphan burn-down, lane E). This function carried the SAME defect
+ * syncToPlatform was already repaired for above: an unknown or unconfigured
+ * platform returned `{ success: true }`. On a REMOVAL that lie is the worse
+ * direction — the caller marks the syndication 'removed', the tracking row says
+ * the listing is off Zillow, and the listing is still up. A withdrawal that did
+ * not happen must never report success.
+ */
 export async function removePlatformListing(
   platformName: string,
   listingUrl: string
@@ -139,9 +167,11 @@ export async function removePlatformListing(
   const normalizedPlatform = platformName.toLowerCase().replace(/\s+/g, "")
   const config = PLATFORM_CONFIGS[normalizedPlatform]
 
-  if (!config || !config.apiKey) {
-    console.log(`[v0] Cannot remove from ${platformName} - not configured`)
-    return { success: true }
+  if (!config) {
+    return { success: false, error: `${platformName} syndication is not supported/configured — the listing was NOT withdrawn.` }
+  }
+  if (config.requiresAuth && !config.apiKey) {
+    return { success: false, error: `${platformName} API key not configured — the listing was NOT withdrawn.` }
   }
 
   try {
@@ -154,13 +184,23 @@ export async function removePlatformListing(
       auth: { style: "bearer", token: config.apiKey! },
     })
 
-    return { success: response.ok }
+    return response.ok
+      ? { success: true }
+      : { success: false, error: `${platformName} removal failed (HTTP ${response.status ?? "?"})${response.error ? `: ${response.error}` : ""}` }
   } catch (error) {
     console.error(`[v0] Error removing from ${platformName}:`, error)
     return { success: false, error: "Failed to remove listing" }
   }
 }
 
+/**
+ * Push changed listing fields (price, status, photos …) to a syndication platform.
+ *
+ * HONESTY FIX (orphan burn-down, lane E), same as removePlatformListing above:
+ * an unconfigured platform used to return `{ success: true }`, so a price change
+ * that never left the building was recorded as synced and the portal kept
+ * showing the OLD price to buyers.
+ */
 export async function updatePlatformListing(
   platformName: string,
   listingUrl: string,
@@ -169,9 +209,11 @@ export async function updatePlatformListing(
   const normalizedPlatform = platformName.toLowerCase().replace(/\s+/g, "")
   const config = PLATFORM_CONFIGS[normalizedPlatform]
 
-  if (!config || !config.apiKey) {
-    console.log(`[v0] Cannot update on ${platformName} - not configured`)
-    return { success: true }
+  if (!config) {
+    return { success: false, error: `${platformName} syndication is not supported/configured — the update was NOT pushed.` }
+  }
+  if (config.requiresAuth && !config.apiKey) {
+    return { success: false, error: `${platformName} API key not configured — the update was NOT pushed.` }
   }
 
   try {
@@ -183,7 +225,9 @@ export async function updatePlatformListing(
       auth: { style: "bearer", token: config.apiKey! }, body: updates,
     })
 
-    return { success: response.ok }
+    return response.ok
+      ? { success: true }
+      : { success: false, error: `${platformName} update failed (HTTP ${response.status ?? "?"})${response.error ? `: ${response.error}` : ""}` }
   } catch (error) {
     console.error(`[v0] Error updating on ${platformName}:`, error)
     return { success: false, error: "Failed to update listing" }

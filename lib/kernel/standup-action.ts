@@ -43,6 +43,9 @@ export interface StandupActionResult {
   spoken: string
   actedKind?: StandupItem["kind"]
   entityId?: string | null
+  /** WAVE 155 (155R7 request 2, applied by 155S1): the ACTED item's manager — the per-call owner of `standup_action`
+   *  (lib/voice/tool-registry.ts VOICE_TOOL_PER_CALL_OWNER "standup_item"). A fire acts on nothing and carries none. */
+  manager?: StandupItem["manager"]
 }
 
 /** Act on ONE already-ranked stand-up item by routing to its rail. */
@@ -68,16 +71,16 @@ export async function actOnStandupItem(
     const { approveClientMessage } = await import("@/lib/agents/agent-client-messages")
     const r = await approveClientMessage(item.entityId, input.agentUserId, undefined, supabase)
     if (r.status === "skipped") {
-      return { ok: false, actedKind: "approval", entityId: item.entityId, spoken: "That message wasn't in an approvable state — it may have just gone out or been rejected." }
+      return { ok: false, actedKind: "approval", entityId: item.entityId, manager: item.manager, spoken: "That message wasn't in an approvable state — it may have just gone out or been rejected." }
     }
-    return { ok: true, actedKind: "approval", entityId: item.entityId, spoken: `Approved and sent — that one's off your plate. ${item.line.replace(/^.*?— /, "")}`.trim() }
+    return { ok: true, actedKind: "approval", entityId: item.entityId, manager: item.manager, spoken: `Approved and sent — that one's off your plate. ${item.line.replace(/^.*?— /, "")}`.trim() }
   }
 
   // reengage — the warm touch goes out through the same propose→approve gate.
   if (!item.entityId) return { ok: false, spoken: "I couldn't find that contact anymore." }
   const { voiceFollowUp } = await import("@/lib/kernel/voice-delegation")
   const r = await voiceFollowUp({ brokerageId: input.brokerageId, agentUserId: input.agentUserId, contactId: item.entityId }, supabase)
-  return { ok: r.ok, actedKind: "reengage", entityId: item.entityId, spoken: r.spoken }
+  return { ok: r.ok, actedKind: "reengage", entityId: item.entityId, manager: item.manager, spoken: r.spoken }
 }
 
 /** "Reject number N — too pushy" — the spoken NO carries its reason. The rejection is

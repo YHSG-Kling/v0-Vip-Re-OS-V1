@@ -142,6 +142,8 @@ export async function registerStockAsset(input: UploadStockAssetInput): Promise<
   }
 
   const svc = createServiceClient()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "marketing.stock_asset.register", actor: { type: "user", userId: ctx.userId }, subject: { type: "video_asset" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { scope_type: input.scope_type, category: input.category } }, async () => {
   const { data, error } = await svc.from("video_assets")
     .insert({
       brokerage_id:      ctx.brokerageId,
@@ -164,6 +166,7 @@ export async function registerStockAsset(input: UploadStockAssetInput): Promise<
   if (error) return { success: false, error: error.message }
   revalidatePath("/dashboard/settings/stock-library")
   return { success: true, assetId: data.id as string }
+  })
 }
 
 export async function deleteStockAsset(assetId: string): Promise<{
@@ -188,8 +191,11 @@ export async function deleteStockAsset(assetId: string): Promise<{
     (r.scope_type === "brokerage" && access.canEditBrokerage && r.scope_id === access.brokerageScopeId)
   if (!canEditScope) return { success: false, error: "scope_forbidden" }
 
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "marketing.stock_asset.delete", actor: { type: "user", userId: ctx.userId }, subject: { type: "video_asset", id: assetId }, riskClass: "IRREVERSIBLE", reasonCode: "HUMAN_REQUESTED", detail: { scope_type: r.scope_type } }, async () => {
   const { error } = await svc.from("video_assets").delete().eq("id", assetId)
   if (error) return { success: false, error: error.message }
   revalidatePath("/dashboard/settings/stock-library")
   return { success: true }
+  })
 }

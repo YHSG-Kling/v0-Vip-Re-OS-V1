@@ -12,7 +12,6 @@ import {
   AlertTriangle,
   CheckCircle,
   Clock,
-  MessageSquare,
   ArrowRight
 } from "lucide-react"
 
@@ -55,10 +54,10 @@ export function CommunicationHealthPanel({
 }: CommunicationHealthPanelProps) {
   const getHealthColor = (health: string) => {
     switch (health) {
-      case "excellent": return "text-green-600"
-      case "good": return "text-green-500"
-      case "fair": return "text-amber-500"
-      case "poor": return "text-orange-500"
+      case "excellent": return "text-green-700"
+      case "good": return "text-green-700"
+      case "fair": return "text-amber-700"
+      case "poor": return "text-orange-700"
       case "critical": return "text-destructive"
       default: return "text-muted-foreground"
     }
@@ -121,7 +120,7 @@ export function CommunicationHealthPanel({
         </div>
 
         {/* Quick Stats */}
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-3 gap-3">
           <div className="p-2 bg-muted/30 rounded-lg">
             <div className="text-xs text-muted-foreground mb-1">Engagement</div>
             <div className="font-medium text-sm capitalize">
@@ -131,6 +130,13 @@ export function CommunicationHealthPanel({
           <div className="p-2 bg-muted/30 rounded-lg">
             <div className="text-xs text-muted-foreground mb-1">Balance</div>
             <div className="font-medium text-sm">{communicationBalance}</div>
+          </div>
+          {/* Declared, destructured, never rendered until now — hidden-wire
+              census category (c), 2026-09-10 wave 50. Caller (communications-os-
+              client.tsx:423) already computes a real value. */}
+          <div className="p-2 bg-muted/30 rounded-lg">
+            <div className="text-xs text-muted-foreground mb-1">Responsiveness</div>
+            <div className="font-medium text-sm">{responsiveness}</div>
           </div>
         </div>
 
@@ -162,7 +168,7 @@ export function CommunicationHealthPanel({
             <ul className="text-sm text-muted-foreground space-y-1">
               {keyInsights.slice(0, 3).map((insight, idx) => (
                 <li key={idx} className="flex items-start gap-2">
-                  <span className="text-green-600">+</span>
+                  <span className="text-green-700">+</span>
                   {insight}
                 </li>
               ))}

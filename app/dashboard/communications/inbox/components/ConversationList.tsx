@@ -1,9 +1,8 @@
 "use client"
 
 import { useState, useMemo } from "react"
-import { Mail, Phone, MessageSquare, Radio, Search } from "lucide-react"
+import { Mail, Phone, MessageSquare, Radio, Search, AtSign } from "lucide-react"
 import { Input } from "@/components/ui/input"
-import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
 
 type Conversation = {
@@ -46,14 +45,32 @@ const LIFECYCLE_BADGE: Record<string, { label: string; className: string }> = {
   assigned:           { label: "Assigned",        className: "bg-teal-100 text-teal-700" },
 }
 
-const CHANNEL_ICON: Record<string, React.ReactNode> = {
-  email:      <Mail size={14} />,
-  voice:      <Phone size={14} />,
-  sms:        <MessageSquare size={14} />,
-  "in-app":   <Radio size={14} />,
+/** Resolve the row icon from the conversation type. Handles in_app / in-app
+ *  spelling drift and folds every social_dm_* platform under one social icon. */
+function channelIcon(type?: string): React.ReactNode {
+  const t = (type ?? "").toLowerCase()
+  if (t.startsWith("social")) return <AtSign size={14} />
+  if (t === "voice" || t === "call") return <Phone size={14} />
+  if (t === "sms") return <MessageSquare size={14} />
+  if (t === "in_app" || t === "in-app" || t === "chat") return <Radio size={14} />
+  return <Mail size={14} />
 }
 
-const CHANNELS = ["All", "Email", "SMS", "In-App", "Voice"] as const
+/** Does a conversation type belong to the selected filter chip? */
+function matchesChannel(type: string | undefined, filter: ChannelFilter): boolean {
+  const t = (type ?? "").toLowerCase()
+  switch (filter) {
+    case "All":     return true
+    case "Social":  return t.startsWith("social")
+    case "In-App":  return t === "in_app" || t === "in-app" || t === "chat"
+    case "Voice":   return t === "voice" || t === "call"
+    case "Email":   return t === "email"
+    case "SMS":     return t === "sms"
+    default:        return true
+  }
+}
+
+const CHANNELS = ["All", "Email", "SMS", "Social", "In-App", "Voice"] as const
 type ChannelFilter = typeof CHANNELS[number]
 type SortOption = "newest" | "unread" | "urgency"
 
@@ -100,7 +117,7 @@ export default function ConversationList({
 
     // channel filter
     if (channelFilter !== "All") {
-      list = list.filter(c => c.type?.toLowerCase() === channelFilter.toLowerCase())
+      list = list.filter(c => matchesChannel(c.type, channelFilter))
     }
 
     // search by contact / lead name
@@ -238,7 +255,7 @@ export default function ConversationList({
               {/* Right */}
               <div className="shrink-0 flex flex-col items-end gap-1">
                 <div className="flex items-center gap-1 text-muted-foreground">
-                  {CHANNEL_ICON[convo.type] ?? <Mail size={14} />}
+                  {channelIcon(convo.type)}
                   <span className="text-[10px]">{relativeTime(convo.last_message_at)}</span>
                 </div>
                 <div className="flex items-center gap-1">

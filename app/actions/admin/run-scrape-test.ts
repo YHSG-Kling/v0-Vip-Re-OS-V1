@@ -7,15 +7,54 @@
  * CRON_SECRET is a server-only env var — never expose it client-side via
  * NEXT_PUBLIC_. This action keeps the secret on the server and returns
  * the same JSON shape as /api/admin/scrape-test.
+ *
+ * ─── /api/admin/scrape-test WAS NOT RETIRED (wave 14) ────────────────────────
+ * A route census paired that route with this action and marked it for deletion.
+ * Left in place, for two independent reasons:
+ *   1. OWNER FENCE — "any lead scrapping needs to be left alone." The route is a
+ *      DIAGNOSTIC (dry_run: true; it writes nothing to raw_scraped_leads and no
+ *      file under lib/lead-pipeline/** changes either way), so collapsing it
+ *      would not alter scraper behaviour — but it is inside the fenced surface
+ *      and the fence is the owner's, not a lane's, to move.
+ *   2. DIFFERENT DOORS, NOT DUPLICATE DOORS. The route authorizes on
+ *      `Bearer CRON_SECRET`; this action authorizes on an admin/broker SESSION.
+ *      A secret-bearer door is by definition addressable from outside this repo
+ *      (a runbook curl, an ops check, the cron's own operator). Nothing here can
+ *      prove no such caller exists. UNRESOLVED (CLAUDE.md §1).
+ *
+ * Both halves are currently unwired — this action has no caller either. The
+ * doctrine's answer to that is BUILD the missing half (an admin surface that
+ * calls this action), not delete one of the two doors.
+ *
+ * FIXED (wave 155, lane 155S1): the market read below is pinned to the session's
+ * tenant for a brokerage admin (platform superadmin keeps the platform-wide view),
+ * BEFORE either paid provider seam. Only the AUTHORIZATION changed; the dry-run
+ * itself (what it pulls, what it previews, that it writes nothing to
+ * raw_scraped_leads) is untouched, so the owner's scraping fence is respected.
  */
 
-import { ZenrowsClient, BatchDataClient } from '@/lib/external'
+import { BatchDataClient } from '@/lib/external'
 import { buildTerritoryPhrases } from '@/lib/lead-pipeline/source-intent-map'
 import {
   type NormalizedScrapedRecord,
   isViableRecord,
 } from '@/lib/lead-pipeline/raw-record-types'
 import { createClient } from '@/lib/supabase/server'
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
+
+// WAVE 155 (lane 155R4, G12): the dry run below makes a PAID provider pull (BatchData / the Apify Google lane), so it leaves ONE
+// agent_action_ledger receipt through ledgerSessionAction (lib/kernel/action-ledger.ts, the one helper) naming the session user,
+// the session's tenant, the market, the source, and the budget + territory it ran under. NO cycle / idempotencyKey: a second
+// preview runs and records again. No session tenant (platform staff) → no valid row → it runs unrecorded, as before.
+async function withSessionReceipt<T, R>(who: { userId: string; brokerageId: string | null } | null, action: string, subject: { type: string; id?: string | null }, riskClass: string, detail: Record<string, unknown>, run: () => Promise<T>, refused: (error: string) => R): Promise<T | R> {
+  if (!who?.userId || !who.brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const sid = subject.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(subject.id) ? subject.id : null
+  let ran = false
+  const r = await ledgerSessionAction({ brokerageId: who.brokerageId, action, actor: { type: "user", userId: who.userId }, subject: { type: subject.type, id: sid, ref: sid ? null : subject.id ?? null }, riskClass, reasonCode: "HUMAN_REQUESTED", detail }, () => { ran = true; return run() })
+  return ran ? (r as T) : refused((r as { error?: string }).error ?? "The action was not recorded and did not run.")
+}
 
 export async function runScrapeTestAction(marketId: string, source: string) {
   const supabase = await createClient()
@@ -26,25 +65,47 @@ export async function runScrapeTestAction(marketId: string, source: string) {
     return { error: 'Unauthorized', status: 401 }
   }
 
-  // Verify the user has admin access (superadmin or brokerage admin)
-  const { data: userRow } = await supabase
+  // Verify the user has admin access (superadmin or brokerage admin). §3: the refusal is READ — an unreadable profile
+  // refuses (the gate could not run), it never reads as "not an admin".
+  const { data: userRow, error: userErr } = await supabase
     .from('users')
-    .select('user_type')
+    .select('user_type, brokerage_id, platform_role')
     .eq('id', user.id)
     .maybeSingle()
+  if (userErr) return { error: 'Your access could not be confirmed. Try again in a moment.', status: 503 }
 
-  if (!userRow || !['superadmin', 'admin'].includes(userRow.user_type ?? '')) {
+  const isPlatformSuperadmin = !!userRow && isPlatformSuperadminIdentity(userRow.user_type, (userRow as { platform_role?: string | null }).platform_role)
+  if (!userRow || (!isPlatformSuperadmin && !isAdminOrBroker({ user_type: userRow.user_type ?? '' }))) {
     return { error: 'Forbidden', status: 403 }
   }
 
   // ── Load market ─────────────────────────────────────────────────────────────
-  const { data: market, error: marketErr } = await supabase
-    .from('lead_scraping_markets')
-    .select('id, brokerage_id, name, city, state, zip_codes, counties, enabled_sources, monthly_budget_usd, spend_this_month, is_active')
-    .eq('id', marketId)
-    .single()
+  // WAVE 155 (lane 155S1, P0) — THE MARKET MUST BE THE CALLER'S BEFORE ANY PAID SEAM IS REACHED. This read had NO tenant
+  // predicate, so a brokerage admin could name another tenant's market and run a PAID BatchData / Apify pull over that
+  // tenant's territory (and read its budget burn). The scope is WRITTEN DOWN (lib/kernel/tenant-scope.ts), never inferred:
+  // a tenant admin reads inside the SESSION's tenant (tenantScope refuses a blank tenant); platform superadmin — the
+  // diagnostics page's own "Platform-wide" view (app/dashboard/admin/scrape-diagnostics/page.tsx isSuperadmin, the ONE
+  // total-control test) — names any market. Another tenant's market and an unknown id answer the same 404, and neither
+  // provider seam below is called.
+  const { tenantScope, platformScope, isTenantScopeRefusal } = await import('@/lib/kernel/tenant-scope')
+  let scope: ReturnType<typeof tenantScope>
+  try {
+    scope = isPlatformSuperadmin
+      ? platformScope('scrape dry-run by platform superadmin — the diagnostics page is platform-wide for that seat')
+      : tenantScope((userRow as { brokerage_id?: string | null }).brokerage_id, 'runScrapeTestAction market read')
+  } catch (e) {
+    if (isTenantScopeRefusal(e)) return { error: 'Forbidden', status: 403 }
+    throw e
+  }
+  const marketCols = 'id, brokerage_id, name, city, state, zip_codes, counties, enabled_sources, monthly_budget_usd, spend_this_month, is_active'
+  const { data: market, error: marketErr } = scope.kind === 'tenant'
+    ? await supabase.from('lead_scraping_markets').select(marketCols).eq('id', marketId).eq('brokerage_id', scope.brokerageId).maybeSingle()
+    : await supabase.from('lead_scraping_markets').select(marketCols).eq('id', marketId).maybeSingle()
 
-  if (marketErr || !market) {
+  if (marketErr) {
+    return { error: 'The market could not be read. Try again in a moment.', status: 503 }
+  }
+  if (!market) {
     return { error: 'Market not found', status: 404 }
   }
 
@@ -55,6 +116,7 @@ export async function runScrapeTestAction(marketId: string, source: string) {
     counties:  market.counties,
   })
 
+  return withSessionReceipt({ userId: user.id, brokerageId: (userRow as { brokerage_id?: string | null }).brokerage_id ?? null }, "lead_scraping.provider_pull.preview", { type: "lead_scraping_market", id: market.id }, "FINANCIAL", { source, dry_run: true, market_brokerage_id: market.brokerage_id ?? null, budget: { monthly_budget_usd: market.monthly_budget_usd ?? null, spend_this_month: market.spend_this_month ?? null }, territory: { city: market.city, state: market.state, zip_codes: market.zip_codes ?? [], counties: market.counties ?? [] }, enabled_sources: market.enabled_sources ?? null }, async () => {
   const previewRecords: NormalizedScrapedRecord[] = []
   let estimatedCost = 0
   let errorMessage: string | null = null
@@ -95,25 +157,15 @@ export async function runScrapeTestAction(marketId: string, source: string) {
       estimatedCost = rawSellers.length * 0.005
 
     } else if (source === 'google_phrase_intent') {
-      const zenrows = new ZenrowsClient()
+      // TOMBSTONE (wave 153, lane 153T — owner ruling B3; CLAUDE.md §1): this dry-run ran ZenrowsClient.googleSearch — a Google
+      // results page through the ZenRows transport DIRECTLY (no purpose / robots / terms / spend checkpoint) — while the production
+      // google_phrase_intent lane never used ZenRows. Survivor: lib/lead-pipeline/social-sourcer.ts sourceGoogle (the cron's own
+      // Apify Google-results lane), previewed here exactly as the cron would ingest it. Still a dry run: nothing is written.
+      const { sourceGoogle } = await import('@/lib/lead-pipeline/social-sourcer')
       const samplePhrases = [...phrases.sellerPhrases.slice(0, 2), ...phrases.buyerPhrases.slice(0, 1)]
-
-      for (const phrase of samplePhrases) {
-        const html = await zenrows.googleSearch(phrase, { num: 3 }).catch(() => null)
-        if (!html) continue
-        estimatedCost += 0.002
-        previewRecords.push({
-          sourceRecordId:  `google-dryrun-${Buffer.from(phrase).toString('base64').slice(0, 20)}`,
-          source:          'google_phrase_intent',
-          behaviorType:    'search_signal',
-          intentType:      phrase.includes('sell') ? 'seller' : 'buyer',
-          intentSignals:   [phrase],
-          city:            market.city,
-          state:           market.state,
-          motivationScore: 40,
-          rawPayload:      { phrase, html_length: html.length },
-        })
-      }
+      const google = await sourceGoogle(samplePhrases, { city: market.city ?? null, state: market.state ?? null })
+      estimatedCost += google.cost
+      previewRecords.push(...google.records.slice(0, 10))
     } else {
       return { error: `source '${source}' not supported for dry-run yet`, status: 400 }
     }
@@ -142,4 +194,96 @@ export async function runScrapeTestAction(marketId: string, source: string) {
     error:              errorMessage,
     status:             200,
   }
+  }, (error) => ({ error, status: 500 }))
+}
+
+/**
+ * verifyScrapeTestCronDoorAction — the missing IN-TREE caller for
+ * GET /api/admin/scrape-test (lane 64D, route-no-caller 6b → 0).
+ *
+ * That route authenticates on `Bearer CRON_SECRET` (lib/kernel/scraping.ts's
+ * own cron secret), NOT a browser session — runScrapeTestAction above is the
+ * session-authed sibling and stays the diagnostics panel's default door (see
+ * the file header: "DIFFERENT DOORS, NOT DUPLICATE DOORS", an owner ruling).
+ * A client component can never hold CRON_SECRET, so the only safe in-tree
+ * caller is a SERVER action that reads the secret from process.env and makes
+ * the same-origin self-call CLAUDE.md §1 names: `` `${baseUrl}/api/…` ``.
+ *
+ * Purpose: a platform-staff "Verify Cron Door" check on the Scrape
+ * Diagnostics panel — proves the bearer-secret door the cron itself uses is
+ * still live and answering, without duplicating the route's own fetch logic.
+ * Platform-staff gated (this exercises the platform-owned diagnostic door,
+ * not a tenant one) via isPlatformSuperadminIdentity — the ONE total-control
+ * test (lib/platform/platform-staff-roster.ts), same as
+ * app/dashboard/admin/scrape-diagnostics/page.tsx's isSuperadmin.
+ */
+export async function verifyScrapeTestCronDoorAction(marketId: string, source: string) {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: 'Unauthorized', status: 401 as const }
+
+  const { data: userRow } = await supabase
+    .from('users')
+    .select('user_type, platform_role')
+    .eq('id', user.id)
+    .maybeSingle()
+
+  if (!userRow || !isPlatformSuperadminIdentity(userRow.user_type, userRow.platform_role)) {
+    return { error: 'Forbidden — platform staff only', status: 403 as const }
+  }
+
+  const secret = process.env.CRON_SECRET
+  if (!secret) return { error: 'CRON_SECRET not configured', status: 500 as const }
+
+  const baseUrl = process.env.VERCEL_URL
+    ? `https://${process.env.VERCEL_URL}`
+    : (process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000')
+
+  try {
+    const res = await fetch(
+      `${baseUrl}/api/admin/scrape-test?marketId=${encodeURIComponent(marketId)}&source=${encodeURIComponent(source)}&dryRun=true`,
+      { headers: { authorization: `Bearer ${secret}` }, cache: 'no-store' },
+    )
+    const body = await res.json() as {
+      market?: { id: string; name: string; city: string; state: string; is_active: boolean; enabled_sources: string[] | null; budget_used_pct: number | null }
+      source?: string
+      dry_run?: boolean
+      would_insert?: number
+      estimated_cost_usd?: number
+      error?: string | null
+    }
+    return { status: res.status as 200 | 400 | 401 | 404 | 500, doorStatus: res.status, ok: res.ok, body }
+  } catch (err) {
+    return { error: String(err), status: 500 as const }
+  }
+}
+
+/**
+ * RETRY A FAILED SOURCE BATCH — the server door the diagnostics page's Retry button needs
+ * (lane 88F, hidden wire). scrape-diagnostics-client.tsx ("use client") imported
+ * lib/kernel/scraping.ts::retryFailedSourceBatch DIRECTLY: a plain module that builds the
+ * SERVICE client, bundled into the browser, where the service key does not exist — every
+ * Retry click could only throw, and the acting user id was whatever the client sent.
+ * Gate first (platform superadmin, the same gate the page and verifyScrapeTestCronDoorAction
+ * use), then the kernel command on the server; the retrier is the SESSION user, never a
+ * parameter. The brokerage id is a lookup key the command re-checks against the execution
+ * row (`.eq('brokerage_id', …)`), not a grant.
+ */
+export async function retryFailedSourceBatchAction(executionId: string, brokerageId: string) {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, rawRecordsRequeued: 0, error: 'Unauthorized' }
+
+  const { data: userRow, error: userErr } = await supabase
+    .from('users')
+    .select('user_type, platform_role')
+    .eq('id', user.id)
+    .maybeSingle()
+  if (userErr) return { success: false, rawRecordsRequeued: 0, error: `users read refused: ${userErr.message}` }
+  if (!userRow || !isPlatformSuperadminIdentity(userRow.user_type, userRow.platform_role)) {
+    return { success: false, rawRecordsRequeued: 0, error: 'Forbidden — platform staff only' }
+  }
+
+  const { retryFailedSourceBatch } = await import('@/lib/kernel/scraping')
+  return retryFailedSourceBatch({ executionId, brokerageId, retriedByUserId: user.id })
 }

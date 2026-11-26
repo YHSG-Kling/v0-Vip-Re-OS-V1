@@ -9,6 +9,7 @@ import {
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { decideCronRun } from "@/lib/kernel/cron-logging"
 
 export const dynamic = "force-dynamic"
 
@@ -31,6 +32,7 @@ export async function GET(request: NextRequest) {
     cron_name: "revenue-protection-rollup",
     cron_path: "/app/api/cron/revenue-protection-rollup/route.ts",
   })
+  if (ctx.data?.held) return NextResponse.json({ success: true, held: true, decision: ctx.data.decision }) // cron decision door (155R1): held before any domain write
   if (!ctx.success || !ctx.data) {
     return NextResponse.json({ error: "Failed to create cron context" }, { status: 500 })
   }
@@ -63,12 +65,17 @@ export async function GET(request: NextRequest) {
         })
         summary.snapshots_written += 1
 
-        // Per-agent rollups
-        const { data: agents } = await svc
+        // Per-agent rollups. IDENTITY CLASS: `a.id` is a USERS id, and that is
+        // the scorer's input contract (calculateRevenueProtection resolves it to
+        // the agents(id) every table it touches FKs, and REFUSES a user with no
+        // agents row — which lands in the catch below as an error, not a
+        // snapshot). A refused roster read is an error too, not "no agents".
+        const { data: agents, error: agentsError } = await svc
           .from("users")
           .select("id")
           .eq("brokerage_id", b.id)
           .eq("user_type", "agent")
+        if (agentsError) throw new Error(`agent roster read refused: ${agentsError.message}`)
 
         for (const a of (agents ?? []) as Array<{ id: string }>) {
           try {
@@ -117,6 +124,8 @@ export async function POST(request: NextRequest) {
       snapshot_type?: "daily" | "weekly" | "monthly" | "quarterly" | "ytd" | "lifetime"
     }
     if (!brokerage_id) return NextResponse.json({ error: "brokerage_id required" }, { status: 400 })
+    const cronDoor = await decideCronRun({ cron_name: "revenue-protection-rollup", cron_path: "/app/api/cron/revenue-protection-rollup/route.ts", brokerage_id }) // cron decision door (155R1): this tenant's halt too
+    if (cronDoor.held) return NextResponse.json({ success: true, held: true, decision: cronDoor.decision })
     const result = await calculateRevenueProtection({
       agentId:      agent_id ?? null,
       brokerageId:  brokerage_id,

@@ -4,7 +4,8 @@
  * ContactPulsePanel — Consolidated relationship-health card.
  *
  * Replaces the trio of overlapping panels (RelationshipRadar +
- * ContactOSSummary + ReferralLikelihoodPanel). Single source of truth
+ * ContactOSSummary + ReferralLikelihoodPanel — the two files DELETED
+ * 2026-10-29, wave 146; they were never mounted). Single source of truth
  * for: engagement, last contact recency, message temperature,
  * referral likelihood, open thread count, and an AI-generated headline.
  *

@@ -21,14 +21,18 @@
  * Auth: CRON_SECRET.
  */
 import { NextResponse, type NextRequest } from "next/server"
+import { verifyCronAuth } from "@/lib/cron-auth"
+import { decideCronRun } from "@/lib/kernel/cron-logging"
 import { createServiceClient } from "@/lib/supabase/service"
+// ONE SPELLING FOR THE PUBLIC EVENT LABEL (§6) — the caption's hook and the
+// reel's cover frame are the same words seen by the same audience.
+import { promoEventLabel } from "@/lib/video/promo-composition"
+import { usdOrEmpty } from "@/lib/format/money"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
 
-function unauthorized() {
-  return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-}
 
 const PLATFORMS = ["facebook", "instagram", "linkedin", "tiktok", "youtube", "pinterest", "twitter", "google_business"] as const
 
@@ -77,22 +81,22 @@ interface PromoRow {
   project:          {
     video_url:      string | null
     thumbnail_url:  string | null
-    status:         string | null
+    status:         string | null; format?: string | null
   } | null
   listing:          {
     address:        string | null
     city:           string | null
     state:          string | null
+    zip?:           string | null
     list_price:     number | null
   } | null
 }
 
 export async function GET(req: NextRequest) {
-  const headerSecret = req.headers.get("authorization")?.replace("Bearer ", "")
-  const querySecret  = new URL(req.url).searchParams.get("secret")
-  const expected     = process.env.CRON_SECRET
-  if (!expected) return NextResponse.json({ skipped: "CRON_SECRET not configured" })
-  if (headerSecret !== expected && querySecret !== expected) return unauthorized()
+  const denied = verifyCronAuth(req)
+  if (denied) return denied
+  const cronDoor = await decideCronRun({ cron_name: "listing-promo-social-publish", cron_path: "/app/api/cron/listing-promo-social-publish/route.ts" }) // cron decision door (155R1)
+  if (cronDoor.held) return NextResponse.json({ success: true, held: true, decision: cronDoor.decision })
 
   const svc = createServiceClient()
 
@@ -100,8 +104,8 @@ export async function GET(req: NextRequest) {
     .from("listing_promo_videos")
     .select(`
       id, brokerage_id, listing_id, agent_id, video_project_id, event_type, created_at,
-      project:ai_video_projects!listing_promo_videos_video_project_id_fkey(video_url, thumbnail_url, status),
-      listing:listings!listing_promo_videos_listing_id_fkey(address, city, state, list_price)
+      project:ai_video_projects!listing_promo_videos_video_project_id_fkey(video_url, thumbnail_url, status, format),
+      listing:listings!listing_promo_videos_listing_id_fkey(address, city, state, zip, list_price)
     `)
     .eq("status", "rendering")
     .not("video_project_id", "is", null)
@@ -109,7 +113,7 @@ export async function GET(req: NextRequest) {
     .limit(25)
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
-  const results: Array<{ id: string; outcome: string; reason?: string; post_count?: number }> = []
+  const results: Array<{ id: string; outcome: string; reason?: string; post_count?: number; not_drafted?: Array<{ platform: string; reason: string }> }> = []
 
   for (const r of (rows ?? []) as unknown as PromoRow[]) {
     // Wave 28 — readiness branch. Three states:
@@ -125,9 +129,9 @@ export async function GET(req: NextRequest) {
     // human intervention, not silent waiting.
     const projectStatus = r.project?.status ?? null
     if (projectStatus === "failed") {
-      await svc.from("listing_promo_videos")
+      await sentinelWrite(svc, svc.from("listing_promo_videos")
         .update({ status: "failed", error_message: "render failed (ai_video_projects.status='failed')" })
-        .eq("id", r.id)
+        .eq("id", r.id), { table: "listing_promo_videos", flow: "listing_promo_ledger_fail", reason: "ledger fail stamp; the outcome is reported in the cron results" })
       results.push({ id: r.id, outcome: "deferred", reason: "render_failed" })
       continue
     }
@@ -135,27 +139,40 @@ export async function GET(req: NextRequest) {
       const createdMs = r.created_at ? Date.parse(r.created_at) : null
       const stuckPastGrace = createdMs !== null && (Date.now() - createdMs > 24 * 60 * 60 * 1000)
       if (stuckPastGrace) {
-        await svc.from("listing_promo_videos")
+        await sentinelWrite(svc, svc.from("listing_promo_videos")
           .update({ status: "failed", error_message: "render did not complete within 24h grace window" })
-          .eq("id", r.id)
+          .eq("id", r.id), { table: "listing_promo_videos", flow: "listing_promo_ledger_fail", reason: "ledger fail stamp; the outcome is reported in the cron results" })
         results.push({ id: r.id, outcome: "deferred", reason: "render_stuck_past_grace_window" })
       }
       continue // otherwise still rendering — wait next tick
     }
 
-    const usd = (n: number | null | undefined) =>
-      n != null
-        ? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n)
-        : ""
-    const address  = r.listing?.address ?? ""
-    const cityState = [r.listing?.city, r.listing?.state].filter(Boolean).join(", ")
-    const price    = usd(r.listing?.list_price)
-    const hookByEvent: Record<string, string> = {
-      just_listed:   "Just Listed",
-      just_sold:     "Just Sold",
-      price_changed: "Price Update",
+    // TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usdOrEmpty
+    const usd = usdOrEmpty
+    let address  = r.listing?.address ?? ""
+    let cityState = [r.listing?.city, r.listing?.state].filter(Boolean).join(", ")
+    // OWNER RULING 1 (wave 145, lane 145Z — lane 145B Outside-lane 6): a coming_soon promo caption prints only the line
+    // the address rule allows (the line already carries the city, so the separate city/state is dropped). The row's own
+    // brokerage pins both reads; fail closed inside the rule.
+    if (r.event_type === "coming_soon" && r.listing) {
+      const { resolveComingSoonCreativeAddress } = await import("@/lib/marketing/listing-public-address")
+      const resolved = await resolveComingSoonCreativeAddress({
+        policyClient: svc as any, termsClient: svc as any,
+        listing: { id: r.listing_id, brokerage_id: r.brokerage_id, address: r.listing.address, city: r.listing.city, state: r.listing.state, zip: r.listing.zip ?? null },
+      })
+      address = resolved.addressLine
+      cityState = ""
     }
-    const hook = hookByEvent[r.event_type] ?? "New Listing"
+    const price    = usd(r.listing?.list_price)
+    // TOMBSTONE (§1/§6): the private `hookByEvent` map that stood here — three
+    // entries plus a "New Listing" default — was a SECOND spelling of
+    // lib/video/promo-composition.ts:promoEventLabel, which already carries the
+    // same three events, the same default, and the rest of the lifecycle set.
+    // Both write PUBLIC copy (that one the reel's cover frame, this one the
+    // social caption), so they could not be allowed to disagree; the local one
+    // still said "Price Update" after the owner ruled the public word is a price
+    // improvement. SURVIVOR: lib/video/promo-composition.ts:162 promoEventLabel.
+    const hook = promoEventLabel(r.event_type)
 
     const postIds: string[] = []
     let inserted = 0
@@ -169,39 +186,75 @@ export async function GET(req: NextRequest) {
       : r.event_type === "price_changed" ? "price_reduction"
       : "custom"
 
-    // FK gotcha: listing_promo_videos.agent_id stores users.id (m124), but
-    // social_posts.agent_id FKs to agents.id (the legacy column convention).
-    // Resolve via the canonical resolver (cached at module scope).
-    const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
-    const socialAgentId = await resolveUserIdToAgentRecord(r.agent_id, r.brokerage_id)
-    if (!socialAgentId) {
+    // Since m366 listing_promo_videos.agent_id is agents-class — the SAME class
+    // social_posts.agent_id FKs, so that one is a straight carry. The users→agents
+    // resolve that used to sit here would now convert an agents id a second time
+    // and come back empty. social_posts.user_id is the column that still needs the
+    // other direction, so resolve agents→users once, here.
+    const socialAgentId = r.agent_id
+    const { resolveAgentRecordToUserId } = await import("@/lib/kernel/agent-identity-resolver")
+    const socialUserId = await resolveAgentRecordToUserId(r.agent_id)
+    if (!socialUserId) {
       await svc.from("listing_promo_videos").update({
         status:        "failed",
-        error_message: "social-publish: agents.id lookup failed for users.id " + r.agent_id,
+        error_message: "social-publish: users.id lookup failed for agents.id " + r.agent_id,
       }).eq("id", r.id)
-      results.push({ id: r.id, outcome: "failed", reason: "agents_id_lookup_failed" })
+      results.push({ id: r.id, outcome: "failed", reason: "users_id_lookup_failed" })
       continue
     }
 
+    // HONEST VIDEO TRANSPORT (wave 156, lane 156S; directive: "no pretending licensed Instagram/Pinterest … is connected").
+    // This drafted a CAPTION-ONLY post for all eight platforms, connected or not, and never attached the reel — so the
+    // TikTok / YouTube drafts could never publish (the publish cron's mediaEgressVerdict refuses a text post there) and the
+    // promo still read "social_drafted" as though the reel had gone to social. A media platform is now decided by the ONE
+    // contract, lib/video/media-variant-contract.ts decidePlatformVariant (video route + this agent's connected account +
+    // the playable render): an `api_publish` route drafts the post WITH the reel; an `export_handoff` route (Instagram —
+    // its publisher here posts images) and every refusal (Pinterest is image-only; no connection) draft nothing and say why.
+    // Text platforms keep their caption post exactly as before.
+    const { decidePlatformVariant, classifyMediaUrl, VIDEO_VARIANT_ROUTES } = await import("@/lib/video/media-variant-contract")
+    const { VIDEO_FINISHED_STATUSES } = await import("@/lib/video/video-status")
+    const reelUrl = r.project?.video_url ?? null
+    const { data: accts, error: acctErr } = await svc.from("social_media_accounts")
+      .select("platform, is_active, scope").eq("brokerage_id", r.brokerage_id).eq("agent_id", socialAgentId)
+    const byPlatform = new Map<string, { isActive: boolean; scope: string | null }>()
+    for (const a of (accts ?? []) as Array<{ platform: string; is_active: boolean | null; scope: string | null }>) {
+      const prev = byPlatform.get(a.platform)
+      if (!prev || (!prev.isActive && a.is_active)) byPlatform.set(a.platform, { isActive: a.is_active === true, scope: a.scope ?? null })
+    }
+    const notDrafted: Array<{ platform: string; reason: string }> = []
     for (const platform of PLATFORMS) {
       const caption = captionFor(platform, { hook, address, cityState, price })
+      const mediaPlatform = !!VIDEO_VARIANT_ROUTES[platform] || platform === "pinterest"
+      let mediaUrls: string[] | null = null
+      if (mediaPlatform) {
+        if (acctErr) { notDrafted.push({ platform, reason: `connected accounts unreadable (${acctErr.message})` }); continue }
+        const v = decidePlatformVariant({ platform, account: byPlatform.get(platform) ?? null, media: {
+          kind: classifyMediaUrl(reelUrl), playable: !!reelUrl && (VIDEO_FINISHED_STATUSES as readonly string[]).includes(r.project?.status ?? ""),
+          aspect: r.project?.format ?? null, durationSeconds: null,
+        } })
+        if (!v.ok) { notDrafted.push({ platform, reason: v.reason }); continue }
+        if (v.route !== "api_publish") { notDrafted.push({ platform, reason: `export / handoff — ${v.why}` }); continue }
+        mediaUrls = [reelUrl as string]
+      }
       try {
-        const { data: post } = await svc
+        const { data: post, error: promoPostErr } = await svc
           .from("social_posts")
           .insert({
             brokerage_id:     r.brokerage_id,
-            agent_id:         socialAgentId, // agents.id (resolved above)
-            user_id:          r.agent_id,    // users.id (legacy column on social_posts)
+            agent_id:         socialAgentId,  // agents.id (carried from the promo row)
+            user_id:          socialUserId,   // users.id (legacy column on social_posts)
             listing_id:       r.listing_id,
             platform,
             post_type:        postType,
             content:          caption,
+            ...(mediaUrls ? { media_urls: mediaUrls } : {}),
             status:           "scheduled",
             approval_status:  "pending",
             scheduled_for:    new Date(Date.now() + 60 * 60_000).toISOString(),
           })
           .select("id")
           .maybeSingle()
+        if (promoPostErr) console.error(`[listing-promo-social] social post NOT created: ${promoPostErr.message}`)
         if (post?.id) {
           postIds.push(post.id as string)
           inserted++
@@ -213,20 +266,21 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    await svc.from("listing_promo_videos")
+    await sentinelWrite(svc, svc.from("listing_promo_videos")
       .update({
         status:          inserted > 0 ? "social_drafted" : "failed",
         social_post_ids: postIds,
         drafted_at:      inserted > 0 ? new Date().toISOString() : null,
         error_message:   inserted === 0 ? "social_posts insert failed for all platforms" : null,
       })
-      .eq("id", r.id)
+      .eq("id", r.id), { table: "listing_promo_videos", flow: "listing_promo_ledger_drafted", reason: "ledger close after the social drafts were inserted (their own writes are counted above)" })
 
     results.push({
       id:        r.id,
       outcome:   inserted > 0 ? "social_drafted" : "failed",
       post_count: inserted,
       reason:    failed > 0 && inserted === 0 ? "all_platforms_failed" : undefined,
+      ...(notDrafted.length ? { not_drafted: notDrafted } : {}),
     })
   }
 

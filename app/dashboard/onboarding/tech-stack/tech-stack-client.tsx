@@ -23,7 +23,6 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { toast } from "sonner"
 import {
   Check,
-  X,
   AlertCircle,
   Settings,
   Loader2,
@@ -56,11 +55,11 @@ import {
   type IntegrationStatusResult,
   type ProviderStatus,
 } from "@/app/actions/onboarding/tech-stack"
-import {
-  PROVIDER_METADATA,
-  PROVIDER_GROUPS,
-  type ProviderName,
-} from "@/lib/onboarding/integration-tester"
+import type {
+  PROVIDER_METADATA as PROVIDER_METADATA_SHAPE,
+  PROVIDER_GROUPS as PROVIDER_GROUPS_SHAPE,
+  ProviderName,
+} from "@/lib/onboarding/integration-tester" // TYPES only (156L): it reaches connector-gateway → the service-role client; page.tsx passes the two tables as props
 import confetti from "canvas-confetti"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
@@ -69,7 +68,7 @@ interface TechStackClientProps {
   userId: string
   brokerageId: string
   brokerageName: string
-  initialStatus: IntegrationStatusResult | null
+  initialStatus: IntegrationStatusResult | null; providerMetadata: typeof PROVIDER_METADATA_SHAPE; providerGroups: typeof PROVIDER_GROUPS_SHAPE
 }
 
 // ─── ICON MAP ─────────────────────────────────────────────────────────────────
@@ -94,7 +93,7 @@ export function TechStackClient({
   userId,
   brokerageId,
   brokerageName,
-  initialStatus,
+  initialStatus, providerMetadata: PROVIDER_METADATA, providerGroups: PROVIDER_GROUPS,
 }: TechStackClientProps) {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -159,7 +158,11 @@ export function TechStackClient({
         .map(p => p.providerType)
     )
     const requiredTypes = ["sms", "email", "esign"]
-    const met = requiredTypes.filter(t => typeConnected.has(t)).length
+    // E-sign is MET by default — the catalog DEFAULT_ESIGN_PROVIDER needs no tenant connection
+    // (lane 89A: DocuSign, embedded in the platform window on the platform's own account; Google
+    // eSignature stays selectable). Connecting the brokerage's own DocuSign / Dotloop / SkySlope is
+    // the "send through your account" upgrade, not a prerequisite for onboarding.
+    const met = requiredTypes.filter(t => typeConnected.has(t) || t === "esign").length
     return Math.min((met / requiredTypes.length) * 100, 100)
   }, [status])
 
@@ -477,7 +480,7 @@ export function TechStackClient({
             </div>
             <Progress value={progressPercent} className="h-2" />
             {status?.requiredComplete && (
-              <p className="mt-2 text-sm text-green-600 flex items-center gap-1">
+              <p className="mt-2 text-sm text-green-700 flex items-center gap-1">
                 <Check className="h-4 w-4" />
                 All required integrations connected
               </p>

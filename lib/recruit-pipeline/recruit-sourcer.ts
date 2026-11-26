@@ -1,11 +1,9 @@
 // lib/recruit-pipeline/recruit-sourcer.ts
 // Sources platform-owned raw recruiting prospects (agents/teams looking to
-// switch brokerages) into raw_recruit_prospects. Two signal families, per the
-// chosen strategy:
-//   1. Social/forum intent — agent communities (e.g. Reddit r/realtors) where
-//      agents express dissatisfaction or intent to switch, via Apify/ZenRows.
-//   2. Job-board / brokerage-review intent — negative or "leaving" signals in
-//      public brokerage reviews (Glassdoor/Indeed style), via ZenRows.
+// switch brokerages) into raw_recruit_prospects. One signal family:
+//   Social/forum intent — agent communities (e.g. Reddit r/realtors) where agents
+//   express dissatisfaction or intent to switch, via Apify.
+// (The brokerage-review ZenRows scrape is retired — tombstone in sourceRecruitProspects.)
 //
 // Records are PLATFORM-OWNED: brokerage_id is left NULL and only market_id (the
 // active-subscriber territory) is set. The owning brokerage is resolved at
@@ -16,7 +14,6 @@
 // this stage captures broadly and lets the gate decide.
 
 import type { SupabaseClient } from "@supabase/supabase-js"
-import { ZenrowsClient } from "@/lib/external"
 
 const SWITCH_INTENT_TERMS = [
   "thinking of switching brokerage",
@@ -35,8 +32,24 @@ export interface RecruitSourceParams {
   state: string | null
   /** Agent-focused subreddits to scan for switch intent. */
   subreddits?: string[]
-  /** Public brokerage-review URLs to scan for "leaving" signals. */
-  reviewUrls?: string[]
+  /**
+   * Wave 106E — the APPROVED recruiting missions' targeting (lib/kernel/missions.ts
+   * recruitingTargetingFor: territory + specialization of every ACTIVE recruiting mission). Widens
+   * the intent terms with "<specialization> listing agent <territory>" and stamps the match on the
+   * preview so the promotion carries which need it serves. Absent / empty = the base terms only.
+   */
+  targeting?: Array<{ missionId: string; territory: string; specialization: string }>
+}
+
+/** PURE: the search terms a targeting set adds to the base switch-intent terms. */
+export function targetingSearchTerms(targeting: RecruitSourceParams["targeting"]): string[] {
+  const out: string[] = []
+  for (const t of targeting ?? []) {
+    const terr = t.territory.trim().toLowerCase(), spec = t.specialization.trim().toLowerCase()
+    if (!terr || terr === "unassigned") { if (spec) out.push(`${spec} listing agent`); continue }
+    out.push(`${spec} listing agent ${terr}`, `listing agent ${terr}`)
+  }
+  return [...new Set(out)]
 }
 
 export interface RecruitSourceResult {
@@ -74,23 +87,30 @@ async function insertRawRecruit(
 
 export async function sourceRecruitProspects(params: RecruitSourceParams): Promise<RecruitSourceResult> {
   const result: RecruitSourceResult = { inserted: 0, scanned: 0, errors: [] }
-  const zenrows = new ZenrowsClient()
 
-  // ── 1. Social/forum agent-switch intent (Reddit agent communities) ─────────
+  // ── Social/forum agent-switch intent (Reddit agent communities) ─────────
   const subreddits = params.subreddits?.length ? params.subreddits : ["realtors", "RealEstate"]
+  // 106E: an approved recruiting mission's targeting is a search criterion, not a second scraper.
+  const targetingTerms = targetingSearchTerms(params.targeting)
+  const terms = [...SWITCH_INTENT_TERMS, ...targetingTerms]
+  const targetingMatch = (text: string) => (params.targeting ?? []).find((t) => {
+    const terr = t.territory.trim().toLowerCase()
+    return (terr && terr !== "unassigned" && text.includes(terr)) || text.includes(`${t.specialization.trim().toLowerCase()} listing agent`)
+  }) ?? null
   try {
     const { scrapeRedditPosts } = await import("@/lib/external/apify-client")
     const reddit = await scrapeRedditPosts({
       subreddits,
-      keywords: SWITCH_INTENT_TERMS,
+      keywords: terms,
       limit: 50,
     }).catch(() => ({ posts: [] as Array<Record<string, any>> }))
 
     for (const post of reddit.posts ?? []) {
       result.scanned++
       const text = `${post.title ?? ""} ${post.body ?? ""}`.toLowerCase()
-      const matched = SWITCH_INTENT_TERMS.find((t) => text.includes(t))
+      const matched = terms.find((t) => text.includes(t))
       if (!matched) continue
+      const targeted = targetingMatch(text)
       const author = (post.author ?? post.username ?? "").toString().trim()
       const ok = await insertRawRecruit(params.supabase, {
         marketId: params.marketId,
@@ -107,6 +127,8 @@ export async function sourceRecruitProspects(params: RecruitSourceParams): Promi
           switchSignal: matched,
           handle: author || null,
           sourceUrl: post.url ?? null,
+          // 106E: which approved recruiting mission (territory + specialization) this signal serves.
+          targeting: targeted ? { missionId: targeted.missionId, territory: targeted.territory, specialization: targeted.specialization } : null,
         },
       })
       if (ok) result.inserted++
@@ -115,33 +137,11 @@ export async function sourceRecruitProspects(params: RecruitSourceParams): Promi
     result.errors.push(`reddit_agent_switch: ${err instanceof Error ? err.message : String(err)}`)
   }
 
-  // ── 2. Job-board / brokerage-review "leaving" signals ──────────────────────
-  for (const url of params.reviewUrls ?? []) {
-    try {
-      const scraped = await zenrows.scrape(url, { js_render: true }).catch(() => null)
-      result.scanned++
-      if (!scraped?.success || !scraped.html) continue
-      const html = scraped.html.toLowerCase()
-      const matched = SWITCH_INTENT_TERMS.find((t) => html.includes(t)) ?? "brokerage_review_signal"
-      const ok = await insertRawRecruit(params.supabase, {
-        marketId: params.marketId,
-        source: "brokerage_review_signal",
-        sourceRecordId: `review-${Buffer.from(url).toString("base64").slice(0, 40)}`,
-        rawData: { url, matched_term: matched },
-        preview: {
-          firstName: null,
-          lastName: null,
-          state: params.state,
-          currentBrokerage: null,
-          switchSignal: matched,
-          sourceUrl: url,
-        },
-      })
-      if (ok) result.inserted++
-    } catch (err) {
-      result.errors.push(`brokerage_review_signal: ${err instanceof Error ? err.message : String(err)}`)
-    }
-  }
-
+  // TOMBSTONE (wave 153, lane 153T — owner ruling B3; CLAUDE.md §1): a "Job-board / brokerage-review" section scraped each
+  // `reviewUrls` page through the ZenRows transport DIRECTLY (no purpose, robots, terms or spend checkpoint) and wrote a
+  // raw_recruit_prospects row carrying NO person (first/last name null). B3 limits Zyte / ZenRows to public real-estate-need
+  // chatter and FSBO; agent recruiting is neither. Its only caller passed `brokerage_review_urls`, a key no
+  // lead_scraping_motivated_params column carries, so it never ran. Survivor: the Reddit switch-intent lane above (this file,
+  // recruit-sourcer.ts:91, Apify), which carries the author handle the promotion identity gate reads.
   return result
 }

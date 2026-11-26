@@ -58,7 +58,7 @@ export interface NpsRollup {
 }
 
 /** PURE: fold scored rows into an NPS rollup. Empty in → nps null, honestly. */
-export function computeNps(rows: Array<{ score: number }>): NpsRollup {
+function computeNps(rows: Array<{ score: number }>): NpsRollup {
   let promoters = 0, passives = 0, detractors = 0
   for (const r of rows) {
     const b = classifyNps(r.score)
@@ -74,7 +74,7 @@ export function computeNps(rows: Array<{ score: number }>): NpsRollup {
 // ─── PURE: period math ("YYYY-MM", UTC — matches the period CHECK) ───────────
 
 /** PURE: the current survey period, "YYYY-MM" (UTC). */
-export function currentPeriod(now: Date): string {
+function currentPeriod(now: Date): string {
   return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`
 }
 
@@ -85,18 +85,14 @@ export function quarterPeriods(now: Date): string[] {
   return [0, 1, 2].map((i) => `${y}-${String(q0 + i + 1).padStart(2, "0")}`)
 }
 
-/** PURE: the last N "YYYY-MM" periods, newest first (current month included). */
-export function lastNPeriods(n: number, now: Date): string[] {
-  const out: string[] = []
-  for (let i = 0; i < n; i++) {
-    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1))
-    out.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`)
-  }
-  return out
-}
+// `lastNPeriods` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+// byte-identical to lib/kernel/intelligence-report.ts:74 `lastMonthKeys`
+// (imported above). Its only caller, the superadmin engagement page, now
+// calls `lastMonthKeys` directly.
 
 /** Minimum tenancy age before the survey ever shows. */
-export const NPS_MIN_TENANCY_DAYS = 30
+// module-private since 2026-09-07 — its only readers are this module's own (un-exported) helpers
+const NPS_MIN_TENANCY_DAYS = 30
 
 const DAY_MS = 86_400_000
 
@@ -104,7 +100,7 @@ const DAY_MS = 86_400_000
  * PURE: the eligibility rule. Prompt when (a) tenancy started 30+ days ago and
  * (b) no response exists in any of the current quarter's three periods.
  */
-export function isEligibleForNps(input: {
+function isEligibleForNps(input: {
   /** users.created_at (fallback brokerages.created_at). null = unknown → not eligible. */
   tenancyStartedAt: string | null
   /** Periods ("YYYY-MM") this user has already responded in. */

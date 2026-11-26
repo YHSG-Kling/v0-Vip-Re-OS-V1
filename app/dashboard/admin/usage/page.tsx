@@ -4,10 +4,13 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
+import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { AlertTriangle, AlertCircle, Cpu, Phone, HardDrive, Video, DollarSign, Download, TrendingUp } from "lucide-react"
 import { UsageByTypeChart } from "./usage-by-type-chart"
 import { UsageTrendsChart } from "./usage-trends-chart"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
@@ -37,8 +40,8 @@ export default async function UsageMeteringDashboard() {
     .maybeSingle()
 
   // Role gate: broker + admin + superadmin only
-  if (!profile || !["broker", "admin", "superadmin"].includes(profile.user_type ?? "")) {
-    redirect("/dashboard")
+  if (!profile || !isAdminOrBroker({ user_type: profile.user_type ?? "" })) {
+    return <RoleGateNotice surface="Usage" audience="your broker, brokerage admins, team leads and the compliance officer" />
   }
   // Kernel guard: brokerage_id must be present for all dashboard queries
   if (!profile.brokerage_id) redirect("/dashboard/onboarding")
@@ -60,6 +63,7 @@ export default async function UsageMeteringDashboard() {
     aiToolUsageResult,
     trendDataResult,
     subscriptionResult,
+    usageEventsResult,
   ] = await Promise.all([
     // Usage logs for current month summary
     supabase
@@ -116,10 +120,12 @@ export default async function UsageMeteringDashboard() {
       .eq("period_label", currentMonth)
       .not("team_id", "is", null),
 
-    // Feature usage tracking
+    // Feature usage tracking. `last_incremented` and `team_id` are stamped on
+    // every increment (lib/kernel/0.1-feature-access.ts) and were read by
+    // nobody — the recency and team attribution existed only as unread ink.
     supabase
       .from("feature_usage_tracking")
-      .select("feature_key, usage_count, limit_amount, exceeded")
+      .select("feature_key, usage_count, limit_amount, exceeded, last_incremented, team_id, teams:team_id(name)")
       .eq("brokerage_id", brokerageId)
       .order("usage_count", { ascending: false })
       .limit(20),
@@ -150,6 +156,21 @@ export default async function UsageMeteringDashboard() {
       .eq("brokerage_id", brokerageId)
       .eq("status", "active")
       .maybeSingle(),
+
+    // THE EVENT LEDGER — usage_events is what the platform bills off
+    // (lib/usage/log-media-usage.ts writes it as the per-event audit row), and
+    // its attribution columns (feature, user_id, contact_id, session_ref,
+    // metadata) had no reader anywhere: a disputed line item could not be traced
+    // to the surface, seat, contact or vendor session that incurred it. This
+    // table is that trace.
+    supabase
+      .from("usage_events")
+      .select("id, created_at, metric, quantity, cost_cents, feature, user_id, contact_id, session_ref, metadata")
+      .eq("brokerage_id", brokerageId)
+      .gte("created_at", monthStart.toISOString())
+      .lte("created_at", monthEnd.toISOString())
+      .order("created_at", { ascending: false })
+      .limit(50),
   ])
 
   const usageLogs = usageLogsResult.data || []
@@ -161,6 +182,27 @@ export default async function UsageMeteringDashboard() {
   const aiToolUsage = aiToolUsageResult.data || []
   const trendData = trendDataResult.data || []
   const subscription = subscriptionResult.data
+  const usageEvents = usageEventsResult.data || []
+
+  // Resolve actor emails and contact names for the event ledger in two batch
+  // reads (no embeds — resolved by id so a missing FK row degrades to "—",
+  // never to a failed query).
+  const eventUserIds = Array.from(new Set(usageEvents.map((e: any) => e.user_id).filter(Boolean))) as string[]
+  const eventContactIds = Array.from(new Set(usageEvents.map((e: any) => e.contact_id).filter(Boolean))) as string[]
+  const [eventUsersResult, eventContactsResult] = await Promise.all([
+    eventUserIds.length
+      ? supabase.from("users").select("id, email").in("id", eventUserIds)
+      : Promise.resolve({ data: [] as any[] }),
+    eventContactIds.length
+      ? supabase.from("contacts").select("id, first_name, last_name").eq("brokerage_id", brokerageId).in("id", eventContactIds)
+      : Promise.resolve({ data: [] as any[] }),
+  ])
+  const emailByUserId = new Map<string, string>()
+  for (const u of eventUsersResult.data ?? []) emailByUserId.set(u.id, u.email)
+  const contactNameById = new Map<string, string>()
+  for (const c of eventContactsResult.data ?? []) {
+    contactNameById.set(c.id, [c.first_name, c.last_name].filter(Boolean).join(" ") || c.id.slice(0, 8))
+  }
 
   // Calculate KPI summaries
   const aiCallsMTD = usageLogs
@@ -240,23 +282,39 @@ export default async function UsageMeteringDashboard() {
     brokEntry.tokens += t.tokens_used || 0
   })
 
-  // Check threshold alerts
-  const tierLimits = subscription?.subscription_tiers?.features || {}
-  const aiLimit = tierLimits.ai_calls_limit || 10000
-  const storageLimit = tierLimits.storage_limit_bytes || 10737418240 // 10GB default
-  const voiceLimit = tierLimits.voice_minutes_limit || 1000
-  
-  const aiUsagePct = (aiCallsMTD / aiLimit) * 100
-  const storageUsagePct = (storageMTD / storageLimit) * 100
-  const voiceUsagePct = (voiceMinutesMTD / voiceLimit) * 100
+  // Check threshold alerts — against the PLAN'S REAL ALLOWANCES (plan_limits), never an invented one.
+  // Wave 143J: this block read `features.ai_calls_limit || 10000`, `features.storage_limit_bytes || 10 GB`
+  // and `features.voice_minutes_limit || 1000` — keys the live subscription_tiers.features object does not
+  // carry — so EVERY tenant was alerted (or not) against numbers nobody set. A metric with no plan_limits
+  // row, an unlimited one (-1), or an unreadable read raises NO alert: silence about a number we do not
+  // have is honest; "AI calls at 94% of limit" against a made-up limit is not.
+  const planTierName: string | null = subscription?.subscription_tiers?.tier_name ?? null
+  const realLimits = new Map<string, number>()
+  if (planTierName) {
+    const { data: limitRows, error: limitError } = await supabase
+      .from("plan_limits")
+      .select("metric, limit_value")
+      .eq("plan_tier", planTierName)
+      .in("metric", ["ai_tokens_monthly", "ai_voice_minutes", "storage_gb"])
+    if (!limitError) for (const r of limitRows ?? []) if (Number(r.limit_value) > 0) realLimits.set(r.metric, Number(r.limit_value))
+  }
+  const pct = (used: number, limit: number | undefined, unit = 1) => (limit ? (used / (limit * unit)) * 100 : null)
+  // The AI allowance is TOKENS (plan_limits.ai_tokens_monthly — the counter every AI call bumps through lib/ai/cost-tracking.ts).
+  // The `llm_calls` limit is a different, narrower counter (the copilot summary and the seller-offer assistant only), so the
+  // raw AI-call count on this page was never comparable to it; the month's tokens come from the same ai_tool_usage rows the
+  // AI section below aggregates.
+  const aiTokensMTD = aiToolUsage.reduce((sum: number, t: any) => sum + (Number(t.tokens_used) || 0), 0)
+  const aiUsagePct = pct(aiTokensMTD, realLimits.get("ai_tokens_monthly"))
+  const storageUsagePct = pct(storageMTD, realLimits.get("storage_gb"), 1024 * 1024 * 1024)
+  const voiceUsagePct = pct(voiceMinutesMTD, realLimits.get("ai_voice_minutes"))
 
   const alerts: { type: string; severity: "amber" | "red"; message: string }[] = []
-  if (aiUsagePct >= 95) alerts.push({ type: "AI Calls", severity: "red", message: `AI calls at ${aiUsagePct.toFixed(0)}% of limit` })
-  else if (aiUsagePct >= 80) alerts.push({ type: "AI Calls", severity: "amber", message: `AI calls at ${aiUsagePct.toFixed(0)}% of limit` })
-  if (storageUsagePct >= 95) alerts.push({ type: "Storage", severity: "red", message: `Storage at ${storageUsagePct.toFixed(0)}% of limit` })
-  else if (storageUsagePct >= 80) alerts.push({ type: "Storage", severity: "amber", message: `Storage at ${storageUsagePct.toFixed(0)}% of limit` })
-  if (voiceUsagePct >= 95) alerts.push({ type: "Voice", severity: "red", message: `Voice minutes at ${voiceUsagePct.toFixed(0)}% of limit` })
-  else if (voiceUsagePct >= 80) alerts.push({ type: "Voice", severity: "amber", message: `Voice minutes at ${voiceUsagePct.toFixed(0)}% of limit` })
+  if (aiUsagePct !== null && aiUsagePct >= 95) alerts.push({ type: "AI Usage", severity: "red", message: `AI usage at ${aiUsagePct.toFixed(0)}% of the monthly token allowance` })
+  else if (aiUsagePct !== null && aiUsagePct >= 80) alerts.push({ type: "AI Usage", severity: "amber", message: `AI usage at ${aiUsagePct.toFixed(0)}% of the monthly token allowance` })
+  if (storageUsagePct !== null && storageUsagePct >= 95) alerts.push({ type: "Storage", severity: "red", message: `Storage at ${storageUsagePct.toFixed(0)}% of limit` })
+  else if (storageUsagePct !== null && storageUsagePct >= 80) alerts.push({ type: "Storage", severity: "amber", message: `Storage at ${storageUsagePct.toFixed(0)}% of limit` })
+  if (voiceUsagePct !== null && voiceUsagePct >= 95) alerts.push({ type: "Voice", severity: "red", message: `Voice minutes at ${voiceUsagePct.toFixed(0)}% of limit` })
+  else if (voiceUsagePct !== null && voiceUsagePct >= 80) alerts.push({ type: "Voice", severity: "amber", message: `Voice minutes at ${voiceUsagePct.toFixed(0)}% of limit` })
 
   // Prepare chart data
   const usageByTypeData = [
@@ -301,9 +359,14 @@ export default async function UsageMeteringDashboard() {
                   <p className="text-sm mt-1">Consider upgrading your plan to avoid service interruptions.</p>
                 )}
               </div>
+              {/* Had no onClick. A brokerage admin hits a usage cap, the OS tells
+                  them to upgrade, and the button that would let them did nothing.
+                  Routes to the Stripe billing portal, where a plan change is the
+                  first thing on the page — that is the existing, gated path, so
+                  no new checkout surface is invented here. */}
               {alert.severity === "red" && (
-                <Button variant="outline" size="sm">
-                  Upgrade Plan
+                <Button variant="outline" size="sm" asChild>
+                  <Link href="/settings/billing">Upgrade Plan</Link>
                 </Button>
               )}
             </div>
@@ -323,7 +386,7 @@ export default async function UsageMeteringDashboard() {
           <CardContent>
             <div className="text-2xl font-bold">{aiCallsMTD.toLocaleString()}</div>
             <p className="text-xs text-muted-foreground">
-              {aiUsagePct.toFixed(0)}% of {aiLimit.toLocaleString()} limit
+              {aiUsagePct === null ? `${aiTokensMTD.toLocaleString()} tokens · no plan limit set` : `${aiTokensMTD.toLocaleString()} tokens · ${aiUsagePct.toFixed(0)}% of ${realLimits.get("ai_tokens_monthly")!.toLocaleString()} allowance`}
             </p>
           </CardContent>
         </Card>
@@ -338,7 +401,7 @@ export default async function UsageMeteringDashboard() {
           <CardContent>
             <div className="text-2xl font-bold">{voiceMinutesMTD.toLocaleString()}</div>
             <p className="text-xs text-muted-foreground">
-              {voiceUsagePct.toFixed(0)}% of {voiceLimit.toLocaleString()} limit
+              {voiceUsagePct === null ? "No plan limit set" : `${voiceUsagePct.toFixed(0)}% of ${realLimits.get("ai_voice_minutes")!.toLocaleString()} limit`}
             </p>
           </CardContent>
         </Card>
@@ -353,7 +416,7 @@ export default async function UsageMeteringDashboard() {
           <CardContent>
             <div className="text-2xl font-bold">{formatBytes(storageMTD)}</div>
             <p className="text-xs text-muted-foreground">
-              {storageUsagePct.toFixed(0)}% of {formatBytes(storageLimit)} limit
+              {storageUsagePct === null ? "No plan limit set" : `${storageUsagePct.toFixed(0)}% of ${realLimits.get("storage_gb")!} GB limit`}
             </p>
           </CardContent>
         </Card>
@@ -554,6 +617,8 @@ export default async function UsageMeteringDashboard() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Feature</TableHead>
+                      <TableHead>Team</TableHead>
+                      <TableHead>Last used</TableHead>
                       <TableHead className="text-right">Usage</TableHead>
                       <TableHead className="text-right">Status</TableHead>
                     </TableRow>
@@ -562,6 +627,12 @@ export default async function UsageMeteringDashboard() {
                     {featureUsage.slice(0, 10).map((f: any) => (
                       <TableRow key={f.feature_key}>
                         <TableCell className="font-medium">{f.feature_key}</TableCell>
+                        {/* team_id is stamped on every increment row; a row with
+                            none is individual (non-team) usage, not missing data */}
+                        <TableCell className="text-xs text-muted-foreground">{f.teams?.name ?? "—"}</TableCell>
+                        <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                          {f.last_incremented ? new Date(f.last_incremented).toLocaleDateString() : "—"}
+                        </TableCell>
                         <TableCell className="text-right">
                           {f.usage_count?.toLocaleString()} / {f.limit_amount?.toLocaleString() || "∞"}
                         </TableCell>
@@ -576,7 +647,7 @@ export default async function UsageMeteringDashboard() {
                     ))}
                     {featureUsage.length === 0 && (
                       <TableRow>
-                        <TableCell colSpan={3} className="text-center text-muted-foreground py-8">
+                        <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
                           No feature usage data available
                         </TableCell>
                       </TableRow>
@@ -713,6 +784,67 @@ export default async function UsageMeteringDashboard() {
               Showing top 25 of {costAllocations.length} entries. Export CSV for full data.
             </p>
           )}
+        </CardContent>
+      </Card>
+
+      {/* Section 6: Usage event ledger — the per-event audit rows the platform
+          bills off (usage_events). Each row carries WHO (user), FOR WHOM
+          (contact), WHERE (feature surface) and the vendor session reference,
+          which is what makes a disputed line item traceable. */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Usage Event Ledger</CardTitle>
+          <CardDescription>
+            Most recent {usageEvents.length} billable media events for {currentMonth} — the audit trail behind the meters above
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>When</TableHead>
+                <TableHead>Metric</TableHead>
+                <TableHead className="text-right">Qty</TableHead>
+                <TableHead>Feature</TableHead>
+                <TableHead>User</TableHead>
+                <TableHead>Contact</TableHead>
+                <TableHead>Session Ref</TableHead>
+                <TableHead className="text-right">Cost</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {usageEvents.map((e: any) => {
+                const metaStr =
+                  e.metadata && Object.keys(e.metadata).length > 0 ? JSON.stringify(e.metadata) : null
+                return (
+                  <TableRow key={e.id}>
+                    <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                      {new Date(e.created_at).toLocaleString()}
+                    </TableCell>
+                    <TableCell className="text-xs font-medium">{e.metric}</TableCell>
+                    <TableCell className="text-right text-xs">{Number(e.quantity ?? 0).toLocaleString()}</TableCell>
+                    <TableCell className="text-xs" title={metaStr ?? undefined}>
+                      {e.feature ?? "—"}
+                      {metaStr && <span className="text-muted-foreground"> ·…</span>}
+                    </TableCell>
+                    <TableCell className="text-xs">{e.user_id ? emailByUserId.get(e.user_id) ?? e.user_id.slice(0, 8) + "…" : "—"}</TableCell>
+                    <TableCell className="text-xs">{e.contact_id ? contactNameById.get(e.contact_id) ?? e.contact_id.slice(0, 8) + "…" : "—"}</TableCell>
+                    <TableCell className="text-xs font-mono">{e.session_ref ? String(e.session_ref).slice(0, 18) : "—"}</TableCell>
+                    <TableCell className="text-right text-xs">{e.cost_cents != null ? formatCurrency(e.cost_cents) : "—"}</TableCell>
+                  </TableRow>
+                )
+              })}
+              {usageEvents.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={8} className="text-center text-muted-foreground py-8">
+                    {usageEventsResult.error
+                      ? `Event ledger could not be read: ${usageEventsResult.error.message}`
+                      : "No billable media events recorded this month"}
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
         </CardContent>
       </Card>
     </div>

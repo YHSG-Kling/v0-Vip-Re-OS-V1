@@ -77,44 +77,9 @@ export async function countUnreadNotifications(params: {
   return count ?? 0
 }
 
-// ── markNotificationRead ──────────────────────────────────────────────────────
-
-export async function markNotificationRead(params: {
-  userId: string
-  notificationId: string
-}): Promise<void> {
-  const { userId, notificationId } = params
-  const supabase = await createClient()
-
-  const { error } = await supabase
-    .from("notifications")
-    .update({ is_read: true, read_at: new Date().toISOString() })
-    .eq("id", notificationId)
-    .eq("user_id", userId)
-    .eq("is_read", false)
-
-  if (error) {
-    console.error("[NotificationCenter] markNotificationRead failed:", error)
-    throw new Error(`Failed to mark notification read: ${error.message}`)
-  }
-}
-
-// ── markAllNotificationsRead ──────────────────────────────────────────────────
-
-export async function markAllNotificationsRead(params: {
-  userId: string
-}): Promise<void> {
-  const { userId } = params
-  const supabase = await createClient()
-
-  const { error } = await supabase
-    .from("notifications")
-    .update({ is_read: true, read_at: new Date().toISOString() })
-    .eq("user_id", userId)
-    .eq("is_read", false)
-
-  if (error) {
-    console.error("[NotificationCenter] markAllNotificationsRead failed:", error)
-    throw new Error(`Failed to mark all notifications read: ${error.message}`)
-  }
-}
+// ── markNotificationRead / markAllNotificationsRead — RETIRED (wave 155, lane 155R20) ──────────
+// TOMBSTONE. Both were duplicates of the survivor app/actions/notifications.ts:84 markNotificationRead and
+// app/actions/notifications.ts:115 markAllRead, and their ONLY caller was the duplicate door app/actions/notification-actions.ts
+// (also retired; app/notifications/page.tsx now calls the survivor). The survivor is stricter — the act-as write seam
+// (resolveWriteContext: a read_only impersonation grant is refused) and a zero-row mark is a refusal, not a success — so there
+// was nothing to merge onto it. The re-export in lib/kernel/index.ts is removed with them.

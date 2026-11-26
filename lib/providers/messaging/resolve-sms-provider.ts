@@ -17,6 +17,7 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
+import { secretFromConfig } from "@/lib/connections/credential-secret"
 import {
   isSupportedSMSProvider,
   type SupportedSMSProvider,
@@ -66,8 +67,14 @@ function toSMSCredentials(conn: {
   const cfg = conn.config ?? {}
   return {
     apiKey:     conn.apiKey ?? conn.accessToken ?? "",
-    apiSecret:  (cfg.auth_token as string | undefined)
-                ?? conn.refreshToken ?? (cfg.api_password as string | undefined),
+    // ONE READING of the config blob's secret half — lib/connections/credential-secret.ts.
+    // This line used to carry its own two-key ladder (auth_token → api_password), the
+    // cron carried a different two-key ladder (auth_token → api_secret), and
+    // connection-manager carried none and read `null`. Three spellings of one idea is
+    // the defect CLAUDE.md §6 names; merged onto the shared reading, with the
+    // refreshToken fallback preserved because platform_credentials genuinely stores
+    // some carriers' secret there.
+    apiSecret:  secretFromConfig(cfg) ?? conn.refreshToken ?? undefined,
     fromNumber: (cfg.from_number as string | undefined) ?? conn.accountId ?? undefined,
     config:     cfg,
   }
@@ -123,7 +130,7 @@ export async function resolveSMSProviderForActor(
   if (ctx.brokerageId) {
     const svc = createServiceClient()
     const { data: numbers } = await svc
-      .from("vapi_phone_numbers")
+      .from("tenant_phone_numbers")
       .select("phone_number, agent_user_id, scope_type")
       .eq("brokerage_id", ctx.brokerageId)
       .eq("is_active", true)
@@ -165,10 +172,20 @@ export async function resolveSMSProviderForActor(
   throw new Error("No SMS provider is configured. Add credentials in Settings → Integrations.")
 }
 
-/** Backwards-compat wrapper — callers that don't yet have userId context. */
-export async function resolveSMSProviderForBrokerage(
-  brokerageId: string | null | undefined,
-): Promise<ResolvedSMSProvider> {
-  return resolveSMSProviderForActor({ brokerageId: brokerageId ?? null })
-}
+// ─── `resolveSMSProviderForBrokerage` — DELETED (wave 8) ─────────────────────
+// SURVIVOR: resolveSMSProviderForActor, immediately above (this same file).
+//
+// It was a pure delegation wrapper — its entire body was
+// `return resolveSMSProviderForActor({ brokerageId: brokerageId ?? null })` —
+// introduced as a "backwards-compat wrapper for callers that don't yet have
+// userId context". There were no such callers anywhere in the tree, and there
+// is nothing for a caller to gain by going through it: ResolveSMSContext's
+// fields are ALL optional, so `resolveSMSProviderForActor({ brokerageId })` is
+// the same call with the same cascade, one less indirection, and the option of
+// adding userId/teamId later without changing function.
+//
+// NOTHING TO MERGE, verified rather than assumed: the wrapper narrowed the
+// context and added no branch, no fallback and no error handling of its own —
+// the brokerage tier, the platform-managed tenant-number tier and the env
+// fallback all live in the survivor and are reached identically either way.
 

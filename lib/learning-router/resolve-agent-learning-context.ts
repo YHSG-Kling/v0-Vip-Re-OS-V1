@@ -18,12 +18,23 @@
 
 import "server-only"
 import type { SupabaseClient } from "@supabase/supabase-js"
+// Client-agnostic resolver: this runs against the CALLER's client so the
+// agents lookup stays RLS-scoped exactly like every other read in here.
+import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 
 export interface AgentLearningContext {
   userId:              string
   brokerageId:         string
   tenureDays:          number | null
   completedModuleIds:  string[]
+  /** Modules the agent explicitly dismissed ("not now") — excluded from new
+   *  recommendations same as completed ones, so a dismiss actually sticks
+   *  instead of the same module reappearing on the next composer run.
+   *  Filtered on dismissed_at rather than status='dismissed' alone: a row
+   *  the retake-reset clears (onboarding/progress.ts) sets dismissed_at back
+   *  to null, so the timestamp is the honest "still dismissed" signal even
+   *  if a future writer ever moves status without touching the timestamp. */
+  dismissedModuleIds:  string[]
   /** Performance gap tags this agent currently exhibits. Used to match
    *  against learning_modules.gap_tags. Possible values are open-ended
    *  but the canonical set is documented in the migration: 'low_close_rate',
@@ -34,6 +45,14 @@ export interface AgentLearningContext {
   /** Brokerage Intelligence insights this agent has NOT adopted —
    *  surface a learning module that teaches the pattern. */
   unadoptedInsightIds: string[]
+  /**
+   * WAVE 103 (lane 103A) — THE COMPETENCY GAPS this context was scored under: the ONE competency
+   * model's lowest skills (lib/education/skill-freshness.ts:scoreCompetency, ≤ COMPETENCY_GAP_SCORE)
+   * with their scores, so the assignment row's signal_metadata says WHICH gap a module was picked
+   * for. Their gap tags are already folded into `gapTags` above (the ONE scorer matches them against
+   * learning_modules.gap_tags). Empty when the agent is unproven or the read was refused.
+   */
+  competencyGaps:      Array<{ skill: string; score: number; gapTag: string }>
 }
 
 export async function resolveAgentLearningContext(
@@ -63,17 +82,24 @@ export async function resolveAgentLearningContext(
   const completedModuleIds = (completedRows ?? [])
     .map((r: Record<string, unknown>) => (r as { module_id: string }).module_id)
 
+  // Dismissed modules ("not now") — see the field doc above for why this
+  // filters on dismissed_at rather than status.
+  const { data: dismissedRows } = await supabase
+    .from("learning_assignments")
+    .select("module_id")
+    .eq("agent_user_id", userId)
+    .not("dismissed_at", "is", null)
+  const dismissedModuleIds = (dismissedRows ?? [])
+    .map((r: Record<string, unknown>) => (r as { module_id: string }).module_id)
+
   // ─── Performance gaps ────────────────────────────────────────────────
   const gapTags: string[] = []
 
   // 1. Open deal-health interventions on this agent's transactions?
-  //    transactions.agent_id is FK to agents(id) — resolve first.
-  const { data: agentRow } = await supabase
-    .from("agents")
-    .select("id")
-    .eq("user_id", userId)
-    .maybeSingle()
-  const agentsId = (agentRow?.id as string | null) ?? null
+  //    Brokerage is already known here, so use the SCOPED resolve — a user
+  //    carrying agents rows in two brokerages must not be answered with the
+  //    other tenant's row.
+  const agentsId = await resolveAgentIdInBrokerage(supabase, userId, brokerageId)
 
   if (agentsId) {
     const { count: openDealIv } = await supabase
@@ -89,13 +115,16 @@ export async function resolveAgentLearningContext(
   }
 
   // 2. Open listing-health interventions on this agent's listings?
-  const { count: openListingIv } = await supabase
-    .from("listing_health_interventions")
-    .select("id", { count: "exact", head: true })
-    .eq("resolved", false)
-    .eq("agent_id", userId)
-    .eq("brokerage_id", brokerageId)
-  if ((openListingIv ?? 0) >= 1) gapTags.push("open_listing_interventions")
+  //    No agents row → no listings of their own → no gap to tag.
+  if (agentsId) {
+    const { count: openListingIv } = await supabase
+      .from("listing_health_interventions")
+      .select("id", { count: "exact", head: true })
+      .eq("resolved", false)
+      .eq("agent_id", agentsId)
+      .eq("brokerage_id", brokerageId)
+    if ((openListingIv ?? 0) >= 1) gapTags.push("open_listing_interventions")
+  }
 
   // 3. NPV touchpoints overdue (>0)? Sphere neglect.
   const today = new Date().toISOString().slice(0, 10)
@@ -131,13 +160,41 @@ export async function resolveAgentLearningContext(
   //    peers, surface pipeline-management modules.
   // (Skipped for v1; the brokerage insights miner already captures this.)
 
+  // 6. THE COMPETENCY MODEL (wave 103, lane 103A) — curriculum assignment picks modules for the
+  //    LOWEST competencies. The one evidence-scored profile (skill-freshness.ts:scoreCompetency)
+  //    contributes its gap tags: the gap skills' tags + "objection:<scenario>" for weak drill
+  //    scenarios, which is exactly the tag the curriculum author stamps on the module it writes
+  //    for that gap (lib/education/curriculum-author.ts) — the loop closes on one vocabulary.
+  //    Best-effort: a refused evidence rail scores that skill as unproven; a thrown read leaves
+  //    the context without competency tags rather than without a context.
+  let competencyGaps: AgentLearningContext["competencyGaps"] = []
+  if (agentsId) {
+    try {
+      const { loadAgentCompetency } = await import("@/lib/education/skill-freshness-radar")
+      const profile = await loadAgentCompetency(supabase as any, { id: agentsId, user_id: userId, brokerage_id: brokerageId })
+      competencyGaps = profile.gaps.map((g) => ({ skill: g.skill, score: g.score as number, gapTag: g.gapTag }))
+      for (const t of profile.gapTags) gapTags.push(t)
+      // TOMBSTONE (wave 155, lane 155R26 — a READ that wrote, §1 case 3): a has_competency derivation
+      // (deriveCompetencyEdges, lib/kernel/relationship-graph.ts) ran here on every learning-context read, so opening the
+      // Academy wrote relationship_edges through the reader's client. The derivation already lives where the competency
+      // evidence is compared and recorded: runAdaptiveDevelopmentCycle's UPDATE step (lib/education/skill-freshness-radar.ts,
+      // `deriveCompetencyEdges(svc, { brokerageId: agent.brokerage_id …` inside ledger("update")), driven daily for every active
+      // agent by runAdaptiveDevelopmentAll ← app/api/cron/onboarding-reminders (lib/kernel/cron-dispatch.ts, "0 9 * * *"),
+      // with the SAME threshold (COMPETENCY_GAP_SCORE) and the same profile. This read now writes nothing.
+    } catch (e) {
+      console.error("[learning-router] competency read failed (context stands without it):", (e as Error).message)
+    }
+  }
+
   return {
     userId,
     brokerageId,
     tenureDays,
     completedModuleIds,
+    dismissedModuleIds,
     gapTags:             Array.from(new Set(gapTags)),
     unadoptedInsightIds,
+    competencyGaps,
   }
 }
 

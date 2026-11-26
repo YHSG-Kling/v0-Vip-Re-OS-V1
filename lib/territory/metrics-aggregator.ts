@@ -180,12 +180,14 @@ export async function seedTerritoriesFromServiceArea(
 ): Promise<{ seeded: number; skipped: number }> {
   const supabase = createServiceClient()
 
-  // Read service area from global_settings.additional_settings
-  const { data: settings } = await supabase
+  // Read service area from global_settings.additional_settings. supabase-js RESOLVES a refusal
+  // (CLAUDE.md §3): a refused read must not read as "no service area configured".
+  const { data: settings, error: settingsError } = await supabase
     .from("global_settings")
     .select("additional_settings")
     .eq("brokerage_id", brokerageId)
     .maybeSingle()
+  if (settingsError) throw new Error(`Could not read the brokerage's service area: ${settingsError.message}`)
 
   const additional = (settings?.additional_settings ?? {}) as Record<string, unknown>
   const serviceAreaZips = (additional.service_area_zip_codes as string[] | null) ?? []
@@ -234,20 +236,24 @@ export async function seedTerritoriesFromServiceArea(
 
   for (const row of rows) {
     // Check for existing by (brokerage_id, name) — upsert idempotently
-    const { data: existing } = await supabase
+    const { data: existing, error: existingError } = await supabase
       .from("farm_territories")
       .select("id")
       .eq("brokerage_id", brokerageId)
       .eq("name", row.name)
       .maybeSingle()
+    if (existingError) throw new Error(`Could not check territory "${row.name}": ${existingError.message}`)
 
     if (existing) {
       skipped++
       continue
     }
 
+    // A refused insert used to be dropped on the floor (seeded stayed 0 and the caller reported
+    // success); it is now the caller's refusal.
     const { error } = await supabase.from("farm_territories").insert(row)
-    if (!error) seeded++
+    if (error) throw new Error(`Could not create territory "${row.name}": ${error.message}`)
+    seeded++
   }
 
   return { seeded, skipped }
@@ -261,21 +267,29 @@ export async function setFarmTerritoryMode(
 ): Promise<void> {
   const supabase = createServiceClient()
 
-  const { data: existing } = await supabase
+  const { data: settingsRow, error: readError } = await supabase
     .from("global_settings")
     .select("additional_settings")
     .eq("brokerage_id", brokerageId)
     .maybeSingle()
+  if (readError) throw new Error(`Failed to read brokerage settings: ${readError.message}`)
+  // The settings row is self-seeded by lib/kernel/global-settings.ts (ensureGlobalSettingsRow) the
+  // first time Settings → General is opened. Before that there is NO row, and an UPDATE that matches
+  // nothing RESOLVES with no error (CLAUDE.md §3) — so the rows are COUNTED and zero is a refusal,
+  // never a silent "saved".
+  if (!settingsRow) throw new Error("No settings row exists for this brokerage yet — open Settings → General once (it seeds the row), then set the farm territory mode again.")
 
-  const current = (existing?.additional_settings ?? {}) as Record<string, unknown>
+  const current = (settingsRow.additional_settings ?? {}) as Record<string, unknown>
 
-  const { error } = await supabase
+  const { data: updated, error } = await supabase
     .from("global_settings")
     .update({
       additional_settings: { ...current, farm_territory_mode: mode },
       updated_at: new Date().toISOString(),
     })
     .eq("brokerage_id", brokerageId)
+    .select("id")
 
   if (error) throw new Error(`Failed to set farm_territory_mode: ${error.message}`)
+  if ((updated ?? []).length === 0) throw new Error("farm_territory_mode was not saved: the settings row vanished between the read and the write.")
 }

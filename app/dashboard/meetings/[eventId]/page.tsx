@@ -19,8 +19,16 @@
 // OPS for the in-page tier: the Zoom app needs the Meeting SDK feature
 // enabled and the OS host on its Domain Allow List (see the SDK section in
 // lib/connections/zoom.ts).
+//
+// THE TRANSCRIPT (lane Z2, 2026-09-02): once the Zoom recording lane attaches
+// a transcript, <TranscriptPanel> (./transcript-panel.tsx) shows the AI
+// summary and the full transcript back to the agent — the page used to state
+// only the FACT that one landed. The panel is tenant-anchored on the SESSION's
+// brokerage (getAgentContext) and refuses, rather than reads nothing, when the
+// anchor is missing or differs from the event's.
 
 import { createClient } from "@/lib/supabase/server"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { redirect, notFound } from "next/navigation"
 import Link from "next/link"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -30,6 +38,7 @@ import { Video, FileText, User } from "lucide-react"
 import { currentZoomSdkEnv, resolveZoomSdkCredentials, zoomSdkGap } from "@/lib/connections/zoom"
 import { MeetingEmbed } from "./meeting-embed"
 import { ZoomJoinFallback } from "./join-fallback"
+import { TranscriptPanel, loadMeetingTranscript } from "./transcript-panel"
 
 export const dynamic = "force-dynamic"
 
@@ -53,9 +62,18 @@ export default async function MeetingRoomPage({
 
   const meta = (event.metadata ?? {}) as Record<string, any>
   const zoom = (meta.zoom ?? null) as
-    | { meeting_id?: string; join_url?: string; start_url?: string; host_owner_type?: string; transcript_attached?: boolean; transcript_attached_to?: string }
+    | { meeting_id?: string; join_url?: string; start_url?: string; host_owner_type?: string; transcript_attached?: boolean; transcript_attached_to?: string; transcript_uuid?: string }
     | null
   const zoomOutcome = (meta.zoom_outcome ?? null) as { created?: boolean; reason?: string; detail?: string } | null
+
+  // The transcript reader's tenant anchor comes from the SESSION (never the
+  // event, never a parameter); the loader refuses on a missing or foreign one.
+  const sessionCtx = await getAgentContext()
+  const transcriptLoad = await loadMeetingTranscript({
+    zoom,
+    eventBrokerageId: (event.brokerage_id as string | null) ?? null,
+    sessionBrokerageId: sessionCtx.brokerageId,
+  })
 
   // ── Meeting context: the contact tied to this event ────────────────────────
   let contactId: string | null = null
@@ -141,7 +159,7 @@ export default async function MeetingRoomPage({
                 {zoom.transcript_attached && (
                   <p className="text-xs text-muted-foreground flex items-center gap-1">
                     <FileText className="h-3 w-3" />
-                    Transcript attached to {zoom.transcript_attached_to === "tenant" ? "the tenant record" : "the contact"} and analyzed.
+                    Transcript attached to {zoom.transcript_attached_to === "tenant" ? "the tenant record" : "the contact"} — read it below.
                   </p>
                 )}
               </>
@@ -160,6 +178,14 @@ export default async function MeetingRoomPage({
             )}
           </CardContent>
         </Card>
+
+        {/* ── The transcript, under the Zoom window (renders only once one
+               has attached — summary first, full transcript collapsed) ──── */}
+        {transcriptLoad.state !== "not_attached" && (
+          <div className="lg:col-span-2 lg:order-3">
+            <TranscriptPanel load={transcriptLoad} />
+          </div>
+        )}
 
         {/* ── Meeting context beside the window ───────────────────────────── */}
         <div className="space-y-6">

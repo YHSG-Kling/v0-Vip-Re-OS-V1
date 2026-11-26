@@ -23,6 +23,7 @@ import {
   Zap,
   ExternalLink,
 } from "lucide-react"
+import { createTask } from "@/app/actions/tasks"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -54,8 +55,12 @@ import { generatePageInsight } from "@/app/actions/generate-page-insight"
 interface PatternsDashboardClientProps {
   initialPatterns: PatternDetectionWithDetails[]
   initialAccuracyStats: PatternAccuracyStats
-  brokerageId: string
 }
+// TOMBSTONE: `brokerageId` removed (wave 52, hidden-wire-census category c
+// passed-never-read). getActivePatterns, updatePatternStatus, recordOutcome
+// and getPatternDetails (app/actions/pattern-actions.ts) all resolve tenant
+// from getAgentContext() themselves (CLAUDE.md §4) — a client-passed
+// brokerageId here was unread and would have been the wrong thing to trust.
 
 const PATTERN_ICONS: Record<string, typeof Lightbulb> = {
   offer_imminent: Lightbulb,
@@ -104,6 +109,8 @@ export function PatternsDashboardClient({
   const [sheetOpen, setSheetOpen] = useState(false)
   const [isPending, startTransition] = useTransition()
   const [selectedPatternIds, setSelectedPatternIds] = useState<Set<string>>(new Set())
+  const [schedulingTask, setSchedulingTask] = useState(false)
+  const [taskMsg, setTaskMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [aiInsight, setAiInsight] = useState<string | null>(null)
   const [aiInsightLoading, setAiInsightLoading] = useState(false)
 
@@ -317,7 +324,7 @@ export function PatternsDashboardClient({
                 {aiInsightLoading ? (
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                 ) : (
-                  <Zap className="h-4 w-4 mr-2 text-amber-500" />
+                  <Zap className="h-4 w-4 mr-2 text-amber-600" />
                 )}
                 AI Insight
               </Button>
@@ -349,16 +356,24 @@ export function PatternsDashboardClient({
               </span>
               <span className="text-sm text-muted-foreground">pattern accuracy</span>
             </div>
+            {/* Walkthrough [101–103]: these two buttons pointed at
+                ?filter=agent and ?filter=campaign, which returned nothing. Not a broken
+                filter — this subsystem has no agent or campaign entity AT THE SCHEMA
+                LEVEL: pattern_detections.entity_type is CHECK'd to contact|listing and
+                behavioral_patterns.entity_type to buyer|seller|negotiation. No filter
+                value could ever populate those lenses. Agent behaviour and campaign
+                performance are real questions, they are just answered by other surfaces
+                — so the buttons now go where the answer actually is. */}
             <div className="ml-auto flex items-center gap-2">
-              <Link href="/dashboard/patterns?filter=agent">
+              <Link href="/dashboard/coaching">
                 <Button variant="ghost" size="sm" className="h-7 text-xs">
-                  Agent Patterns
+                  Agent Performance
                   <ExternalLink className="h-3 w-3 ml-1" />
                 </Button>
               </Link>
-              <Link href="/dashboard/patterns?filter=campaign">
+              <Link href="/dashboard/campaigns/roi">
                 <Button variant="ghost" size="sm" className="h-7 text-xs">
-                  Campaign Patterns
+                  Campaign Performance
                   <ExternalLink className="h-3 w-3 ml-1" />
                 </Button>
               </Link>
@@ -368,11 +383,11 @@ export function PatternsDashboardClient({
           {/* AI Insight strip — shown when loaded */}
           {aiInsight && (
             <div className="mt-3 flex items-start gap-2.5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
-              <Zap className="h-4 w-4 text-amber-500 mt-0.5 shrink-0" />
+              <Zap className="h-4 w-4 text-amber-600 mt-0.5 shrink-0" />
               <p className="text-sm text-amber-900 leading-relaxed">{aiInsight}</p>
               <button
                 onClick={() => setAiInsight(null)}
-                className="ml-auto shrink-0 text-amber-400 hover:text-amber-600"
+                className="ml-auto shrink-0 text-amber-700 hover:text-amber-600"
               >
                 <XCircle className="h-4 w-4" />
               </button>
@@ -596,7 +611,7 @@ export function PatternsDashboardClient({
 
       {/* Action Sheet */}
       <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
-        <SheetContent className="w-[500px] sm:max-w-[500px]">
+        <SheetContent className="w-full sm:w-[500px] sm:max-w-[500px]">
           {selectedPattern && (
             <>
               <SheetHeader>
@@ -656,10 +671,43 @@ export function PatternsDashboardClient({
                       View {selectedPattern.entity_type === "contact" ? "Contact" : "Listing"}
                     </Link>
                   </Button>
-                  <Button variant="outline" className="flex-1">
-                    Schedule Task
+                  {/* Had no onClick. An agent drills into a detected pattern —
+                      the whole point of the surface is "act on this" — and the
+                      one action button produced no task row. createTask resolves
+                      brokerage_id and the default assignee from the session, so
+                      the pattern only has to supply what it knows. */}
+                  <Button
+                    variant="outline"
+                    className="flex-1"
+                    disabled={schedulingTask}
+                    onClick={async () => {
+                      setSchedulingTask(true)
+                      setTaskMsg(null)
+                      const res = await createTask({
+                        title: `Follow up: ${selectedPattern.pattern_name}`,
+                        description: selectedPattern.description ?? undefined,
+                        priority: "medium",
+                        contactId: selectedPattern.entity_type === "contact"
+                          ? selectedPattern.entity_id ?? undefined : undefined,
+                        listingId: selectedPattern.entity_type === "listing"
+                          ? selectedPattern.entity_id ?? undefined : undefined,
+                      })
+                      setSchedulingTask(false)
+                      // createTask returns { success, error } — read it, so a
+                      // refusal is not a silent no-op.
+                      setTaskMsg(res.success
+                        ? { ok: true, text: "Task created and assigned to you." }
+                        : { ok: false, text: (res as any).error ?? "Task was not created" })
+                    }}
+                  >
+                    {schedulingTask ? "Scheduling…" : "Schedule Task"}
                   </Button>
                 </div>
+                {taskMsg && (
+                  <p className={`text-xs ${taskMsg.ok ? "text-emerald-700" : "text-destructive"}`}>
+                    {taskMsg.text}
+                  </p>
+                )}
 
                 {/* Outcome Recording */}
                 {selectedPattern.prediction_id && (

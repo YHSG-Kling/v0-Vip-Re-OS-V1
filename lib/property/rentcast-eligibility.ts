@@ -1,0 +1,656 @@
+// lib/property/rentcast-eligibility.ts
+//
+// THE ONE GATE: "should RentCast run at all for this tenant, right now?"
+//
+// OWNER RULING (verbatim, and the reason this module exists):
+//   "rentcast is platform owned and should not be used if the tenant adds their
+//    idx broker credentials"
+//
+// That is a CONNECTION rule, not a results rule. It does not ask what IDX
+// returned, or whether IDX returned anything at all. A tenant that connected
+// their own IDX Broker account owns a feed, and the platform's metered RentCast
+// account is not spent on their behalf from that moment on.
+//
+// ─── WHY ONE MODULE AND NOT THREE CHECKS ────────────────────────────────────
+// The question has exactly three answers and before this file they lived in
+// three different places, or nowhere:
+//
+//   1. is there a platform key at all      → lib/property/rentcast.ts getApiKey
+//   2. does this tenant have IDX connected → NOWHERE. The rule was documentary
+//      (tenancy-matrix.ts, manager-registry.ts, resolve-app-capability.ts all
+//      described it in prose); the only executable precedence in the tree was
+//      lib/property/listing-source.ts, and it encoded the WRONG rule.
+//   3. is the vendor budget exhausted      → lib/avm/provider-chain.ts ONLY.
+//      RentCast was metered on six lanes and capped on one, which is not what
+//      "platform-GATED" means.
+//
+// Splitting them is how they drifted. They are answered here, once, and every
+// RentCast export in lib/property/rentcast.ts asks this before it spends.
+//
+// ─── THE RESULT IS DISCRIMINATED, NEVER A BOOLEAN ───────────────────────────
+// A caller MUST be able to tell "this tenant owns a feed so we deliberately did
+// not call" from "we could not reach the provider". Those are opposite facts
+// about the product and collapsing them into `false` is the exact conflation
+// this codebase keeps paying for. Hence `reason`, and hence every underlying
+// fact (`idx`, `platformKeyPresent`, `budget`) riding along beside it.
+//
+// ─── REASON PRECEDENCE, DECIDED RATHER THAN INCIDENTAL ──────────────────────
+//   tenant_has_idx  →  idx_check_unreadable  →  no_platform_key  →
+//   budget_exhausted  →  eligible
+//
+// The ruling outranks the outage. When a tenant owns an IDX feed AND the
+// platform key happens to be unset, the honest headline is "we would not have
+// called anyway" — the missing key is not why. Nothing is lost by ranking them:
+// `platformKeyPresent` is a pure env read and is therefore ALWAYS accurate on
+// the result regardless of which reason won.
+//
+// ─── FAIL-CLOSED, AND WHAT "CLOSED" MEANS FOR EACH CHECK ────────────────────
+// IDX: closed means DO NOT CALL. If the connection lookup is unreadable we
+// cannot prove the tenant lacks IDX, and calling RentCast in that state spends
+// platform money in possible violation of an explicit owner ruling. Suppressing
+// a call is recoverable — the caller reports the lane is unavailable and the
+// operator retries. Spending against the ruling is not. So an unreadable IDX
+// check is `idx_check_unreadable` / ineligible, and is NEVER silently read as
+// "no IDX connected".
+//
+// BUDGET: closed means the EXISTING repo-wide contract, unchanged. The budget
+// gate is documented and implemented as an ADVISORY cap that FAILS OPEN
+// (lib/vendor-governance/budget-gate.ts) — a ledger read failure must not take
+// customer flows down. This wave's ruling is about IDX, not about inverting the
+// budget contract, and making RentCast the one vendor that hard-stops on a
+// ledger outage would be an invented decision. A fail-open verdict is therefore
+// honoured AND SURFACED: `budget.degraded` says the verdict was fail-open.
+//
+// ─── THE LIMITATION THAT USED TO BE STATED HERE IS CLOSED ───────────────────
+// This header used to record, honestly, that the connection resolver collapsed a
+// REFUSED credential read into the same null it returns for an ABSENT one — so
+// `idx_check_unreadable` could only fire if the resolver THREW, and the resolver
+// never threw. A fail-closed branch that cannot run is a comment.
+//
+// That is fixed at the source. `resolveScopedConnectionResult` (the discriminated
+// sibling of `resolveScopedConnection`, in the same module, over the same cascade)
+// reports `connected` / `not_connected` / `unreadable`, and the cascade now STOPS
+// on an unreadable tier instead of descending into a less-specific owner's
+// credential. This gate consumes that third state directly, so
+// `idx_check_unreadable` is now REACHABLE from a refused read — the ordinary way
+// a credential read fails — and not only from a thrown one.
+//
+// The gate still does not open a second, rival read of the same store: it and
+// `IDXBrokerClient.forBrokerage` MUST resolve IDX through the same resolver, or
+// they can disagree about whether a tenant "has IDX" — and a gate that disagrees
+// with the client it guards is worse than no gate. The discriminated function IS
+// that resolver; the compatibility wrapper the client calls is a one-line
+// projection of it, so the two cannot drift.
+
+// ─── WHY THIS MODULE IS NOT MARKED `server-only`, AND ITS TWO REAL READS ARE
+//     DYNAMIC IMPORTS ───────────────────────────────────────────────────────
+// It sits on exactly the same footing as lib/property/rentcast.ts, the module it
+// guards, which is deliberately NOT a `server-only` module: the platform-gating
+// proof imports those readers directly to establish that a dark vendor lane
+// RESOLVES an honest empty instead of throwing, and a gate that made its own
+// subject unimportable would break that guarantee at the front door. So the two
+// dependencies that ARE `server-only` — the connection resolver and the budget
+// gate — are reached through `await import(...)` at the moment they are needed.
+// This is not an escape hatch from the client/server boundary: the repo's
+// client→server-only guard follows dynamic imports too, so a client module that
+// reached this file would still be caught. It only means the module can be
+// LOADED anywhere while its privileged reads still happen on the server.
+import type { ScopedConnectionResult } from "@/lib/connections/resolve-scoped"
+import type { ConnectionScope } from "@/lib/connections/scope"
+import { resolveVendorAction } from "@/lib/vendor-governance/vendor-policy"
+
+/** The canonical vendor name RentCast is metered and policed under. */
+const RENTCAST_VENDOR = "rentcast"
+
+/** The provider id the tenant's own listing feed is connected under. */
+const IDX_PROVIDER = "idxbroker"
+
+/**
+ * WHO the question is being asked about.
+ *
+ * `brokerageId` is the tenant. `agentUserId` (a USERS.id — never agents.id,
+ * never contacts.id) and `teamId` are the more-specific tiers of the SAME
+ * cascade `IDXBrokerClient.forBrokerage` walks. A caller that holds them must
+ * pass them: an agent who connected their OWN IDX Broker account files that
+ * credential at agent scope, and a gate asked only at brokerage scope cannot
+ * see it. See the handoff note on `resolveTenantIdxConnection` for what that
+ * costs at the call sites that hold only a brokerage id.
+ */
+export interface RentcastEligibilityContext {
+  brokerageId: string
+  agentUserId?: string | null
+  teamId?: string | null
+  /**
+   * WHICH KIND OF RENTCAST READ is being asked about (wave 92, lane 92B). Default
+   * `"sale_listings"` — every caller that predates this field keeps its meaning.
+   *
+   * Owner, verbatim (2026-10-01): "use rentcast as much as possible regarding
+   * property listings, market, comparable, home values and use any other
+   * attributes that are available, also can use it for a simple property lookup.
+   * this is supposed to run for the full platform."
+   *
+   * The earlier ruling ("rentcast is platform owned and should not be used if the
+   * tenant adds their idx broker credentials") is a rule about a SUBSTITUTE: a
+   * tenant's IDX Broker feed replaces RentCast's FOR-SALE listing search. It was
+   * applied to every RentCast endpoint, so an IDX-connected tenant also lost the
+   * things IDX cannot serve at all — closed comparables, the AVM, market
+   * statistics, the assessor property record, rental listings. That is the
+   * per-brokerage gate that "blocks platform use"; it now applies only where a
+   * substitute exists:
+   *   "sale_listings"  — for-sale listing SEARCH a buyer is shown. The tenant's own
+   *                      IDX feed wins (tenant_has_idx / idx_check_unreadable).
+   *   "property_data"  — property records, AVM + comparables, rent comparables /
+   *                      rental listings, market statistics, single-listing status,
+   *                      market-wide listing sweeps (inactive prefilter, active
+   *                      discovery). No IDX substitute exists, so the IDX question
+   *                      is not asked (no credential read is spent on it either).
+   * The platform key and the vendor budget gate apply to BOTH kinds.
+   */
+  readKind?: RentcastReadKind
+}
+
+/** The two kinds of RentCast read (see RentcastEligibilityContext.readKind). */
+export type RentcastReadKind = "sale_listings" | "property_data"
+
+/**
+ * What the IDX-connection check actually found.
+ *
+ * `connected` means an OWNER-SCOPED credential with a usable key — the tenant
+ * added their own. The PLATFORM tier of the cascade is deliberately NOT
+ * connected: a platform-tier hit is the product's own fallback account, not the
+ * tenant's credential, and counting it would suppress RentCast for every tenant
+ * on the system the moment a platform IDX row exists.
+ */
+export type TenantIdxConnection =
+  | { status: "connected"; ownerType: Exclude<ConnectionScope, "platform"> }
+  | { status: "not_connected" }
+  | { status: "unreadable"; detail: string }
+
+/** The vocabulary. Every ineligible answer names WHICH of the three questions
+ *  said no, so "we deliberately did not call" is never confusable with "we could
+ *  not reach the provider". */
+export type RentcastEligibilityReason =
+  | "eligible"
+  | "tenant_has_idx"
+  | "idx_check_unreadable"
+  | "no_platform_key"
+  | "budget_exhausted"
+
+/** Precedence, in order. Exported so a proof can assert the vocabulary exists
+ *  rather than assert a particular spelling appears in a particular branch.
+ *  @proofSeam by its own words above: the gate resolves ONE reason through its discriminated union at runtime; the ordered roster is what scripts/rentcast-eligibility-simulator.ts and scripts/rent-lane-simulator.ts sweep to prove every reason is reachable and the precedence holds. */
+export const RENTCAST_ELIGIBILITY_REASONS: readonly RentcastEligibilityReason[] = [
+  "tenant_has_idx",
+  "idx_check_unreadable",
+  "no_platform_key",
+  "budget_exhausted",
+  "eligible",
+] as const
+
+interface RentcastEligibilityFacts {
+  /** What the IDX check found. Always present — the answer is never inferred
+   *  from `reason` alone. */
+  idx: TenantIdxConnection
+  /** Does the ONE platform RentCast key resolve? A pure env read, so it is
+   *  accurate whichever reason won. */
+  platformKeyPresent: boolean
+  /** `checked` false = the gate stopped before the budget mattered. `degraded`
+   *  true = the budget verdict was FAIL-OPEN (the ledger could not be read), so
+   *  "under budget" is a contract, not an observation. */
+  budget: { checked: boolean; degraded: boolean }
+  /** One plain-language sentence a surface, a note, or a CMA disclaimer can
+   *  show verbatim. */
+  detail: string
+}
+
+/**
+ * The gate's answer. A DISCRIMINATED UNION on `reason` — a caller that wants
+ * "did it run?" reads `eligible`, and a caller that has to explain itself to a
+ * seller, an appraiser or an operator reads `reason` and gets the truth.
+ */
+export type RentcastEligibility =
+  | ({ eligible: true; reason: "eligible" } & RentcastEligibilityFacts)
+  | ({ eligible: false; reason: "tenant_has_idx"; idxOwnerType: Exclude<ConnectionScope, "platform"> } & RentcastEligibilityFacts)
+  | ({ eligible: false; reason: "idx_check_unreadable" } & RentcastEligibilityFacts)
+  | ({ eligible: false; reason: "no_platform_key" } & RentcastEligibilityFacts)
+  | ({ eligible: false; reason: "budget_exhausted" } & RentcastEligibilityFacts)
+
+/**
+ * THE platform RentCast key, read in one named place.
+ *
+ * RentCast is platform-GATED: one platform account serving every tenant. There
+ * is no tenant RentCast key, none is offered (lib/connections/scope.ts keeps
+ * RentCast out of the user-connectable providers on purpose), and nothing here
+ * selects a credential by tenant.
+ */
+function platformRentcastKey(): string | null {
+  return process.env.RENTCAST_API_KEY ?? null
+}
+
+/**
+ * Does THIS TENANT have their own IDX Broker credential connected?
+ *
+ * Resolved through `resolveScopedConnectionResult` — the SAME resolver
+ * `IDXBrokerClient.forBrokerage` uses to pick which IDX credential to call with
+ * (the client calls `resolveScopedConnection`, which is a one-line projection of
+ * this function), so the gate and the client can never disagree about whether a
+ * tenant "has IDX". The discriminated form is used here because this gate is the
+ * one caller whose CORRECTNESS depends on telling "there is no IDX credential"
+ * from "the IDX credential could not be read": the first means spend RentCast,
+ * the second means we cannot prove we are allowed to.
+ *
+ * THREE things make a hit count, and each one is load-bearing:
+ *
+ *   1. A credential resolved at all.
+ *   2. Its `ownerType` is not `platform`. The cascade is agent → team →
+ *      brokerage → platform and the last tier is the PRODUCT'S account, not the
+ *      tenant's. Counting it would suppress RentCast for every tenant on the
+ *      system. (The legacy fallback inside resolveScopedConnection cannot
+ *      produce a platform-tier hit: every legacy store it reads is filtered by
+ *      brokerage_id, so a legacy hit is tenant-owned by construction.)
+ *   3. It carries a non-empty `apiKey`. `forBrokerage` uses `conn?.apiKey ||
+ *      process.env.IDXBROKER_API_KEY` — so a row with no api_key does NOT get
+ *      the tenant served from their own account, and must not count as "the
+ *      tenant added their credentials" either. Matching the client exactly here
+ *      is the whole point of using its resolver.
+ *
+ * HANDOFF, stated where it bites: this answers at the scope the CALLER can
+ * name. A caller holding only a brokerage id cannot see an AGENT-tier IDX
+ * credential, so for that caller an agent-only connection reads as
+ * `not_connected` and RentCast stays eligible. Every call site inside this
+ * slice passes the fullest context it holds; the ones outside it are listed in
+ * the wave report.
+ */
+async function resolveTenantIdxConnection(
+  ctx: RentcastEligibilityContext,
+): Promise<TenantIdxConnection> {
+  let resolved: ScopedConnectionResult
+  try {
+    const { resolveScopedConnectionResult } = await import("@/lib/connections/resolve-scoped")
+    resolved = await resolveScopedConnectionResult(IDX_PROVIDER, {
+      agentUserId: ctx.agentUserId ?? null,
+      teamId: ctx.teamId ?? null,
+      brokerageId: ctx.brokerageId,
+    })
+  } catch (err) {
+    // The module could not even be loaded. Still unreadable; never downgraded to
+    // "not connected".
+    return {
+      status: "unreadable",
+      detail: `the IDX Broker connection could not be resolved for this tenant (${(err as Error)?.message ?? "unknown error"}), so it is not known whether they have their own feed`,
+    }
+  }
+  // THE REACHABLE BRANCH. A refused credential read — the ordinary way a read
+  // fails, which supabase-js RESOLVES rather than throws — now arrives here as
+  // its own state instead of as an indistinguishable null.
+  if (resolved.status === "unreadable") {
+    const where = resolved.ownerType ? `at ${resolved.ownerType} scope` : "in the legacy credential store"
+    return {
+      status: "unreadable",
+      detail: `the IDX Broker connection could not be read ${where} (${resolved.detail}), so it is not known whether this tenant has their own feed`,
+    }
+  }
+  if (resolved.status === "not_connected") return { status: "not_connected" }
+  const conn = resolved.connection
+  if (conn.ownerType === "platform") return { status: "not_connected" }
+  if (!conn.apiKey) return { status: "not_connected" }
+  return { status: "connected", ownerType: conn.ownerType }
+}
+
+/**
+ * Is the tenant over its monthly vendor budget for RentCast?
+ *
+ * The exact expression lib/avm/provider-chain.ts has always used, lifted here
+ * so the AVM cascade and this gate cannot drift into two different budget
+ * verdicts. `resolveVendorAction("rentcast", overBudget)` returns "degrade" over
+ * budget (RentCast has a free alternative — the Perplexity/OSINT AVM tier), and
+ * anything other than "allow" means this vendor does not get called.
+ *
+ * Exported because the AVM cascade needs the BUDGET half on its own: over budget
+ * it must skip BatchData and ZenRows too, and the eligibility gate may have
+ * stopped before the budget was ever reached.
+ */
+export async function rentcastBudgetBlocked(
+  brokerageId: string,
+): Promise<{ blocked: boolean; degraded: boolean }> {
+  const { checkVendorBudget } = await import("@/lib/vendor-governance/budget-gate")
+  const budget = await checkVendorBudget({ brokerageId })
+  return {
+    blocked: resolveVendorAction(RENTCAST_VENDOR, !budget.allowed) !== "allow",
+    degraded: budget.degraded === true,
+  }
+}
+
+/**
+ * Tenants already told their RentCast lane is closed, keyed by tenant AND
+ * reason — so a lane that goes dark is reported once per instance instead of on
+ * every call, and a lane whose reason CHANGES is reported again.
+ */
+const suppressionReported = new Set<string>()
+
+function reportOnce(brokerageId: string, reason: RentcastEligibilityReason, detail: string): void {
+  const key = `${brokerageId}:${reason}`
+  if (suppressionReported.has(key)) return
+  suppressionReported.add(key)
+  console.warn(`[rentcast] not called for brokerage ${brokerageId} — ${reason}: ${detail}`)
+}
+
+/**
+ * SHOULD RENTCAST RUN AT ALL FOR THIS TENANT, RIGHT NOW?
+ *
+ * Checks run in precedence order and short-circuit, so the cheapest honest
+ * answer costs one credential read and no budget read. The IDX check goes FIRST
+ * even though the platform-key check is free, because the ruling outranks the
+ * outage and because every caller in the property lane needs the IDX fact
+ * whether or not RentCast is available — routing them through one call keeps
+ * them from opening a second, rival IDX lookup.
+ *
+ * Never throws. Every RentCast reader below it returns an honest empty, so a
+ * closed gate falls through the AVM cascade to the next provider rather than
+ * taking a valuation down.
+ */
+export async function resolveRentcastEligibility(
+  ctx: RentcastEligibilityContext,
+): Promise<RentcastEligibility> {
+  const platformKeyPresent = !!platformRentcastKey()
+  // Wave 92 (lane 92B): the IDX substitute question is asked ONLY for a for-sale
+  // listing search — a property-data read has no IDX substitute (readKind header).
+  const idx: TenantIdxConnection = (ctx.readKind ?? "sale_listings") === "sale_listings"
+    ? await resolveTenantIdxConnection(ctx)
+    : { status: "not_connected" }
+  const budgetUnchecked = { checked: false, degraded: false }
+
+  if (idx.status === "connected") {
+    const detail =
+      `RentCast was not called: this tenant has connected their own IDX Broker credentials at ${idx.ownerType} scope, and RentCast is the platform's provider for tenants who have not. This is a deliberate decision, not a provider failure.`
+    reportOnce(ctx.brokerageId, "tenant_has_idx", detail)
+    return {
+      eligible: false,
+      reason: "tenant_has_idx",
+      idxOwnerType: idx.ownerType,
+      idx,
+      platformKeyPresent,
+      budget: budgetUnchecked,
+      detail,
+    }
+  }
+
+  if (idx.status === "unreadable") {
+    const detail =
+      `RentCast was not called: ${idx.detail}. The gate fails CLOSED here on purpose — a tenant who owns an IDX feed must not be billed for RentCast, and an unprovable answer is not permission to spend.`
+    reportOnce(ctx.brokerageId, "idx_check_unreadable", detail)
+    return {
+      eligible: false,
+      reason: "idx_check_unreadable",
+      idx,
+      platformKeyPresent,
+      budget: budgetUnchecked,
+      detail,
+    }
+  }
+
+  if (!platformKeyPresent) {
+    const detail =
+      "RentCast was not called: the platform RentCast key is not configured, so the RentCast lane is dark for every tenant. RentCast is platform-gated — there is no tenant credential that could substitute for it."
+    reportOnce(ctx.brokerageId, "no_platform_key", detail)
+    return {
+      eligible: false,
+      reason: "no_platform_key",
+      idx,
+      platformKeyPresent,
+      budget: budgetUnchecked,
+      detail,
+    }
+  }
+
+  // The budget half keeps the budget gate's OWN documented contract: advisory
+  // cap, FAILS OPEN. `checkVendorBudget` already returns `degraded: true` rather
+  // than throwing on a ledger read error; this catch covers the module-load path
+  // and lands in the same place, so a broken budget system degrades the VERDICT
+  // rather than the product — and says it degraded.
+  const budget = await rentcastBudgetBlocked(ctx.brokerageId).catch(() => ({ blocked: false, degraded: true }))
+  if (budget.blocked) {
+    const detail =
+      "RentCast was not called: this brokerage is over its monthly vendor budget, so the paid property-data tier is paused for the rest of the billing month. The free valuation tiers still run."
+    reportOnce(ctx.brokerageId, "budget_exhausted", detail)
+    return {
+      eligible: false,
+      reason: "budget_exhausted",
+      idx,
+      platformKeyPresent,
+      budget: { checked: true, degraded: budget.degraded },
+      detail,
+    }
+  }
+
+  return {
+    eligible: true,
+    reason: "eligible",
+    idx,
+    platformKeyPresent,
+    budget: { checked: true, degraded: budget.degraded },
+    detail: budget.degraded
+      ? "RentCast is eligible for this tenant: no tenant IDX Broker connection, the platform key resolves, and the vendor budget verdict was FAIL-OPEN (the spend ledger could not be read) rather than measured."
+      : "RentCast is eligible for this tenant: no tenant IDX Broker connection, the platform key resolves, and the tenant is within its monthly vendor budget.",
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// THE PLATFORM'S OWN RENTCAST HARD CUTOFF (wave 156, lane 156G).
+//
+// RentCast, verbatim (developers.rentcast.io/reference/billing-and-pricing, read 2026-11-25): "We do not currently support
+// hard usage caps or automatic API request blocking when you reach your current plan's monthly request limit. If you
+// require this functionality, we recommend implementing usage monitoring and API request blocking in your own application
+// code" — and "you will be charged an overage fee for each additional request". The per-TENANT vendor budget above is an
+// ADVISORY cap that fails open by contract; nothing stopped the ONE platform account from running into paid overage. This
+// is that stop: a PLATFORM-WIDE monthly request ceiling asked immediately before every real RentCast egress (the REST door
+// in lib/property/rentcast.ts and the MCP tool door in lib/external/rentcast-ai-tools.ts). A cache hit makes no request
+// and is never counted or refused.
+//
+// THE CEILING — no invented number: `platform_settings.provider_request_caps.rentcast.monthly_requests` when the owner set
+// it (m1019); otherwise the requests INCLUDED in the plan this repo already prices RentCast at (RENTCAST_USD_PER_REQUEST
+// $0.074 = Foundation $74 / 1,000 — lib/property/rentcast.ts), i.e. ZERO paid overage until the owner authorizes some.
+// An unreadable setting or an unreadable ledger REFUSES (CLAUDE.md §4 — "nobody checked" never reads as "under the cap").
+//
+// COUNTED: successful requests only (RentCast bills "an HTTP request … that returns a 200 status code and a response body";
+// "you will also not be billed for requests that return an error"), read from the ONE cost ledger (vendor_usage_tracking,
+// vendor 'rentcast', units_used — meterCall books a success only, wave 156) for the BILLING WINDOW (rentcastBillingWindow:
+// the calendar month in UTC, or — round 2 — the period starting on the owner's billing_anchor_day, RentCast's own period
+// anchored to the plan's activation day), plus the requests THIS instance reserved since that read. The connector-health
+// probe's RentCast /markets call (lib/agentic-os/connector-probe.ts) reserves and books through the same counter (round 2).
+// BLIND SPOT (published, not hidden): ledger rows are written fire-and-forget, so two serverless instances can each
+// overshoot by the requests in flight between ledger reads (LEDGER_TTL_MS).
+// ═════════════════════════════════════════════════════════════════════════════
+
+/** Requests included in the plan RENTCAST_USD_PER_REQUEST is derived from (Foundation: $74 / 1,000 — rentcast.ts). */
+export const RENTCAST_PLAN_INCLUDED_REQUESTS = 1000
+
+export interface RentcastPlatformCapVerdict {
+  allowed: boolean
+  /** The ceiling in force and where it came from. null = the ceiling could not be read (refused). */
+  cap: number | null
+  capSource: "owner_setting" | "plan_included_requests" | "unreadable"
+  /** Successful requests counted this month (ledger + this instance's reservations). null = the ledger could not be read. */
+  used: number | null
+  reason: string
+}
+
+/**
+ * PURE — the cutoff decision. Refuses on a missing cap or an unreadable count (fail closed); otherwise one more request is
+ * allowed only while `used < cap`.
+ * @proofSeam scripts/wave156-g-provider-economics-guard.ts drives every branch directly and through the REST/MCP doors
+ */
+export function decideRentcastPlatformCap(input: { cap: number | null; capSource: RentcastPlatformCapVerdict["capSource"]; used: number | null }): RentcastPlatformCapVerdict {
+  const { cap, capSource, used } = input
+  if (cap === null || !Number.isFinite(cap) || cap < 0) return { allowed: false, cap: null, capSource: "unreadable", used, reason: "RentCast platform request ceiling could not be read — no request is made until it can (fail closed)" }
+  if (used === null || !Number.isFinite(used)) return { allowed: false, cap, capSource, used: null, reason: "RentCast request ledger could not be read — no request is made until the month's count is known (fail closed)" }
+  if (used >= cap) {
+    return { allowed: false, cap, capSource, used, reason: `RentCast platform hard cutoff reached: ${used} of ${cap} requests this month (${capSource === "owner_setting" ? "the owner's ceiling" : "the plan's included requests — no paid overage is authorized"}); RentCast itself has no cap, so the platform stops here` }
+  }
+  return { allowed: true, cap, capSource, used, reason: `${used} of ${cap} RentCast requests used this month` }
+}
+
+const RENTCAST_CAP_ABSENT_COLUMN = new Set(["42703", "PGRST204"])
+const LEDGER_TTL_MS = 30_000
+
+// ─── the owner's setting (m1019 provider_request_caps.rentcast) — round 2: optional billing anchor day ─────────────────
+
+/** The owner's RentCast ceiling as stored. Both fields nullable: null monthly_requests = the plan's included requests;
+ *  null billing_anchor_day = the calendar month in UTC. */
+export interface RentcastRequestCapSetting {
+  monthly_requests: number | null
+  /** The day of the month the RentCast plan was activated (1–31) — RentCast's billing period starts on it. */
+  billing_anchor_day: number | null
+  set_by: string | null
+  set_at: string | null
+}
+
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v)
+
+/** PURE — the stored jsonb → the setting (anything malformed reads as not set, never as a number). */
+function parseRentcastCapSetting(raw: unknown): RentcastRequestCapSetting | null {
+  const r = isObj(raw) && isObj(raw.rentcast) ? raw.rentcast : null
+  if (!r) return null
+  const int = (v: unknown, lo: number, hi: number) => (typeof v === "number" && Number.isInteger(v) && v >= lo && v <= hi ? v : null)
+  return { monthly_requests: int(r.monthly_requests, 0, 100_000_000), billing_anchor_day: int(r.billing_anchor_day, 1, 31), set_by: typeof r.set_by === "string" ? r.set_by : null, set_at: typeof r.set_at === "string" ? r.set_at : null }
+}
+
+/**
+ * PURE — a platform-staff edit → the stored setting. monthly_requests: a POSITIVE integer, or explicit null (back to the
+ * plan's included requests); billing_anchor_day: an integer 1–31, or explicit null (calendar month). Absent / blank = keep the
+ * current value. Anything else is an error — never clamped, never rounded.
+ * @proofSeam scripts/wave156-g-provider-economics-guard.ts §I drives the bounds
+ */
+export function validateRentcastCapEdit(input: Record<string, unknown>, current: RentcastRequestCapSetting | null, actor: { userId: string; now?: Date }): { ok: true; value: RentcastRequestCapSetting } | { ok: false; errors: string[] } {
+  const errors: string[] = []
+  const value: RentcastRequestCapSetting = { monthly_requests: current?.monthly_requests ?? null, billing_anchor_day: current?.billing_anchor_day ?? null, set_by: actor.userId, set_at: (actor.now ?? new Date()).toISOString() }
+  const field = (k: "monthly_requests" | "billing_anchor_day", lo: number, hi: number, label: string) => {
+    if (!(k in input)) return
+    const raw = input[k]
+    if (raw === null) { value[k] = null; return }
+    if (raw === undefined || String(raw).trim() === "") return
+    const s = String(raw).trim()
+    const n = Number(s)
+    if (!/^\d+$/.test(s) || !Number.isInteger(n) || n < lo || n > hi) { errors.push(label); return }
+    value[k] = n
+  }
+  field("monthly_requests", 1, 100_000_000, "monthly requests: a positive whole number (1 or more), or null for the plan's included requests")
+  field("billing_anchor_day", 1, 31, "billing anchor day: a whole number from 1 to 31, or null for the calendar month")
+  return errors.length ? { ok: false, errors } : { ok: true, value }
+}
+
+/**
+ * PURE — the counted window [start, end) for `now`. No anchor → the calendar month in UTC. An anchor day d → the period
+ * that starts on day d of a month at 00:00 UTC; in a month SHORTER than d the period starts on that month's LAST day (an
+ * anchor of 31 starts on Feb 28 / 29, Apr 30, …). The end is the next period's start.
+ * @proofSeam scripts/wave156-g-provider-economics-guard.ts §J drives days 29–31 across short months and leap years
+ */
+export function rentcastBillingWindow(now: Date, anchorDay: number | null): { start: Date; end: Date } {
+  const y = now.getUTCFullYear(), m = now.getUTCMonth()
+  if (anchorDay === null || !Number.isInteger(anchorDay) || anchorDay < 1 || anchorDay > 31) {
+    return { start: new Date(Date.UTC(y, m, 1)), end: new Date(Date.UTC(y, m + 1, 1)) }
+  }
+  const startIn = (yy: number, mm: number) => {
+    const dim = new Date(Date.UTC(yy, mm + 1, 0)).getUTCDate()
+    return new Date(Date.UTC(yy, mm, Math.min(anchorDay, dim)))
+  }
+  const thisStart = startIn(y, m)
+  if (now.getTime() >= thisStart.getTime()) return { start: thisStart, end: startIn(y, m + 1) }
+  return { start: startIn(y, m - 1), end: thisStart }
+}
+
+type CapSvc = { from: (table: string) => any }
+
+/** Read the owner's setting. applied:false = m1019 not live (the column is absent) — reported, never an error. */
+export async function loadRentcastRequestCap(svc: CapSvc): Promise<{ ok: true; applied: boolean; setting: RentcastRequestCapSetting | null; raw: Record<string, unknown> | null } | { ok: false; error: string }> {
+  try {
+    const s = await svc.from("platform_settings").select("provider_request_caps").eq("id", true).maybeSingle()
+    if (s.error) {
+      if (RENTCAST_CAP_ABSENT_COLUMN.has(String(s.error.code ?? ""))) return { ok: true, applied: false, setting: null, raw: null }
+      return { ok: false, error: `provider request caps unreadable: ${s.error.message ?? s.error.code}` }
+    }
+    const raw = (s.data as { provider_request_caps?: unknown } | null)?.provider_request_caps
+    return { ok: true, applied: true, setting: parseRentcastCapSetting(raw), raw: isObj(raw) ? raw : null }
+  } catch (e) {
+    return { ok: false, error: `provider request caps unreadable: ${e instanceof Error ? e.message : String(e)}` }
+  }
+}
+
+/**
+ * Write the owner's RentCast ceiling on the singleton (the caller is platform-staff-gated, audited and receipted). Other
+ * providers' entries in the jsonb are kept. `.select()`-counted (CLAUDE.md §3). Resets this instance's counter so the
+ * cutoff reads the new value on its next request.
+ */
+export async function setRentcastRequestCap(svc: CapSvc, input: Record<string, unknown>, actor: { userId: string; now?: Date }): Promise<{ ok: true; before: RentcastRequestCapSetting | null; after: RentcastRequestCapSetting } | { ok: false; error: string }> {
+  const cur = await loadRentcastRequestCap(svc)
+  if (!cur.ok) return { ok: false, error: cur.error }
+  if (!cur.applied) return { ok: false, error: "The provider request caps setting is not available yet (migration m1019 is not applied) — nothing written; the cutoff uses the plan's included requests." }
+  const v = validateRentcastCapEdit(input, cur.setting, actor)
+  if (!v.ok) return { ok: false, error: v.errors.join("; ") }
+  const next = { ...(cur.raw ?? {}), rentcast: v.value }
+  const { data: moved, error } = await svc.from("platform_settings").update({ provider_request_caps: next, updated_at: new Date().toISOString() }).eq("id", true).select("id")
+  if (error) return { ok: false, error: `RentCast ceiling NOT saved: ${error.message}` }
+  if (!Array.isArray(moved) || moved.length !== 1) return { ok: false, error: "RentCast ceiling NOT saved: the update matched no platform_settings row." }
+  resetRentcastPlatformCapState()
+  return { ok: true, before: cur.setting, after: v.value }
+}
+
+/** In-process state: the last read (ceiling + window + ledger count) and the reservations made since it. */
+const capState: { windowStart: string; windowEnd: number; ledgerUsed: number | null; cap: number | null; capSource: RentcastPlatformCapVerdict["capSource"]; readAt: number; reserved: number } = {
+  windowStart: "", windowEnd: 0, ledgerUsed: null, cap: null, capSource: "unreadable", readAt: 0, reserved: 0,
+}
+
+/** @proofSeam scripts/wave156-g-provider-economics-guard.ts resets the in-process counter between driven scenarios */
+export function resetRentcastPlatformCapState(): void {
+  capState.windowStart = ""; capState.windowEnd = 0; capState.ledgerUsed = null; capState.cap = null; capState.capSource = "unreadable"; capState.readAt = 0; capState.reserved = 0
+}
+
+async function readRentcastCapAndLedger(svc: CapSvc, now: Date): Promise<{ cap: number | null; capSource: RentcastPlatformCapVerdict["capSource"]; used: number | null; window: { start: Date; end: Date } }> {
+  const setting = await loadRentcastRequestCap(svc)
+  let cap: number | null = null
+  let capSource: RentcastPlatformCapVerdict["capSource"] = "unreadable"
+  let anchor: number | null = null
+  if (setting.ok) {
+    anchor = setting.setting?.billing_anchor_day ?? null
+    if (setting.setting?.monthly_requests != null) { cap = setting.setting.monthly_requests; capSource = "owner_setting" }
+    else { cap = RENTCAST_PLAN_INCLUDED_REQUESTS; capSource = "plan_included_requests" }
+  }
+  const window = rentcastBillingWindow(now, anchor)
+  const l = await svc.from("vendor_usage_tracking").select("units_used").eq("vendor_name", "rentcast").gte("created_at", window.start.toISOString()).limit(200000)
+  const used = l.error ? null : ((l.data ?? []) as Array<{ units_used: number | null }>).reduce((a, r) => a + (Number(r.units_used) || 0), 0)
+  return { cap, capSource, used: used === null ? null : Math.round(used * 1000) / 1000, window }
+}
+
+/**
+ * RESERVE one RentCast request against the platform cutoff, immediately before the egress. On `allowed`, the caller MUST
+ * `settle(ok)` once the vendor answered: a failed request is not billed by RentCast and its reservation is released.
+ * Never throws (an exception refuses). Callers: lib/property/rentcast.ts (REST), lib/external/rentcast-ai-tools.ts (MCP),
+ * lib/agentic-os/connector-probe.ts (the billed /markets health probe).
+ */
+export async function reserveRentcastPlatformRequest(opts: { svc?: CapSvc; now?: Date } = {}): Promise<
+  | { allowed: true; verdict: RentcastPlatformCapVerdict; settle: (ok: boolean) => void }
+  | { allowed: false; verdict: RentcastPlatformCapVerdict }
+> {
+  try {
+    const now = opts.now ?? new Date()
+    if (capState.ledgerUsed === null || now.getTime() >= capState.windowEnd || now.getTime() - capState.readAt > LEDGER_TTL_MS) {
+      const svc = opts.svc ?? ((await import("@/lib/supabase/service")).createServiceClient() as unknown as CapSvc)
+      const r = await readRentcastCapAndLedger(svc, now)
+      capState.windowStart = r.window.start.toISOString(); capState.windowEnd = r.window.end.getTime()
+      capState.cap = r.cap; capState.capSource = r.capSource; capState.ledgerUsed = r.used; capState.readAt = now.getTime(); capState.reserved = 0
+    }
+    const verdict = decideRentcastPlatformCap({ cap: capState.cap, capSource: capState.capSource, used: capState.ledgerUsed === null ? null : capState.ledgerUsed + capState.reserved })
+    if (!verdict.allowed) return { allowed: false, verdict }
+    capState.reserved++
+    let settled = false
+    return { allowed: true, verdict, settle: (ok: boolean) => { if (settled) return; settled = true; if (!ok) capState.reserved = Math.max(0, capState.reserved - 1) } }
+  } catch (e) {
+    return { allowed: false, verdict: { allowed: false, cap: null, capSource: "unreadable", used: null, reason: `RentCast cutoff could not be evaluated (${e instanceof Error ? e.message : String(e)}) — refused` } }
+  }
+}
+
+/** The live cutoff status for the platform console — the SAME read the cutoff makes, without reserving a request. */
+export async function rentcastCapStatus(svc: CapSvc, now: Date = new Date()): Promise<{ verdict: RentcastPlatformCapVerdict; windowStart: string; windowEnd: string }> {
+  const r = await readRentcastCapAndLedger(svc, now)
+  return { verdict: decideRentcastPlatformCap({ cap: r.cap, capSource: r.capSource, used: r.used }), windowStart: r.window.start.toISOString(), windowEnd: r.window.end.toISOString() }
+}

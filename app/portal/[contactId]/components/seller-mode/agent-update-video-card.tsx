@@ -1,10 +1,18 @@
 "use client"
 
+import { useState } from "react"
 import Link from "next/link"
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
 import { Button } from "@/app/components/ui/button"
 import { Badge } from "@/app/components/ui/badge"
 import { Video, MessageSquare, Play, ArrowRight, Clock } from "lucide-react"
+// THE ONE portal player (RecentUpdatesFeed renders agent clips through it too) — the play
+// overlay below used to be a `cursor-pointer` div with NO handler: a seller tapped Play on
+// their own portal and nothing happened (wave 141, lane 141I ui-wiring census). It now
+// swaps the thumbnail for the same player the deal feed uses. videoProjectId is null here
+// because seller_updates carries no ai_video_projects id — playback proceeds untracked
+// rather than fabricating an id (CardVideoPlayer's own rule).
+import { CardVideoPlayer } from "../CardVideoPlayer"
 
 interface AgentUpdateVideoCardProps {
   contactId: string
@@ -13,7 +21,10 @@ interface AgentUpdateVideoCardProps {
     title: string
     videoUrl?: string | null
     thumbnailUrl?: string | null
-    createdAt: string
+    // Nullable because seller_updates.created_at is: the badge below renders
+    // NOTHING rather than `new Date(null)`, which prints "Invalid Date" to a
+    // client on their own portal.
+    createdAt: string | null
     summary?: string | null
   } | null
   agentName?: string | null
@@ -21,6 +32,7 @@ interface AgentUpdateVideoCardProps {
 
 export function AgentUpdateVideoCard({ contactId, latestUpdate, agentName }: AgentUpdateVideoCardProps) {
   const hasVideo = latestUpdate?.videoUrl
+  const [playing, setPlaying] = useState(false)
 
   return (
     <Card>
@@ -30,7 +42,7 @@ export function AgentUpdateVideoCard({ contactId, latestUpdate, agentName }: Age
             <Video className="h-4 w-4" />
             Agent Updates
           </CardTitle>
-          {latestUpdate && (
+          {latestUpdate?.createdAt && (
             <Badge variant="outline" className="text-xs">
               <Clock className="h-3 w-3 mr-1" />
               {new Date(latestUpdate.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
@@ -42,7 +54,15 @@ export function AgentUpdateVideoCard({ contactId, latestUpdate, agentName }: Age
         {latestUpdate ? (
           <>
             {/* Video Thumbnail or Placeholder */}
-            {hasVideo ? (
+            {hasVideo && playing ? (
+              <CardVideoPlayer
+                contactId={contactId}
+                videoProjectId={null}
+                url={latestUpdate.videoUrl as string}
+                poster={latestUpdate.thumbnailUrl ?? undefined}
+                caption={latestUpdate.title}
+              />
+            ) : hasVideo ? (
               <div className="relative aspect-video rounded-lg overflow-hidden bg-slate-900">
                 {latestUpdate.thumbnailUrl ? (
                   <img
@@ -55,11 +75,16 @@ export function AgentUpdateVideoCard({ contactId, latestUpdate, agentName }: Age
                     <Video className="h-12 w-12 text-white/50" />
                   </div>
                 )}
-                <div className="absolute inset-0 flex items-center justify-center bg-black/20 hover:bg-black/30 transition-colors cursor-pointer">
-                  <div className="w-14 h-14 rounded-full bg-white/90 flex items-center justify-center shadow-lg">
+                <button
+                  type="button"
+                  aria-label={`Play update video: ${latestUpdate.title}`}
+                  onClick={() => setPlaying(true)}
+                  className="absolute inset-0 flex items-center justify-center bg-black/20 hover:bg-black/30 focus-visible:bg-black/30 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-white/80"
+                >
+                  <span className="w-14 h-14 rounded-full bg-white/90 flex items-center justify-center shadow-lg">
                     <Play className="h-6 w-6 text-blue-600 ml-1" />
-                  </div>
-                </div>
+                  </span>
+                </button>
               </div>
             ) : (
               <div className="p-4 rounded-lg bg-muted/50 border">

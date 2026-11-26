@@ -20,7 +20,7 @@ import "server-only"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { resolveProvider } from "@/lib/kernel/providers"
 
-export type VideoProvider = "did" | "heygen" | "upload"
+export type VideoProvider = "did" | "upload"
 
 export interface ResolveProviderInput {
   brokerageId: string

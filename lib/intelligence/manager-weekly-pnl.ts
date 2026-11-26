@@ -15,6 +15,7 @@
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { MANAGERS, type ManagerKey } from '@/lib/kernel/manager-registry'
+import { usd } from '@/lib/format/money'
 
 export interface ManagerWeeklyMetric {
   label: string
@@ -142,7 +143,7 @@ export async function generateManagerWeeklyPnl(brokerageId: string): Promise<Man
     countWindow(supabase, 'agent_client_messages', 'sent_at', brokerageId, priorFrom, priorTo, { eq: { status: 'sent' } }),
   ])
 
-  const usd = (n: number) => `$${Math.round(n).toLocaleString()}`
+  // TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd
   // BUS ANALYTICS — managers talking, counted: signals CONSUMED by each manager (handoffs
   // they acted on) this week vs prior. Shows the broker which manager handoffs are
   // producing. One grouped pull per window.

@@ -9,9 +9,16 @@
 // Mirrors the codebase pattern: an AI smart-path with a deterministic fallback that is the floor a
 // regression can pin. This module is pure (imports only parseOrdinal + the pure spoken-value
 // resolvers) so it unit-tests with no DB/AI.
+//
+// WAVE 148 (148Z): ONE CALLER — the one intent interface. `interpretIntent` (lib/voice-admin/intent-interface.ts,
+// teamCommandFloor) asks this floor when no DOMAIN capability owns the sentence and returns the pick as
+// `interpretation.teamCommand`; the Command Center bar (app/actions/command-center.ts) and the spoken admin's
+// run_team_command (app/api/agent-assistant/tool-call/route.ts) read it from there and no longer call this module
+// (tombstones at both). scripts/intent-interface-guard.ts 5q holds the single-caller rule.
 
 import { parseOrdinal } from "@/lib/kernel/standup-action"
 import { parseSpokenPrice } from "@/lib/voice/spoken-values"
+import { matchManagerInText, skillNameFromSpeech } from "@/lib/voice-admin/assistant-reach"
 
 export type ParsedTeamCommand = { name: string; params: Record<string, unknown> }
 
@@ -207,6 +214,27 @@ export function parseTeamCommandText(raw: string): ParsedTeamCommand | null {
     const m = text.match(/\blead\s+(?:for|from|named)\s+(.+)$/i) ?? text.match(/\b(?:convert|promote)\s+(.+?)(?:'s)?\s+lead\b/i)
     const nm = m ? cleanEntity(m[1]) : ""
     return { name: "convert_lead", params: nm && !["the", "a", "new"].includes(nm.toLowerCase()) ? { name_query: nm } : {} }
+  }
+
+  // 1b. Wave 138E — the whole team, 24/7 (lib/voice-admin/assistant-reach.ts). Explicit prefixes only.
+  //   broker_objective — "objective: grow listings 10% in Riverside" (the Missions card's own parser judges it).
+  {
+    const m = text.match(/^(?:hey team,?\s*)?(?:new |set (?:an? |the )?)?(?:brokerage )?(?:objective|goal)\s*[:\-–]\s*(.{8,})$/i)
+    if (m) return { name: "broker_objective", params: { text: m[1].trim() } }
+  }
+  //   run_skill — "run skill anniversary note and gift for the Hendersons' anniversary".
+  {
+    const m = text.match(/^(?:hey team,?\s*)?run (?:the )?skill\s+(.+?)(?:\s+(?:for|to|because)\s+(.+))?$/i)
+    if (m) { const skill = skillNameFromSpeech(m[1]); if (skill) return { name: "run_skill", params: { skill, ...(m[2] ? { objective: cleanEntity(m[2]) } : {}) } } }
+  }
+  //   manager_status — "what is the ads manager working on", "why did the ISA do that", "team status".
+  {
+    // ("status of …" stays team_query's — a person or a property, never a manager.)
+    if (/\b(what(?:'s| is| are)\b.*\b(working on|doing|up to)\b|why did\b)/.test(t) || /^(?:hey team,?\s*)?team status\b/.test(t)) {
+      const manager = matchManagerInText(t)
+      if (manager) return { name: "manager_status", params: { manager } }
+      if (/\b(the team|everyone|my team|whole team|team status)\b/.test(t) && /\b(working on|doing|up to|status)\b/.test(t)) return { name: "manager_status", params: {} }
+    }
   }
 
   // 2. morning_standup — "what should I do today", "what's on my plate", "stand-up", "top 3".

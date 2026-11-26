@@ -1,8 +1,0 @@
-export { OnboardingCommandStrip } from "./onboarding-command-strip"
-export { AdoptionRadar } from "./adoption-radar"
-export { SetupBlockersPanel } from "./setup-blockers-panel"
-export { TrainingProgressPanel } from "./training-progress-panel"
-export { ProviderReadinessPanel } from "./provider-readiness-panel"
-export { OnboardingActionStack } from "./onboarding-action-stack"
-export { AdoptionHealthPanel } from "./adoption-health-panel"
-export { OnboardingBatchActionsPanel } from "./onboarding-batch-actions-panel"

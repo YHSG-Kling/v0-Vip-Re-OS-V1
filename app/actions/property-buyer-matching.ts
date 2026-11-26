@@ -10,21 +10,29 @@
  * - NO schema modifications
  * - Scores are runtime-only, never persisted
  * - Internal use only (agent/broker/team leader)
+ *
+ * "Internal use only" was documented here but never ENFORCED. Every export in a
+ * 'use server' file is a public HTTP endpoint, and all three ran on the
+ * RLS-bypassing service client with no auth gate and no brokerage predicate —
+ * so the matcher read the contacts table across every tenant and handed back
+ * buyer names. Each entry point now resolves the caller's brokerage from the
+ * session and scopes every read to it; that is what makes the constraint above
+ * true rather than aspirational.
  */
 
 import { createServiceClient } from '@/lib/supabase/service'
+import { getAgentContext } from '@/lib/identity'
 import { isValidUUID } from '@/lib/validations'
 import { handleError } from '@/lib/errors'
-import {
-  scoreBuyerForListing,
-  rankBuyersForListing,
-  filterViableBuyers,
-  logBuyerMatchSignal,
-  logBatchMatchSignals,
-  type BuyerProfile,
-  type ListingProfile,
-  type MatchScore,
-} from '@/lib/property-matching'
+import { scoreBuyerForListing, rankBuyersForListing, filterViableBuyers, type BuyerProfile, type ListingProfile } from '@/lib/property-matching/match-scorer'
+import { logBuyerMatchSignal, logBatchMatchSignals } from '@/lib/property-matching/match-logger'
+
+
+
+
+
+
+
 
 /**
  * Run smart matching for a listing
@@ -44,6 +52,11 @@ export async function matchBuyersForListing(params: {
     return { success: false, error: 'Invalid listing ID' }
   }
 
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: 'Not authenticated' }
+  }
+
   try {
     const supabase = createServiceClient()
 
@@ -54,6 +67,7 @@ export async function matchBuyersForListing(params: {
       .from('listings')
       .select('id, price:list_price, bedrooms, bathrooms, square_feet:sqft, property_type, city, state, zip, status, created_at')
       .eq('id', listingId)
+      .eq('brokerage_id', ctx.brokerageId)
       .single()
 
     if (listingError || !listing) {
@@ -65,13 +79,21 @@ export async function matchBuyersForListing(params: {
     }
 
     // 2. Fetch eligible buyer contacts
-    // Filter: type = buyer or lead, status active/qualified
+    // Filter: type = buyer or lead, status active/qualified, THIS brokerage only.
+    //
+    // The soft-delete filter was inverted. `.not('deleted_at', 'is', null)`
+    // compiles to `deleted_at IS NOT NULL` — it selected ONLY soft-deleted
+    // contacts, the exact opposite of the intent. Verified against the live DB:
+    // 4 contacts, 0 of them soft-deleted, so this read matched zero rows and the
+    // whole match engine answered "No eligible buyers found" every single time.
+    // `.is('deleted_at', null)` is the filter that was meant.
     const { data: contacts, error: contactsError } = await supabase
       .from('contacts')
       .select('id, first_name, last_name, notes, created_at, contact_type, status')
-      .in('contact_type', ['buyer', 'lead'])
+      .eq('brokerage_id', ctx.brokerageId)
+      .in('contact_type', ['buyer', 'both']) // buyer-side intent (lib/contact-types.ts BUYER_SIDE_CONTACT_TYPES); 'lead' is not a contact type (owner ruling 3, wave 149A)
       .in('status', ['active', 'qualified', 'nurture'])
-      .not('deleted_at', 'is', null)
+      .is('deleted_at', null)
       .order('created_at', { ascending: false })
       .limit(500) // Cap at 500 buyers for performance
 
@@ -123,7 +145,9 @@ export async function matchBuyersForListing(params: {
 
     // 6. Log signals to activities (optional)
     if (logSignals && topMatches.length > 0) {
-      await logBatchMatchSignals(listingId, topMatches)
+      // WAVE 155 (lane 155R19): the signal rows leave ONE receipt (session user, SESSION tenant) — only when they are written.
+      const { ledgerSessionAction } = await import('@/lib/kernel/action-ledger')
+      await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: 'listing.buyer_match_signal.record_batch', actor: { type: 'user', userId: ctx.userId, agentId: ctx.agentId ?? null }, subject: { type: 'listing', id: listingId }, riskClass: 'LOW_RISK_WRITE', reasonCode: 'HUMAN_REQUESTED', detail: { count: topMatches.length } }, async () => logBatchMatchSignals(listingId, topMatches, { brokerageId: ctx.brokerageId ?? "", agentId: ctx.agentId ?? null }))
     }
 
     return {
@@ -165,6 +189,11 @@ export async function scoreSingleBuyerForListing(params: {
     return { success: false, error: 'Invalid listing or contact ID' }
   }
 
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: 'Not authenticated' }
+  }
+
   try {
     const supabase = createServiceClient()
 
@@ -175,17 +204,21 @@ export async function scoreSingleBuyerForListing(params: {
       .from('listings')
       .select('id, price:list_price, bedrooms, bathrooms, square_feet:sqft, property_type, city, state, zip, status, created_at')
       .eq('id', listingId)
+      .eq('brokerage_id', ctx.brokerageId)
       .single()
 
     if (listingError || !listing) {
       return { success: false, error: 'Listing not found' }
     }
 
-    // Fetch buyer contact
+    // Fetch buyer contact — same brokerage as the caller and the listing. Both
+    // ids arrive from the caller, so without this predicate a pair of uuids read
+    // any tenant's contact record (name + freeform notes) back out.
     const { data: contact, error: contactError } = await supabase
       .from('contacts')
       .select('id, first_name, last_name, notes, created_at')
       .eq('id', contactId)
+      .eq('brokerage_id', ctx.brokerageId)
       .single()
 
     if (contactError || !contact) {
@@ -219,7 +252,8 @@ export async function scoreSingleBuyerForListing(params: {
 
     // Log signal if requested
     if (logSignal) {
-      await logBuyerMatchSignal(listingId, match)
+      const { ledgerSessionAction } = await import('@/lib/kernel/action-ledger')
+      await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: 'listing.buyer_match_signal.record', actor: { type: 'user', userId: ctx.userId, agentId: ctx.agentId ?? null }, subject: { type: 'listing', id: listingId }, riskClass: 'LOW_RISK_WRITE', reasonCode: 'HUMAN_REQUESTED', detail: { contact_id: contactId } }, async () => logBuyerMatchSignal(listingId, match, { brokerageId: ctx.brokerageId ?? "", agentId: ctx.agentId ?? null }))
     }
 
     return {
@@ -250,12 +284,22 @@ export async function getListingMatchHistory(params: {
     return { success: false, error: 'Invalid listing ID' }
   }
 
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: 'Not authenticated' }
+  }
+
   try {
     const supabase = createServiceClient()
 
+    // activities.brokerage_id is NOT NULL (verified live), so scoping on it is
+    // always valid. The signal payloads carry contact_ids and match reasoning —
+    // without the predicate any listing uuid replayed another tenant's match
+    // history.
     const { data: activities, error } = await supabase
       .from('activities')
       .select('id, title, description, notes, created_at')
+      .eq('brokerage_id', ctx.brokerageId)
       .eq('entity_type', 'listing')
       .eq('entity_id', listingId)
       .eq('activity_type', 'buyer_match_signal')

@@ -111,7 +111,10 @@ export default async function TrustPage() {
           We do not currently hold SOC 2 or ISO 27001 certification, and we won&apos;t imply otherwise with
           badge walls. Formal third-party attestation is on our roadmap; in the meantime this page describes
           the controls that actually exist, and we&apos;ll answer security questionnaires directly —{" "}
-          <Link href="/support" className="underline">contact us</Link>.
+          {/* Wave 146 (lane 146H, ruling 18): this linked /support, which the proxy protects — a prospect
+              reviewing security met the login wall. /demo is the platform's public talk-to-us door
+              (requestPlatformDemoAction → the platform prospect funnel). */}
+          <Link href="/demo" className="underline">contact us</Link>.
         </>
       ),
     },

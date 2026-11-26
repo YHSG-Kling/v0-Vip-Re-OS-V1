@@ -13,7 +13,11 @@
  *
  * Run: npx tsx scripts/capacity-guardian-simulator.ts   (npm run test:capacity-guardian)
  */
-import { computeAgentWorkloadIndex, detectOverload, DEBT_ALARM, pickLeastLoadedWithHeadroom, tierMaxLoadForAgentCount, type WorkloadSignals } from "../lib/kernel/capacity-guardian"
+import { computeCapacity, detectOverload, DEBT_ALARM, pickLeastLoadedWithHeadroom, tierMaxLoadForAgentCount, type WorkloadSignals, type CapacityThresholds } from "../lib/kernel/capacity-guardian"
+
+// WAVE 103 (lane 103B): the index is reached through the ONE kernel answer (computeCapacity.index);
+// the matrix below is unchanged.
+const computeAgentWorkloadIndex = (s: WorkloadSignals, t: CapacityThresholds) => computeCapacity(s, t).index
 
 let passed = 0, failed = 0
 const failures: string[] = []

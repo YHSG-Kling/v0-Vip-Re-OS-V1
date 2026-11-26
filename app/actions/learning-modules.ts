@@ -33,10 +33,13 @@
  * router knows what's actually published where.
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { revalidatePath } from "next/cache"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 import { pickLearningModulesForActor, type LearningActorKind, type LearningModulePick } from "@/lib/learning-router/composer"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 type Channel =
   | "article"
@@ -54,7 +57,6 @@ const ALLOWED_CHANNELS: ReadonlySet<Channel> = new Set([
   "newsletter", "email", "social", "quiz", "portal_lesson",
 ])
 
-const ADMIN_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
 
 // ─── Auth helper for admin actions ──────────────────────────────────────────
 async function requireAdmin(): Promise<
@@ -71,7 +73,7 @@ async function requireAdmin(): Promise<
     .eq("id", user.id)
     .maybeSingle()
   if (!row?.brokerage_id) return { ok: false, error: "Brokerage not configured" }
-  if (!ADMIN_ROLES.has(row.user_type as string)) {
+  if (!isAdminOrBroker({ user_type: row.user_type as string })) {
     return { ok: false, error: "Forbidden: requires broker / admin / team_lead" }
   }
   return {
@@ -112,6 +114,9 @@ export async function createLearningModuleAction(
   const auth = await requireAdmin()
   if (!auth.ok) return auth
 
+  // WAVE 155 (155R17): the receipt — requireAdmin's SESSION user and tenant.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "academy.learning_module.create", actor: { type: "user", userId: auth.userId }, subject: { type: "learning_module" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ ok: true; id: string } | { ok: false; error: string }> => {
   const supabase = createServiceClient()
   const insert = {
     brokerage_id:          auth.brokerageId,
@@ -142,6 +147,8 @@ export async function createLearningModuleAction(
 
   revalidatePath("/dashboard/admin/learning-modules")
   return { ok: true, id: data.id as string }
+  })
+  return "ok" in r ? r : { ok: false, error: r.error ?? "Not run" }
 }
 
 // ─── Update ─────────────────────────────────────────────────────────────────
@@ -152,6 +159,9 @@ export async function updateLearningModuleAction(
   const auth = await requireAdmin()
   if (!auth.ok) return auth
 
+  // WAVE 155 (155R17): the receipt — requireAdmin's SESSION user and tenant.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "academy.learning_module.update", actor: { type: "user", userId: auth.userId }, subject: { type: "learning_module", id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { fields: Object.keys(patch ?? {}), status: patch?.status ?? null } }, async (): Promise<{ ok: true } | { ok: false; error: string }> => {
   const supabase = createServiceClient()
   const update: Record<string, unknown> = { updated_at: new Date().toISOString() }
   if (patch.title              !== undefined) update.title              = patch.title
@@ -174,15 +184,20 @@ export async function updateLearningModuleAction(
     if (patch.status === "published") update.published_at = new Date().toISOString()
   }
 
-  const { error } = await supabase
+  const { data: changed, error } = await supabase
     .from("learning_modules")
     .update(update)
     .eq("id", id)
     .eq("brokerage_id", auth.brokerageId)
+    .select("id")
   if (error) return { ok: false, error: error.message }
+  // §3: an UPDATE that matched nothing (another tenant's id, a deleted module) resolves — it is not a success.
+  if (!changed || changed.length === 0) return { ok: false, error: "Module not found" }
 
   revalidatePath("/dashboard/admin/learning-modules")
   return { ok: true }
+  })
+  return "ok" in r ? r : { ok: false, error: r.error ?? "Not run" }
 }
 
 // ─── Publish (multi-channel fan-out) ────────────────────────────────────────
@@ -202,11 +217,17 @@ export async function publishLearningModuleAction(
 
   const { data: mod, error: modErr } = await supabase
     .from("learning_modules")
-    .select("id, brokerage_id, authored_by, team_id, title, summary, body, cover_image_url, estimated_minutes, channels, quiz_questions, audience_roles, stage_tags")
+    .select("id, brokerage_id, authored_by, team_id, title, summary, body, cover_image_url, estimated_minutes, channels, quiz_questions, audience_roles, stage_tags, required")
     .eq("id", moduleId)
     .eq("brokerage_id", auth.brokerageId)
     .maybeSingle()
   if (modErr || !mod) return { ok: false, error: modErr?.message ?? "Module not found" }
+  // WAVE 155 (155C — owner R1): a course whose quiz is required but has no valid question can never be completed (never an
+  // automatic pass), so it is not published — the author is told why, in the same words the learner would see.
+  const { courseQuizReadiness, COURSE_NOT_COMPLETABLE_MESSAGE } = await import("@/lib/academy/quiz")
+  if (courseQuizReadiness((mod as { required?: unknown }).required, mod.quiz_questions) === "not_completable") {
+    return { ok: false, error: COURSE_NOT_COMPLETABLE_MESSAGE }
+  }
 
   const results: PublishResult["results"] = []
   const successfulChannels: Channel[] = []
@@ -239,7 +260,7 @@ export async function publishLearningModuleAction(
       successfulChannels.push(ch)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from("learning_module_channel_publications")
         .upsert({
           module_id:     mod.id,
@@ -247,14 +268,14 @@ export async function publishLearningModuleAction(
           channel:       ch,
           status:        "failed",
           error_message: msg,
-        }, { onConflict: "module_id,channel" })
+        }, { onConflict: "module_id,channel" }), { table: "learning_module_channel_publications", flow: "learning_module_channel_publications_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
       results.push({ channel: ch, status: "failed", error: msg })
     }
   }
 
   // Flip module to 'published' once at least one channel succeeded
   if (successfulChannels.length > 0) {
-    await supabase
+    const { error: modulePublishErr } = await supabase
       .from("learning_modules")
       .update({
         status:       "published",
@@ -263,6 +284,7 @@ export async function publishLearningModuleAction(
         updated_at:   new Date().toISOString(),
       })
       .eq("id", mod.id)
+    if (modulePublishErr) console.error(`[learning-modules] module NOT marked published: ${modulePublishErr.message}`)
   }
 
   revalidatePath("/dashboard/admin/learning-modules")
@@ -313,7 +335,10 @@ async function fanOutToChannel(
           slug,
           content:      mod.body ?? mod.summary ?? mod.title,
           excerpt:      mod.summary ?? null,
-          category:     channel === "blog" ? "blog" : "learning_module",
+          // knowledge_articles.category CHECK: compliance | general | integrations | leads | marketing | onboarding |
+          // transactions (wave 152, 152K — row 45 census): "blog" / "learning_module" refused the whole insert, so a module
+          // never published to the knowledge base. The channel stays in `tags` (unchanged), where readers filter it.
+          category:     channel === "blog" ? "marketing" : "general",
           tags:         channel === "blog" ? ["blog", "learning_module"] : ["learning_module"],
           status:       "published",
           published_at: new Date().toISOString(),
@@ -347,6 +372,14 @@ async function fanOutToChannel(
       })
       const providerCols = initialProviderColumns(provider)
 
+      // authored_by is a users id — the provider resolve above wants exactly
+      // that — but ai_video_projects.agent_id is agents-class. Brokerage-scoped,
+      // matching the podcast branch below; no agents row ⇒ refuse, same as it.
+      const videoAgentId = await resolveAgentIdInBrokerage(
+        supabase, mod.authored_by ?? authorUserId, mod.brokerage_id,
+      )
+      if (!videoAgentId) throw new Error("video requires an agent row for the authoring user")
+
       const audienceType = (mod.audience_roles ?? []).includes("customer")
         ? "customer_facing"
         : "in_house"
@@ -360,7 +393,7 @@ async function fanOutToChannel(
         .from("ai_video_projects")
         .insert({
           brokerage_id:       mod.brokerage_id,
-          agent_id:           mod.authored_by ?? authorUserId,
+          agent_id:           videoAgentId,
           title:              mod.title,
           script_content:     mod.body ?? mod.summary ?? mod.title,
           video_type:         "education",
@@ -551,6 +584,68 @@ export async function listLearningModulesForBrokerageAction(opts?: {
   return { ok: true, rows }
 }
 
+// ─── Publication ledger (per-module, per-channel) ───────────────────────────
+// The publisher above writes a learning_module_channel_publications row on
+// EVERY fan-out — status 'published' with external_url/external_id/
+// external_table/published_at, or status 'failed' with error_message. Until
+// this reader, the only consumer was the portal-stream cron picking module_id:
+// a failed publish was invisible the moment the request returned. This is the
+// admin screen's ledger loader.
+
+export interface ModulePublicationRow {
+  moduleId:      string
+  channel:       string
+  status:        string
+  externalUrl:   string | null
+  externalTable: string | null
+  /**
+   * THE ROW THE FAN-OUT ACTUALLY CREATED.
+   *
+   * publishModuleToChannels stamps external_table + external_id together (:230) — the
+   * table and the primary key of the record it made on that channel — and this reader
+   * selected the table and not the id. A channel whose fan-out returns no URL (the
+   * common case for an internal rail) therefore rendered as a bare table name with
+   * nothing to open or verify, which is the same dangling-pointer defect the approval
+   * queue's item_id had. Null when the channel returned no id.
+   */
+  externalId:    string | null
+  publishedAt:   string | null
+  errorMessage:  string | null
+  createdAt:     string | null
+}
+
+export async function getModulePublicationsAction(): Promise<
+  | { ok: true; publications: ModulePublicationRow[] }
+  | { ok: false; error: string }
+> {
+  const auth = await requireAdmin()
+  if (!auth.ok) return auth
+
+  const supabase = createServiceClient()
+  const { data, error } = await supabase
+    .from("learning_module_channel_publications")
+    .select("module_id, channel, status, external_url, external_id, external_table, published_at, error_message, created_at")
+    .eq("brokerage_id", auth.brokerageId)
+    .order("created_at", { ascending: false })
+    .limit(1000)
+  if (error) return { ok: false, error: error.message }
+
+  return {
+    ok: true,
+    publications: (data ?? []).map((r: Record<string, unknown>) => ({
+      moduleId:      r.module_id as string,
+      channel:       r.channel as string,
+      status:        (r.status as string) ?? "unknown",
+      externalUrl:   (r.external_url as string | null) ?? null,
+      externalTable: (r.external_table as string | null) ?? null,
+      externalId:    (r.external_id as string | null) ?? null,
+      publishedAt:   (r.published_at as string | null) ?? null,
+      errorMessage:  (r.error_message as string | null) ?? null,
+      createdAt:     (r.created_at as string | null) ?? null,
+    })),
+  }
+}
+
 export async function getLearningAssignmentsForActorAction(opts: {
   actorKind: LearningActorKind
   actorId:   string
@@ -568,7 +663,7 @@ export async function getLearningAssignmentsForActorAction(opts: {
       .select("user_type")
       .eq("id", user.id)
       .maybeSingle()
-    if (!row || !ADMIN_ROLES.has((row.user_type as string) ?? "")) {
+    if (!row || !isAdminOrBroker({ user_type: (row.user_type as string) ?? "" })) {
       return { ok: false, error: "Forbidden" }
     }
   }

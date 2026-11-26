@@ -1,0 +1,70 @@
+import { NextRequest, NextResponse } from "next/server"
+import { createServiceClient } from "@/lib/supabase/service"
+import {
+  createCronRunContextAction,
+  recordCronStartAction,
+  recordCronSuccessAction,
+  recordCronFailureAction,
+} from "@/app/actions/cron-kernel"
+import { verifyCronAuth } from "@/lib/cron-auth"
+import { runLocalIntelSweep } from "@/lib/content-intel/local-intel"
+
+export const dynamic = "force-dynamic"
+export const runtime = "nodejs"
+export const maxDuration = 300
+
+/**
+ * LOCAL-INTELLIGENCE cron (wave 144, lane 144G — owner ruling 14). Owner campaign_orchestrator.
+ *
+ * Per live tenant WITH an active territory (the ONE pull gate, resolveActivePullGate), once per UTC
+ * day (the action ledger replays a second tick for free): territory events / civic notices /
+ * business openings / development / market news through the registered web_search capability and
+ * the owner-selected news provider, plus the tenant's own community-calendar feeds (robots.txt
+ * first) → deterministic date / place / confidence / fair-housing screening → verified facts in
+ * content_topic_bank (the one topic pool every content generator already reads). Platform-covered:
+ * search spend books on the platform vendor ledger, never on the tenant's meter
+ * (lib/content-intel/local-intel.ts).
+ */
+export async function GET(req: NextRequest) {
+  const unauth = verifyCronAuth(req)
+  if (unauth) return unauth
+
+  const contextResult = await createCronRunContextAction({
+    cron_name: "local-intel",
+    cron_path: "/app/api/cron/local-intel/route.ts",
+  })
+  if (contextResult.data?.held) return NextResponse.json({ success: true, held: true, decision: contextResult.data.decision }) // cron decision door (155R1): held before any domain write
+  if (!contextResult.success || !contextResult.data) {
+    return NextResponse.json({ error: "Failed to create cron context for local-intel" }, { status: 500 })
+  }
+  const contextId = contextResult.data.context_id
+  await recordCronStartAction({ context_id: contextId }).catch(() => {})
+
+  try {
+    const svc = createServiceClient()
+    // ONE SUBJECT, ONE TOPIC: the adoption step for customer-question topics is imported HERE and passed down (never from the
+    // theme pass itself — lib/content-intel/topic-intake.ts SubjectKeyAdopter says why). test:portal-answer holds this line.
+    const { adoptLiveSubjectKeys } = await import("@/lib/customer-intelligence/website-question-topics")
+    const swept = await runLocalIntelSweep(svc, { adoptSubjectKeys: adoptLiveSubjectKeys })
+    // WAVE 155 (lane 155K, directive K3): marketing EDUCATION is not person ACQUISITION — a live tenant WITHOUT an acquisition
+    // territory still gets content started from its own first-party topics (third-party research stays territory-gated inside the
+    // starter). The territory sweep above is unchanged; this pass makes no pull and no spend before the creative's own entitlement gate.
+    const { runFirstPartyTopicSweep } = await import("@/lib/repurpose/refurbish-run")
+    const firstParty = await runFirstPartyTopicSweep(svc as never, { adoptSubjectKeys: adoptLiveSubjectKeys })
+    const result = { ...swept, firstParty: { ...firstParty, errors: firstParty.errors.slice(0, 10) } }
+    // A refused subscription / territory read is a FAILURE (the gate failed closed), never an idle day.
+    if (/_query_failed$/.test(result.reason)) {
+      await recordCronFailureAction({ context_id: contextId, error: new Error(`pull gate unreadable: ${result.reason} ${result.errors[0] ?? ""}`), stage: "pull-gate" }).catch(() => {})
+      return NextResponse.json({ ok: false, ...result, errors: result.errors.length }, { status: 500 })
+    }
+    await recordCronSuccessAction({
+      context_id: contextId,
+      records_processed: result.facts,
+      metadata: { ...result, errors: result.errors.slice(0, 20) },
+    }).catch(() => {})
+    return NextResponse.json({ ok: true, ...result, errors: result.errors.length })
+  } catch (e: any) {
+    await recordCronFailureAction({ context_id: contextId, error: e, stage: "main-processing" }).catch(() => {})
+    return NextResponse.json({ ok: false, error: e?.message ?? String(e) }, { status: 500 })
+  }
+}

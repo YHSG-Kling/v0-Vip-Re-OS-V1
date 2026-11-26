@@ -24,7 +24,13 @@ export interface CrmSyncOutResult {
   requiresConfiguration?: boolean
 }
 
-export async function syncContactToFollowUpBoss(contact: CrmContactInput, apiKey: string | null): Promise<CrmSyncOutResult> {
+/** Who the push is made FOR (wave 141, lane 141D): the tenant whose CRM this is. It lands on the
+ *  gateway's api_response_logs row (brokerage_id), so a tenant's own-CRM traffic and provider
+ *  health are attributable to that tenant — usage BOOKED, not platform-scope by omission. The
+ *  tenant's credential is theirs; there is no platform cost to meter, only the attribution. */
+export interface CrmSyncOutScope { brokerageId?: string | null }
+
+export async function syncContactToFollowUpBoss(contact: CrmContactInput, apiKey: string | null, scope: CrmSyncOutScope = {}): Promise<CrmSyncOutResult> {
   if (!apiKey) return { success: false, requiresConfiguration: true, error: "Follow Up Boss not connected (missing API key)" }
 
   const res = await callConnector<{ id?: number | string }>({
@@ -32,6 +38,7 @@ export async function syncContactToFollowUpBoss(contact: CrmContactInput, apiKey
     baseUrl: FUB_BASE,
     path: "people",
     method: "POST",
+    brokerageId: scope.brokerageId ?? null,
     auth: { style: "basic", username: apiKey, password: "" },
     body: {
       firstName: contact.firstName,

@@ -21,10 +21,10 @@ import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
 import {
   getDemoTenantSnapshot,
-  resetDemoTenant,
   type DemoTenantSnapshot,
   type DemoSeededTable,
 } from "@/lib/platform/demo-tenant"
+import { resetDemoTenant } from "@/lib/platform/demo-tenant-provisioning"
 
 export interface DemoTenantStatusResult {
   ok: boolean

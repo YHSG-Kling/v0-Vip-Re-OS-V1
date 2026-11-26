@@ -7,7 +7,8 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { getIntegrationStatus } from "@/app/actions/onboarding/tech-stack"
-import { TechStackClient } from "./tech-stack-client"
+import { TechStackClient } from "./tech-stack-client"; import { PROVIDER_METADATA, PROVIDER_GROUPS } from "@/lib/onboarding/integration-tester" // server-side: the client gets the tables as props (156L)
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
 export const dynamic = 'force-dynamic'
 
@@ -22,9 +23,16 @@ export default async function TechStackPage() {
   // Verify session
   const { data: { user }, error: authError } = await supabase.auth.getUser()
   if (authError || !user) {
-    redirect("/auth/login")
+    redirect("/login")
   }
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   // Get user and brokerage info
   const { data: userData } = await supabase
     .from("users")
@@ -33,7 +41,7 @@ export default async function TechStackPage() {
     .single()
 
   if (!userData?.brokerage_id) {
-    redirect("/dashboard")
+    redirect("/dashboard/onboarding")
   }
 
   // Get brokerage info
@@ -51,7 +59,7 @@ export default async function TechStackPage() {
       userId={userData.id}
       brokerageId={userData.brokerage_id}
       brokerageName={brokerage?.name || ""}
-      initialStatus={integrationStatus}
+      initialStatus={integrationStatus} providerMetadata={PROVIDER_METADATA} providerGroups={PROVIDER_GROUPS}
     />
   )
 }

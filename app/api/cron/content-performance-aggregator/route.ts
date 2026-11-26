@@ -13,6 +13,8 @@
  * Auth: CRON_SECRET.
  */
 import { NextResponse, type NextRequest } from "next/server"
+import { verifyCronAuth } from "@/lib/cron-auth"
+import { decideCronRun } from "@/lib/kernel/cron-logging"
 import { aggregatePerformance } from "@/lib/content-intel/performance-aggregator"
 
 export const dynamic = "force-dynamic"
@@ -20,11 +22,10 @@ export const maxDuration = 300
 export const runtime = "nodejs"
 
 export async function GET(req: NextRequest) {
-  const auth = req.headers.get("authorization")?.replace("Bearer ", "")
-  const qs   = new URL(req.url).searchParams.get("secret")
-  const expected = process.env.CRON_SECRET
-  if (!expected) return NextResponse.json({ skipped: "CRON_SECRET not configured" })
-  if (auth !== expected && qs !== expected) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  const denied = verifyCronAuth(req)
+  if (denied) return denied
+  const cronDoor = await decideCronRun({ cron_name: "content-performance-aggregator", cron_path: "/app/api/cron/content-performance-aggregator/route.ts" }) // cron decision door (155R1)
+  if (cronDoor.held) return NextResponse.json({ success: true, held: true, decision: cronDoor.decision })
 
   const result = await aggregatePerformance()
   return NextResponse.json({

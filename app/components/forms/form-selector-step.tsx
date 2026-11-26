@@ -60,13 +60,18 @@ interface FormSelectorStepProps {
   contextType: FormContextType
   /** US state for state-required form filtering */
   state?: string
-  /** Pass true to auto-load forms immediately on mount */
+  /** Pass true to auto-load forms immediately on mount.
+   *  optional by design: defaults to true, which is what the one current caller wants — the
+   *  manual-load `false` path exists for a future wizard step that gates loading on a prior
+   *  user action. */
   autoLoad?: boolean
   onComplete: (selectedFormIds: string[], fieldValues: FormFieldValues) => void
   onBack: () => void
   /** Label for the primary action button */
   nextLabel?: string
-  /** When true, the primary action button is disabled (e.g. while a submission is pending) */
+  /** When true, the primary action button is disabled (e.g. while a submission is pending).
+   *  optional by design: the one current caller has no separate pending state to gate this
+   *  on beyond the component's own internal submit-in-flight handling. */
   nextDisabled?: boolean
 }
 
@@ -197,7 +202,7 @@ export function FormSelectorStep({
         )}
 
         {loadError && (
-          <div className="flex items-center gap-2 text-sm text-amber-600">
+          <div className="flex items-center gap-2 text-sm text-amber-700">
             <AlertCircle className="h-4 w-4 shrink-0" />
             {loadError}
           </div>
@@ -205,7 +210,7 @@ export function FormSelectorStep({
 
         {loaded && forms.length === 0 && !loadError && (
           <div className="rounded-lg border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
-            No forms configured for your brokerage.
+            No forms are configured for this account yet.
             You can add forms in <strong>Settings → Forms</strong> and continue here later.
           </div>
         )}

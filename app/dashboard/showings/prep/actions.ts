@@ -136,13 +136,18 @@ export async function regenerateShowingBriefing(showingId: string): Promise<{ su
   if (showing.agent_id !== agentRow.id) return { success: false, error: "Not your showing" }
   if (!showing.brokerage_id) return { success: false, error: "Showing missing brokerage" }
 
+  // WAVE 155 (155R14): the receipt — tenant = the showing's, proven to be the session agent's own showing above.
+  const brokerageId: string = showing.brokerage_id, agentId: string = agentRow.id
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId, action: "showing.briefing.regenerate", actor: { type: "user", userId: user.id, agentId }, subject: { type: "showing", id: showingId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   try {
     const brief = await buildShowingBriefing(showingId)
     if (!brief) return { success: false, error: "Could not build briefing" }
-    const persisted = await persistShowingBriefing(brief, showing.brokerage_id, agentRow.id)
+    const persisted = await persistShowingBriefing(brief, brokerageId, agentId)
     if (!persisted) return { success: false, error: "Could not save briefing" }
     return { success: true }
   } catch (err: any) {
     return { success: false, error: err?.message ?? "Generation failed" }
   }
+  })
 }

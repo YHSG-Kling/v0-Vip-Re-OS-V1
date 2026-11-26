@@ -52,13 +52,13 @@ import {
   recalculateCommissionStateAction,
   createCommissionRecordAction,
 } from "@/app/actions/financial-kernel"
-import {
-  TaxReadinessPanel,
-  TaxSetasidePanel,
-  DeductionReadinessPanel,
-  BusinessPlanningPanel,
-  PlanningAiSummaryPanel,
-} from "../components/planning"
+import { TaxReadinessPanel } from "@/app/dashboard/financials/components/planning/tax-readiness-panel"
+import { TaxSetasidePanel } from "@/app/dashboard/financials/components/planning/tax-setaside-panel"
+import { DeductionReadinessPanel } from "@/app/dashboard/financials/components/planning/deduction-readiness-panel"
+import { BusinessPlanningPanel } from "@/app/dashboard/financials/components/planning/business-planning-panel"
+import { PlanningAiSummaryPanel } from "@/app/dashboard/financials/components/planning/planning-ai-summary-panel"
+
+
 import { MyProfitLossPanel } from "../components/my-profit-loss-panel"
 import { MyCommissionsDisputePanel } from "../components/my-commissions-dispute-panel"
 import { BillingSummaryCard } from "./components/billing-summary-card"
@@ -139,7 +139,7 @@ export function AgentFinancialsClient({
   capTracking,
   children,
 }: AgentFinancialsClientProps) {
-  const [setAsidePercent, setSetAsidePercent] = useState(25)
+  const [setAsidePercent, setSetAsidePercent] = useState(0) // wave 153: no invented default — 0 until the person enters a rate
   const [forecastText, setForecastText] = useState<string | null>(null)
   const [forecastProjection, setForecastProjection] = useState<number | null>(null)
   const [forecastError, setForecastError] = useState<string | null>(null)
@@ -290,10 +290,8 @@ export function AgentFinancialsClient({
     })
   }
 
-  // Calculate estimated tax liability
-  const estimatedTaxRate = 0.25
-  const grossTaxable = ytdGCI - ytdExpenses
-  const estimatedTaxLiability = Math.max(0, grossTaxable * estimatedTaxRate)
+  // WAVE 153 (lane 153A, integrator): the invented 25% "estimated tax liability" lived here. Removed — the one estimator
+  // (lib/finance/tax-planning.ts) quotes a reserve only from rates the person or their accountant entered.
 
   return (
     <>
@@ -441,7 +439,6 @@ export function AgentFinancialsClient({
           agentId={agentId}
           ytdGCI={ytdGCI}
           ytdExpenses={ytdExpenses}
-          estimatedTaxLiability={estimatedTaxLiability}
           syncStatus={syncStatus}
         />
       </TabsContent>
@@ -542,7 +539,7 @@ export function AgentFinancialsClient({
                     {plSummary.netProfit >= 0 ? (
                       <TrendingUp className="h-3 w-3 text-blue-500" />
                     ) : (
-                      <TrendingDown className="h-3 w-3 text-orange-500" />
+                      <TrendingDown className="h-3 w-3 text-orange-600" />
                     )}
                     <span className="text-xs text-muted-foreground">After expenses</span>
                   </div>

@@ -116,7 +116,7 @@ export async function rankContactsByPropensity(
 
   const { data } = await supabase
     .from("contacts")
-    .select("id, first_name, last_name, intent_score, engagement_score, equity_estimate, referral_score, last_life_event_detected, updated_at")
+    .select("id, first_name, last_name, intent_score, engagement_score, equity_estimate, referral_score, last_life_event_detected")
     .eq("brokerage_id", params.brokerageId)
     .limit(4000)
 
@@ -128,7 +128,6 @@ export async function rankContactsByPropensity(
     id: string; first_name: string | null; last_name: string | null
     intent_score: number | null; engagement_score: number | null; equity_estimate: number | null
     referral_score: number | null; last_life_event_detected: string | null
-    updated_at: string | null
   }>).map((c) => {
     const result = computeTransactionPropensity({
       intentScore: c.intent_score,
@@ -136,7 +135,11 @@ export async function rankContactsByPropensity(
       equityEstimate: c.equity_estimate,
       lifeEventDaysAgo: daysSince(c.last_life_event_detected),
       referralScore: c.referral_score,
-      lastActivityDaysAgo: daysSince(c.updated_at),
+      // WAVE 156 (156I — "rank only on observed facts"): `contacts.updated_at` is NOT the person's activity — every system write
+      // (scoring, enrichment, a field fix) moves it, so a contact nobody heard from ranked as "recent activity" for the dialer.
+      // contacts carries no column that records the PERSON acting; until one is read here, recency contributes nothing.
+      // engagement_score (opens, portal visits, replies) is the observed engagement this ranker already reads.
+      lastActivityDaysAgo: null,
     })
     return { contactId: c.id, name: [c.first_name, c.last_name].filter(Boolean).join(" ").trim() || "Contact", result }
   })

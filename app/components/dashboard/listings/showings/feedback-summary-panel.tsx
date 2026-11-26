@@ -3,7 +3,6 @@
 import { useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
 import { Star, ChevronDown, ChevronUp, AlertTriangle } from "lucide-react"
 
 interface Props {
@@ -30,7 +29,7 @@ function Stars({ value }: { value: number | null }) {
       {[1, 2, 3, 4, 5].map((i) => (
         <Star
           key={i}
-          className={`h-3.5 w-3.5 ${i <= Math.round(value) ? "fill-amber-400 text-amber-400" : "text-muted-foreground/30"}`}
+          className={`h-3.5 w-3.5 ${i <= Math.round(value) ? "fill-amber-400 text-amber-600" : "text-muted-foreground/30"}`}
         />
       ))}
       <span className="ml-1 text-xs text-muted-foreground">{value.toFixed(1)}</span>
@@ -233,6 +232,18 @@ export default function FeedbackSummaryPanel({ analytics, feedbackCards }: Props
                     <div className="flex flex-col gap-2 px-6 pb-4">
                       {fb.ai_summary && (
                         <p className="text-xs text-muted-foreground">{fb.ai_summary}</p>
+                      )}
+                      {fb.request?.sent_at && fb.created_at && (
+                        <p className="text-xs text-muted-foreground">
+                          Requested {new Date(fb.request.sent_at).toLocaleDateString()} · received{" "}
+                          {Math.max(
+                            0,
+                            Math.round(
+                              (new Date(fb.created_at).getTime() - new Date(fb.request.sent_at).getTime())
+                                / 86_400_000,
+                            ),
+                          )}d later
+                        </p>
                       )}
                       <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
                         {fb.presentation_rating != null && (

@@ -3,8 +3,7 @@
 import { useEffect, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Progress } from "@/components/ui/progress"
-import { Star, TrendingUp, TrendingDown, Minus } from "lucide-react"
+import { Star, TrendingUp, TrendingDown } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
 
 interface VendorPerformanceRadarProps {
@@ -125,7 +124,7 @@ export function VendorPerformanceRadar({ brokerageId }: VendorPerformanceRadarPr
         <div className="flex items-center justify-between">
           <span className="text-sm font-medium">Network Rating</span>
           <div className="flex items-center gap-2">
-            <Star className="h-4 w-4 fill-yellow-400 text-yellow-400" />
+            <Star className="h-4 w-4 fill-yellow-400 text-yellow-700" />
             <span className="font-bold">{metrics.avgRating.toFixed(1)}</span>
             <span className="text-sm text-muted-foreground">/ 5</span>
           </div>
@@ -161,7 +160,7 @@ export function VendorPerformanceRadar({ brokerageId }: VendorPerformanceRadarPr
                 <Badge variant="secondary" className="text-xs">{cat.count}</Badge>
               </div>
               <div className="flex items-center gap-1">
-                <Star className="h-3 w-3 fill-yellow-400 text-yellow-400" />
+                <Star className="h-3 w-3 fill-yellow-400 text-yellow-700" />
                 <span>{cat.avgRating.toFixed(1)}</span>
               </div>
             </div>

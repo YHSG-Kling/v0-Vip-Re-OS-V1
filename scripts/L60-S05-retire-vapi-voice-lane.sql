@@ -1,0 +1,19 @@
+-- L60-S05 — RETIRE THE VAPI VOICE LANE (owner: "get rid of vapi with the drift
+-- on voice call sprawl"). The Twilio-native lane owns BOTH directions (inbound
+-- reception + outbound AI calls) and is the single voice engine; per-call minutes
+-- bill to usage_logs ('voice_call'), the one billing rail (the Twilio status
+-- route writes it). The legacy vapi_voice_calls billing table is fully replaced.
+--
+-- Pre-drop verification (all confirmed before applying):
+--   • vapi_voice_calls: 0 rows
+--   • no inbound FOREIGN KEYs referencing vapi_voice_calls; no dependent views
+--   • every code writer/reader repointed off the table first:
+--       - lib/application/ai-isa.ts, lib/voice-engine/call-executor.ts,
+--         app/actions/ai-isa/initiate-engagement.ts, engage-contact.ts,
+--         app/api/voice/initiate-call — all place via placeOutboundAiCall (Twilio)
+--       - the two Vapi webhook routes + updateVapiCallStatus/getVapiVoiceCalls
+--         readers were deleted with the lane
+--       - review page + audit-events + mobile voice read voice_calls / usage_logs
+--
+-- Dependency-closed, subtractive, zero data risk.
+DROP TABLE IF EXISTS public.vapi_voice_calls;

@@ -53,11 +53,11 @@ export function RotationRisksPanel() {
       </CardHeader>
       <CardContent className="p-0">
         {err && <p className="p-4 text-xs text-red-600">{err}</p>}
-        {msg && <p className="p-4 pb-0 text-xs text-emerald-600">{msg}</p>}
+        {msg && <p className="p-4 pb-0 text-xs text-emerald-700">{msg}</p>}
         {loading ? (
           <p className="p-4 text-sm text-muted-foreground flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" />Loading…</p>
         ) : risks.length === 0 ? (
-          <p className="p-4 text-sm text-emerald-600">All integration credentials are current — nothing to rotate.</p>
+          <p className="p-4 text-sm text-emerald-700">All integration credentials are current — nothing to rotate.</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">

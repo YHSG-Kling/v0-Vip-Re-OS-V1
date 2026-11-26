@@ -56,7 +56,7 @@ export function IntelligenceCommandStrip({
             <p className="text-sm text-muted-foreground">
               Trust Capital: <span className="font-medium text-foreground">{trustCapitalScore}/100</span>
               {" | "}
-              <span className="text-amber-600">{activePatternCount} active patterns</span>
+              <span className="text-amber-700">{activePatternCount} active patterns</span>
             </p>
           </div>
         </div>
@@ -103,7 +103,7 @@ export function IntelligenceCommandStrip({
             Patterns
           </Button>
         </Link>
-        <Link href="/dashboard/leaderboard">
+        <Link href="/dashboard/motivation">
           <Button variant="outline" size="sm" className="gap-2">
             <Trophy className="h-4 w-4" />
             Leaderboard

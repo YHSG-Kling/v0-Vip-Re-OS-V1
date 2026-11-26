@@ -22,14 +22,23 @@ async function callerOwnsVendor(
   userId: string,
   vendorId: string,
 ): Promise<boolean> {
-  const { data } = await supabase
+  // EXISTENCE, over rows. (user_id, vendor_id) is NOT a unique key — the table is
+  // UNIQUE on (user_id, role) — so a caller holding two grants against the same
+  // vendor produced two rows. `.limit(1)` kept that from erroring, but only by
+  // picking one row at random to prove a question that is about the SET; and the
+  // discarded `error` meant a REFUSED read was indistinguishable from "does not
+  // own this vendor". Counting rows answers the real question, and the refusal is
+  // now reported rather than quietly denied.
+  const { data, error } = await supabase
     .from("user_role_assignments")
     .select("id")
     .eq("user_id", userId)
     .eq("vendor_id", vendorId)
-    .limit(1)
-    .maybeSingle()
-  return !!data
+  if (error) {
+    console.error("[vendor-messages] vendor ownership read failed:", error.message)
+    return false
+  }
+  return (data?.length ?? 0) > 0
 }
 
 export interface SendVendorMessageInput {
@@ -87,6 +96,8 @@ export async function sendVendorMessage(
     return { success: false, error: "No active vendor↔contact relationship" }
   }
 
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "vendor.message.send", actor: { type: "user", userId: ctx.userId }, subject: { type: "contact", id: input.contactId }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED", detail: { vendor_id: input.vendorId, channel: "vendor" } }, async () => {
   const { data: msg, error } = await supabase
     .from("vendor_messages")
     .insert({
@@ -110,6 +121,7 @@ export async function sendVendorMessage(
 
   revalidatePath("/dashboard/communications/inbox")
   return { success: true, messageId: msg.id }
+  })
 }
 
 export interface VendorMessageRow {
@@ -120,16 +132,40 @@ export interface VendorMessageRow {
   sender_type: string
   body: string
   read: boolean
+  /**
+   * WHEN the reader flipped `read` (markVendorMessagesRead below stamps it
+   * together with read=true). `read` alone says "seen"; this says when — the
+   * receipt a sender actually wants. NULL while unread or for rows read before
+   * the column was stamped.
+   */
+  read_at: string | null
+  /** The lane discriminator the universal inbox keys on. sendVendorMessage writes "vendor". */
+  channel: string | null
+  /** contact_vendors.id — the relationship (role/status) this thread rides on. */
+  contact_vendor_id: string | null
   created_at: string
 }
 
-// Reads a vendor↔contact thread. RLS scopes rows to the owning vendor or the
-// brokerage's staff; we additionally require the caller to be authenticated.
+// Reads a vendor↔contact thread — the VENDOR's own thread only (§5: a vendor
+// sees no one else's). The read used to be gated by RLS alone while send and
+// mark-read each spelled the ownership predicate in app code: one predicate in
+// two places (§6), and a read that a service client would have walked straight
+// through. The same callerOwnsVendor gate now fronts the read, failing closed —
+// a refused ownership lookup reads as "not yours", never as "all of it". The
+// only caller is the vendor portal's panel (app/portal/vendor/contacts), whose
+// vendorId is chosen from the caller's own role grants; brokerage staff read
+// these threads through the universal inbox, not here.
 export async function getVendorThread(input: {
   vendorId: string
   contactId: string
   limit?: number
-}): Promise<{ success: boolean; messages?: VendorMessageRow[]; error?: string }> {
+}): Promise<{
+  success: boolean
+  messages?: VendorMessageRow[]
+  /** contact_vendors.role for this thread's relationship (lender, inspector, …); null when the link row is gone. */
+  relationshipRole?: string | null
+  error?: string
+}> {
   if (!isValidUUID(input.vendorId) || !isValidUUID(input.contactId)) {
     return { success: false, error: "Invalid ids" }
   }
@@ -137,9 +173,13 @@ export async function getVendorThread(input: {
   if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
 
   const supabase = await createClient()
+  if (!(await callerOwnsVendor(supabase, ctx.userId, input.vendorId))) {
+    return { success: false, error: "Not permitted to read this vendor's threads" }
+  }
+
   const { data, error } = await supabase
     .from("vendor_messages")
-    .select("id, vendor_id, counterparty_type, counterparty_id, sender_type, body, read, created_at")
+    .select("id, vendor_id, counterparty_type, counterparty_id, sender_type, body, read, read_at, channel, contact_vendor_id, created_at")
     .eq("vendor_id", input.vendorId)
     .eq("counterparty_type", "contact")
     .eq("counterparty_id", input.contactId)
@@ -147,7 +187,25 @@ export async function getVendorThread(input: {
     .limit(input.limit ?? 100)
 
   if (error) return { success: false, error: error.message }
-  return { success: true, messages: (data ?? []) as VendorMessageRow[] }
+  const messages = (data ?? []) as VendorMessageRow[]
+
+  // Resolve contact_vendor_id → the relationship's role. The thread's rows all
+  // ride one link (sendVendorMessage stamps link.id at write time); the newest
+  // row's id is used so a re-introduced relationship reads with its current role.
+  const linkId = [...messages].reverse().find((m) => m.contact_vendor_id)?.contact_vendor_id ?? null
+  let relationshipRole: string | null = null
+  if (linkId) {
+    const { data: link, error: linkErr } = await supabase
+      .from("contact_vendors")
+      .select("id, role")
+      .eq("id", linkId)
+      .eq("vendor_id", input.vendorId)
+      .maybeSingle()
+    if (linkErr) console.error("[vendor-messages] relationship role read failed:", linkErr.message)
+    relationshipRole = link?.role ?? null
+  }
+
+  return { success: true, messages, relationshipRole }
 }
 
 // Marks the contact's messages read on the vendor's behalf when the vendor
@@ -168,6 +226,7 @@ export async function markVendorMessagesRead(input: {
     return { success: false, error: "Not permitted" }
   }
 
+  const run = async (): Promise<{ success: boolean; error?: string }> => {
   const { error } = await supabase
     .from("vendor_messages")
     .update({ read: true, read_at: new Date().toISOString() })
@@ -179,4 +238,9 @@ export async function markVendorMessagesRead(input: {
 
   if (error) return { success: false, error: error.message }
   return { success: true }
+  }
+  // WAVE 155 (155R14): a seat with no tenant has no valid receipt row (brokerage_id NOT NULL) — it runs exactly as before.
+  if (!ctx.brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "vendor.message.mark_read", actor: { type: "user", userId: ctx.userId }, subject: { type: "contact", id: input.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { vendor_id: input.vendorId } }, run)
 }

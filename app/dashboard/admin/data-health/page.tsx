@@ -5,12 +5,24 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { Badge } from "@/components/ui/badge"
-import { Loader2, Shield, AlertTriangle, CheckCircle2, RefreshCw, Scan, XCircle, Sparkles } from "lucide-react"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog"
+import { Loader2, Shield, AlertTriangle, CheckCircle2, RefreshCw, Scan, XCircle, Sparkles, Trash2 } from "lucide-react"
 import { toast } from "sonner"
-import { getDataHealthStats, runDataHygieneScan, getDataHealthLogs } from "@/app/actions/data-health"
+import { getDataHealthStats, runDataHygieneScan, getDataHealthLogs, purgeInvalidContacts } from "@/app/actions/data-health"
 import { refreshStalePredictions } from "@/app/actions/ai-predictions"
 import { loadSelfAuditRollup } from "@/app/actions/self-audit-rollup"
 import type { SelfAuditRollup } from "@/lib/platform/self-audit-rollup"
+import { EnrichmentBacklogPanel } from "./enrichment-backlog-panel"
 
 export default function DataHealthPage() {
   const [stats, setStats] = useState<any>(null)
@@ -19,6 +31,8 @@ export default function DataHealthPage() {
   const [fetchError, setFetchError] = useState<string | null>(null)
   const [selfAudit, setSelfAudit] = useState<SelfAuditRollup | null>(null)
   const [isPending, startTransition] = useTransition()
+  const [purgeOpen, setPurgeOpen] = useState(false)
+  const [isPurging, setIsPurging] = useState(false)
 
   const loadData = async () => {
     setFetchError(null)
@@ -68,9 +82,42 @@ export default function DataHealthPage() {
         toast.success(`Scan complete — ${(result as any).invalidCount ?? 0} issues found`)
         await loadData()
       } else {
-        toast.error("Scan failed")
+        // Surface the reason verbatim — the scan now refuses honestly
+        // (unauthenticated / no brokerage on the session / contacts unreadable)
+        // and a bare "Scan failed" would hide which of those happened.
+        toast.error((result as any).error ?? "Scan failed")
       }
     })
+  }
+
+  // purgeInvalidContacts (wave 4 slice 2) — the page showed an "Invalid" count
+  // with no lever to act on it, and the action that clears them had no caller
+  // anywhere. It is broker/admin-only and refuses a read-only act-as grant; both
+  // refusals are surfaced verbatim rather than being reported as a clean run.
+  const handlePurge = async () => {
+    setIsPurging(true)
+    try {
+      const result = await purgeInvalidContacts()
+      if (result.success) {
+        const n = result.deletedCount ?? 0
+        // Report what was PROVEN purged, plus any partial-purge note.
+        toast.success(
+          (result as any).message ??
+            (n === 0
+              ? "Nothing to purge — no contacts are flagged Invalid"
+              : `Purged ${n} invalid contact${n === 1 ? "" : "s"}`)
+        )
+        setPurgeOpen(false)
+        setLoading(true)
+        await loadData()
+      } else {
+        toast.error(result.error ?? "Purge failed")
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Purge failed")
+    } finally {
+      setIsPurging(false)
+    }
   }
 
   const handleRefreshPredictions = () => {
@@ -117,6 +164,12 @@ export default function DataHealthPage() {
         </div>
       </div>
 
+      {/* Enrichment backlog — who is eligible for enrichment right now, and the
+          manual lever for it. Both counts already exclude contacts in a live
+          listing or transaction (the owner's before-or-after rule), so this is a
+          list of work that CAN be done, not a list of what has been forgotten. */}
+      <EnrichmentBacklogPanel />
+
       {/* FIRST-WEEK TELEMETRY — what the OS caught itself doing wrong, by rail and
           tenant (self-audit findings + signature-chase escalations, trailing 7d).
           Empty = quiet week; that is a real signal too. */}
@@ -147,6 +200,34 @@ export default function DataHealthPage() {
               </ul>
             )}
             <p className="text-xs text-muted-foreground">The rails tenants actually stall on — let this pick the next build.</p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* WAVE 153 (lane 153K — convergence row 85): the executed-contract closing-wording reader, measured with its
+          synthetic controls. 0/0 stays 0/0 — no rate until real signed contracts with text are on file. */}
+      {selfAudit?.contractReader && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Executed-contract reader — closing wording</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2 text-sm">
+            {selfAudit.contractReader.readError ? (
+              <p className="text-red-700">The signed contracts could not be read, so no rate is shown (this is not &ldquo;none on file&rdquo;).</p>
+            ) : (
+              <>
+                <p className="font-medium">
+                  {selfAudit.contractReader.hitRate === null
+                    ? "Hit rate: not measurable yet"
+                    : `Hit rate: ${selfAudit.contractReader.hitRate}% (${selfAudit.contractReader.hits} of ${selfAudit.contractReader.readable} readable)`}
+                </p>
+                <p className="text-muted-foreground">{selfAudit.contractReader.note}</p>
+              </>
+            )}
+            <p className="text-xs text-muted-foreground">
+              Synthetic controls read correctly: {selfAudit.contractReader.controls.matched} of {selfAudit.contractReader.controls.expected} (fixed specimens, never counted in the rate).
+            </p>
+            {selfAudit.findingsError && <p className="text-xs text-red-700">The self-audit findings could not be read, so the card above may be incomplete.</p>}
           </CardContent>
         </Card>
       )}
@@ -182,7 +263,7 @@ export default function DataHealthPage() {
           <Card>
             <CardContent className="pt-4">
               <div className="flex items-center gap-2 mb-1">
-                <AlertTriangle className="h-4 w-4 text-amber-500" />
+                <AlertTriangle className="h-4 w-4 text-amber-600" />
                 <p className="text-xs text-muted-foreground">Risky</p>
               </div>
               <p className="text-2xl font-bold text-amber-600">{stats.risky}</p>
@@ -195,6 +276,46 @@ export default function DataHealthPage() {
                 <p className="text-xs text-muted-foreground">Invalid</p>
               </div>
               <p className="text-2xl font-bold text-red-600">{stats.invalid}</p>
+              {stats.invalid > 0 && (
+                <AlertDialog open={purgeOpen} onOpenChange={(o) => !isPurging && setPurgeOpen(o)}>
+                  <AlertDialogTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="mt-2 h-7 px-2 text-xs text-red-600 hover:text-red-700 hover:bg-red-50"
+                      disabled={isPending || isPurging}
+                    >
+                      <Trash2 className="h-3.5 w-3.5 mr-1" />
+                      Purge invalid
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Purge every contact flagged Invalid?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        This marks all {stats.invalid} contacts your last hygiene scan flagged
+                        Invalid as deleted across this brokerage, and clears their entries from
+                        the health log. Contacts are soft-deleted (<code>deleted_at</code> is
+                        stamped), so they disappear from every list but the rows remain for
+                        audit. Broker or admin only.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel disabled={isPurging}>Cancel</AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={(e) => { e.preventDefault(); void handlePurge() }}
+                        disabled={isPurging}
+                      >
+                        {isPurging ? (
+                          <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Purging…</>
+                        ) : (
+                          "Purge invalid contacts"
+                        )}
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              )}
             </CardContent>
           </Card>
         </div>
@@ -212,7 +333,7 @@ export default function DataHealthPage() {
         <CardContent>
           {logs.length === 0 ? (
             <div className="py-8 text-center">
-              <CheckCircle2 className="h-8 w-8 mx-auto mb-2 text-green-500" />
+              <CheckCircle2 className="h-8 w-8 mx-auto mb-2 text-green-600" />
               <p className="text-sm text-muted-foreground">No issues found. Run a scan to check data quality.</p>
             </div>
           ) : (

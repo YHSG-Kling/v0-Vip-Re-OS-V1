@@ -1,15 +1,44 @@
 "use server"
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { createClient } from "@/lib/supabase/server"
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { decideClaimedTenant, resolveActingContext, resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { requireVendorActor } from "@/lib/kernel/portal-auth"
+import { isTenantCommerceAdmin } from "@/lib/auth/resolve-user-role"
+// ── WHICH STRIPE ACCOUNT THIS FILE USES, AND WHY IT IS TWO IMPORTS ──────────
+//
+// OWNER RULING (verbatim): "no sites should move tenant money on the platform key."
+//
+// `stripe` (the PLATFORM seam) survives here for exactly three CONNECT-PLATFORM
+// ADMIN calls — `accounts.create`, `accountLinks.create`, `accounts.retrieve`. An
+// `acct_…` is minted and onboarded ON the Connect platform that will own it, this
+// product has exactly one, and none of those three moves a cent. That is the same
+// reasoning lib/providers/payment/index.ts :: createConnectedAccount states for
+// itself.
+//
+// Every call in this file that MOVES MONEY goes through lib/providers/payment,
+// which resolves the account per call scope and refuses when the tenant has none:
+//
+//   initiateVendorPayout        → createTransfer      { side: "tenant", brokerageId }
+//   startVendorInvoiceCheckout  → createCheckoutSession       ditto
+//   confirmVendorInvoiceCheckout→ retrieveCheckoutSession     ditto (same account
+//                                 as the session's creator, or the read 404s)
+//
+// The brokerage in every one of those comes from the SESSION (CLAUDE.md §4) — from
+// `resolveWriteContext()` on the staff side, and from the session-verified contact
+// row on the portal side. Never from a parameter: a body-supplied brokerage id here
+// would select whose bank account the money leaves.
+//
+// scripts/stripe-account-scope-simulator.ts (C8/C9) holds both halves of that.
 import { stripe } from "@/lib/stripe"
+import { createTransfer, createCheckoutSession, retrieveCheckoutSession, findTransferForPayout } from "@/lib/providers/payment"
 import {
   readVendorStripeConnect,
   upsertVendorStripeAccount,
   setVendorStripeOnboarding,
 } from "@/lib/connections/vendor-stripe"
+import { assertVendorChargeableForPlatformUse } from "@/lib/vendors/vendor-platform-identity"
 
 // ─── Auth helpers ─────────────────────────────────────────────────────────────
 //
@@ -130,6 +159,23 @@ export interface VendorEarningsSummary {
     status: string
     initiatedAt: string
     completedAt: string | null
+    /** Manual Cash App transaction reference — how the vendor matches the row
+     *  to the payment that reached them. Null for Stripe/other methods. */
+    cashAppReference: string | null
+    /** The Stripe transfer reference (tr_…) for the Stripe method — the same
+     *  reconciliation handle as cashAppReference, other rail. Null otherwise. */
+    stripeTransferId: string | null
+    /** The brokerage's free-text note on this payout, written at creation
+     *  (`params.note`) and, until now, read by nobody — so a payout that
+     *  covered an unusual adjustment arrived with the explanation stranded in
+     *  the row. This is the payee's side of a money record; it belongs to them. */
+    note: string | null
+    /** How many vendor_earnings rows this payout settled. The ids themselves are
+     *  the brokerage's bookkeeping, but a lump transfer the vendor cannot tie to
+     *  a number of jobs is a number they cannot reconcile — and this is the only
+     *  place the count exists (vendor_earnings.status flips to 'paid_out' with
+     *  no back-reference to the payout that did it). */
+    coveredEarningsCount: number
   }>
 }
 
@@ -140,8 +186,8 @@ export interface VendorEarningsSummary {
 export async function createVendorInvoice(
   params: CreateInvoiceParams
 ): Promise<InvoiceResult> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
 
@@ -149,8 +195,31 @@ export async function createVendorInvoice(
   if (!await verifyVendorInCallerBrokerage(params.vendorId, ctx.brokerageId)) {
     return { success: false, error: "Forbidden: vendor not in your brokerage" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "vendor.invoice.create", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "vendor", id: params.vendorId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED", detail: { billed_to: params.billedTo } }, async (): Promise<InvoiceResult> => {
 
   const svc = createServiceClient()
+
+  // ── NO DOUBLE CHARGE FOR PLATFORM USE ──────────────────────────────────────
+  // billed_to='vendor' is the ONE tenant→vendor ledger, and every charge on it is
+  // a PLATFORM-USE charge (VENDOR_PACKAGE.isPlatformUse) — the tenant billing the
+  // vendor for access and placement in the tenant's marketplace. The owner ruling
+  // forbids raising one against a vendor already paying for platform use, whether
+  // they pay the platform directly or another brokerage.
+  //
+  // The gate sits HERE rather than only in issueVendorCharge because this is a
+  // "use server" file: createVendorInvoice is itself a public HTTP endpoint, and a
+  // caller that skipped issueVendorCharge would otherwise write the identical
+  // billed_to='vendor' row with none of its checks. billed_to='brokerage' (the
+  // vendor billing US for a job) and 'contact' are untouched — a vendor that pays
+  // for platform use must still be paid for the work it does.
+  if (params.billedTo === "vendor") {
+    const platformUse = await assertVendorChargeableForPlatformUse(svc, {
+      vendorId: params.vendorId,
+      brokerageId: ctx.brokerageId,
+    })
+    if (!platformUse.chargeable) return { success: false, error: platformUse.reason }
+  }
 
   if (params.transactionId) {
     const { data: tx } = await svc
@@ -222,6 +291,7 @@ export async function createVendorInvoice(
   }
 
   return { success: true, invoiceId: data.id }
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -229,37 +299,81 @@ export async function createVendorInvoice(
 // ---------------------------------------------------------------------------
 
 export async function submitVendorInvoice(invoiceId: string): Promise<InvoiceResult> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
 
   const verify = await verifyInvoiceInCallerBrokerage(invoiceId, ctx.brokerageId)
   if (!verify.ok) return { success: false, error: "Forbidden" }
 
+  // WAVE 155 (lane 155R29, orphan doctrine §1 case 3): KEPT. Nothing calls this door and nothing in the product produces the
+  // draft invoices it moves (createVendorInvoice above has no importer either; the live vendor-billing lane is
+  // app/actions/multi-persona.ts submitVendorInvoice, which creates invoices already 'submitted' from a booking — a different money
+  // operation, the earlier "kept: money_legal" ruling in scripts/manager-duplicate-proof-guard.ts still holds). It was already gated,
+  // tenant-pinned and counted; what it lacked was the receipt a money state change owes (LAW 5). Owner question in the lane notes.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "vendor.invoice.submit", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "vendor_invoice", id: invoiceId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<InvoiceResult> => {
   const svc = createServiceClient()
-  const { error } = await svc
+  // `.select("id")` — same rule as markInvoicePaid below: a zero-row UPDATE resolves
+  // with no error, so without counting the rows this returned success for an invoice
+  // that is still a draft (moved tenant, or cancelled, between the verify and here).
+  const { data: submitted, error } = await svc
     .from("vendor_invoices")
     .update({ status: "submitted" })
     .eq("id", invoiceId)
     .eq("brokerage_id", ctx.brokerageId)
+    .select("id")
 
   if (error) return { success: false, error: error.message }
+  if (!submitted || submitted.length === 0) {
+    const { tenantPayerWords, resolveTenantPayer } = await import("@/lib/errors"); return { success: false, error: `Nothing was submitted — that invoice is no longer one of ${tenantPayerWords(await resolveTenantPayer(svc, ctx.brokerageId)).payerPossessive} invoices.` } // wave 156 (156Q → 156N): the owner noun follows the tenant (a solo agent never reads "your brokerage")
+  }
   return { success: true, invoiceId }
+  })
 }
 
 // ---------------------------------------------------------------------------
-// markInvoicePaid — brokerage marks an invoice as paid
+// markInvoicePaid — brokerage marks an invoice it OWES A VENDOR as paid
 // ---------------------------------------------------------------------------
 
+/**
+ * WIRED (w4s1) — `app/dashboard/vendors/vendor-bills-panel.tsx` (the "Vendor Bills"
+ * card on the brokerage vendor directory).
+ *
+ * This closes the marketplace's core money loop, which had a live producer and no
+ * consumer. `app/actions/multi-persona.ts:submitVendorInvoice` (wired to the
+ * dashboard vendor-bookings panel) creates `billed_to='brokerage'` invoices with
+ * status 'submitted' — a vendor billing the brokerage for booked work. NOTHING on
+ * the platform could then mark one paid, so `vendor_earnings` was never minted from
+ * that lane, the vendor earnings page showed nothing, and `initiateVendorPayout`
+ * had nothing to pay out. Vendors did work, invoiced for it, and could never be
+ * paid through the product.
+ *
+ * NOT a duplicate of `markVendorChargePaid` — that one explicitly refuses
+ * `billed_to !== 'vendor'` (it settles money flowing vendor→brokerage and mints no
+ * earnings). This is the opposite direction. It is also not
+ * `markClientInvoiceCollected` (billed_to='contact', vendor-collected).
+ */
 export async function markInvoicePaid(params: {
   invoiceId: string
   paymentMethod?: string
   stripePaymentIntentId?: string
 }): Promise<InvoiceResult> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
+  }
+
+  // ROLE GATE. Asserting a bill is paid MINTS a `vendor_earnings` row with status
+  // 'available', which `initiateVendorPayout` wires out over Stripe Connect — this
+  // is a spend authorization, not bookkeeping. It was gated on tenancy alone, so any
+  // authenticated member of the brokerage could create a payable claim. Matches the
+  // sibling money lane `markVendorChargePaid`, minus the 'agent' branch: an agent may
+  // settle a charge THEY raised (money coming IN), but authorizing a payment OUT of
+  // brokerage funds is leadership's.
+  if (!VENDOR_CHARGE_ADMIN_ROLES.has(ctx.userType)) {
+    return { success: false, error: "Forbidden: broker, admin, or team lead only" }
   }
 
   // CRITICAL: verify invoice belongs to caller's brokerage before
@@ -268,10 +382,56 @@ export async function markInvoicePaid(params: {
   // and pair it with initiateVendorPayout to wire funds out.
   const verify = await verifyInvoiceInCallerBrokerage(params.invoiceId, ctx.brokerageId)
   if (!verify.ok) return { success: false, error: "Forbidden" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "vendor.invoice.mark_paid", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "vendor_invoice", id: params.invoiceId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<InvoiceResult> => {
+
+  // 🐛 NOT IDEMPOTENT — this minted a fresh PAYOUT CLAIM on every call.
+  //
+  // `status` was already being selected by verifyInvoiceInCallerBrokerage and then
+  // never read. It has to be read, because the insert below writes a
+  // `vendor_earnings` row with status 'available', `vendor_earnings` has NO unique
+  // index on invoice_id (verified live — only the pkey and two non-unique indexes),
+  // and `initiateVendorPayout` pays out whatever is 'available'. So calling this
+  // twice on one invoice — a double-clicked button, a retried request, or a TC
+  // marking paid an invoice the client had already paid online through
+  // confirmVendorInvoiceCheckout (which mints its own earnings row via
+  // recordDirectCollectionEarnings) — doubled the vendor's payable balance against a
+  // single collected invoice. Real money, out the door, on a duplicate row.
+  //
+  // Two guards, because they catch different paths: the status check catches the
+  // repeat of THIS action, and the earnings-existence check catches the
+  // cross-path collision with the direct-collection lane, which leaves the invoice
+  // 'paid' by a route that never touched this function.
+  if (verify.status === "paid") {
+    return { success: true, invoiceId: params.invoiceId }
+  }
+  if (verify.status === "cancelled") {
+    return { success: false, error: "Invoice was cancelled" }
+  }
+
+  // LANE GUARD. Three billing lanes share this table and each has its OWN
+  // settlement action; only the brokerage-billed lane belongs here:
+  //   billed_to='brokerage' → this action (brokerage pays the vendor; mints earnings)
+  //   billed_to='vendor'    → markVendorChargePaid (vendor pays the brokerage)
+  //   billed_to='contact'   → markClientInvoiceCollected / confirmVendorInvoiceCheckout
+  //                           (the vendor collects DIRECTLY from the client, and
+  //                            recordDirectCollectionEarnings records those earnings
+  //                            as already paid_out because the platform never held
+  //                            the funds)
+  // Without this, a brokerage marking a CONTACT invoice paid would mint an
+  // 'available' earning — a payout claim against brokerage funds for money the
+  // brokerage never collected and does not owe. The billed_to='vendor' early return
+  // further down is kept as the second door on the same rule.
+  if (verify.billed_to === "contact") {
+    return {
+      success: false,
+      error: "This invoice is billed to a client — the vendor collects it directly. Use the vendor's invoice center to record collection.",
+    }
+  }
 
   const svc = createServiceClient()
 
-  const { error: updateErr } = await svc
+  const { data: updated, error: updateErr } = await svc
     .from("vendor_invoices")
     .update({
       status: "paid",
@@ -281,8 +441,12 @@ export async function markInvoicePaid(params: {
     })
     .eq("id", params.invoiceId)
     .eq("brokerage_id", ctx.brokerageId)
+    .select("id")
 
   if (updateErr) return { success: false, error: updateErr.message }
+  // Zero rows means the invoice moved out from under us between the verify and the
+  // write. It must not report a payment it did not record.
+  if (!updated?.length) return { success: false, error: "Invoice not found" }
 
   // A tenant→vendor CHARGE (billed_to='vendor') is money flowing vendor→brokerage —
   // marking it paid must NOT mint vendor earnings (that would offer the vendor a payout
@@ -291,12 +455,33 @@ export async function markInvoicePaid(params: {
     return { success: true, invoiceId: params.invoiceId }
   }
 
+  // Never mint a second payout claim for an invoice that already has one.
+  // `error` is destructured deliberately: supabase-js resolves a refused read, and
+  // treating a refusal as "no earnings yet" here would mint the duplicate this
+  // guard exists to prevent. A refused read fails CLOSED — no earnings row.
+  const { data: existingEarnings, error: earningsReadErr } = await svc
+    .from("vendor_earnings")
+    .select("id")
+    .eq("invoice_id", params.invoiceId)
+    .limit(1)
+
+  if (earningsReadErr) {
+    return {
+      success: false,
+      error: "Invoice marked paid, but the earnings record could not be verified. Please re-check before paying out.",
+    }
+  }
+
+  if (existingEarnings?.length) {
+    return { success: true, invoiceId: params.invoiceId }
+  }
+
   // Create earnings record so the vendor sees the payment. The platform does NOT take a cut of a
   // vendor's client invoice — vendors are billed separately for platform use — so the vendor keeps the
   // full amount (platform_fee 0, net = gross).
   const gross = verify.total_amount ?? 0
 
-  await svc.from("vendor_earnings").insert({
+  const { error: earningsErr } = await svc.from("vendor_earnings").insert({
     vendor_id: verify.vendor_id,
     brokerage_id: ctx.brokerageId,
     invoice_id: params.invoiceId,
@@ -306,7 +491,17 @@ export async function markInvoicePaid(params: {
     status: "available",
   })
 
+  // The insert result was previously discarded entirely, so a failed earnings write
+  // reported a fully successful payment and the vendor was simply never credited.
+  if (earningsErr) {
+    return {
+      success: false,
+      error: `Invoice marked paid, but the vendor earnings record failed to save: ${earningsErr.message}`,
+    }
+  }
+
   return { success: true, invoiceId: params.invoiceId }
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -328,6 +523,8 @@ export async function initiateStripeConnectOnboarding(vendorId: string): Promise
   } catch {
     return { success: false, error: "Unauthorized" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: actor.brokerageId, action: "vendor.stripe_connect.start", actor: { type: "user", userId: actor.userId }, subject: { type: "vendor", id: vendorId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const svc = createServiceClient()
 
@@ -354,14 +551,21 @@ export async function initiateStripeConnectOnboarding(vendorId: string): Promise
   }
 
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"
+  // Return to the surface that STARTED onboarding. These used to point at
+  // /vendor/settings, which is a bare `redirect('/settings/general')` stub — it
+  // drops the query string entirely, so a vendor finishing Stripe's hosted flow
+  // landed on an unrelated page and nothing ever reconciled the account. The
+  // Connect UI lives on /vendor/earnings (stripe-connect.tsx), and that page now
+  // reads ?stripe=complete and calls completeStripeConnectOnboarding().
   const link = await stripe.accountLinks.create({
     account: accountId,
-    refresh_url: `${appUrl}/vendor/settings?stripe=refresh`,
-    return_url: `${appUrl}/vendor/settings?stripe=complete`,
+    refresh_url: `${appUrl}/vendor/earnings?stripe=refresh`,
+    return_url: `${appUrl}/vendor/earnings?stripe=complete`,
     type: "account_onboarding",
   })
 
   return { success: true, url: link.url }
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -375,10 +579,34 @@ export async function initiateVendorPayout(params: {
   method?: "stripe" | "cash_app" | "check" | "manual"
   cashAppReference?: string
   note?: string
-}): Promise<{ success: boolean; payoutId?: string; error?: string; w9Warning?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+}): Promise<{ success: boolean; payoutId?: string; error?: string; w9Warning?: string; earningsWarning?: string }> {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
+  }
+
+  // ── WHO MAY ASK (owner task, wave 155: "bind vendor payout to the vendor seat and earnings") ─────────────────────────
+  // Two seats, and nobody else:
+  //   · a TENANT COMMERCE ADMIN (CLAUDE.md §4 — TENANT_COMMERCE_ADMIN_USER_TYPES, lib/auth/resolve-user-role.ts: may
+  //     obligate the brokerage to pay; the operational roster minus compliance_officer, derived, never retyped). Under an
+  //     act-as grant the EFFECTIVE identity is judged (the grant never exceeds the account it walks, §5);
+  //   · THE VENDOR'S OWN SEAT — the session user holds a role row for THIS vendor (requireVendorActor: the one vendor
+  //     gate) and that grant is in the session's tenant (decideClaimedTenant — never a hand-written comparison).
+  // Lane 155S1 closed the first hole (any seat of the tenant could move the brokerage's money) by admitting admins only,
+  // which also refused the vendor's own "Request payout" button. The vendor is admitted again — for its OWN vendor only —
+  // because what a payout may cover is now bound below: it is never a number the caller sends.
+  // Checked FIRST, before any vendor, W-9, earnings or Stripe read, so a refused seat reaches nothing.
+  let requester: "commerce_admin" | "vendor_seat" | null = isTenantCommerceAdmin({ user_type: ctx.userType }) ? "commerce_admin" : null
+  if (!requester) {
+    try {
+      const self = await requireVendorActor(params.vendorId)
+      if (decideClaimedTenant({ actingBrokerageId: ctx.brokerageId, claimedBrokerageId: self.brokerageId }).ok) requester = "vendor_seat"
+    } catch {
+      requester = null // not this vendor's seat (or the grant could not be verified) — fail closed
+    }
+  }
+  if (!requester) {
+    return { success: false, error: "Only this vendor's own account, or a brokerage admin who may commit the brokerage's money, can request this payout." }
   }
 
   // CRITICAL: caller-supplied vendorId fed straight into stripe.transfers
@@ -404,71 +632,106 @@ export async function initiateVendorPayout(params: {
     w9Warning = w9SoftGateWarning(w9.status) ?? undefined
   } catch { /* soft gate stays silent on read failure */ }
 
-  // Verify caller-supplied earningIds also belong to caller's brokerage —
-  // otherwise an attacker could "settle" another tenant's earnings rows
-  // through this payout.
-  if (params.earningIds?.length) {
-    const { data: earningsRows } = await svc
-      .from("vendor_earnings")
-      .select("id, brokerage_id, vendor_id")
-      .in("id", params.earningIds)
-    const allOk =
-      !!earningsRows &&
-      earningsRows.length === params.earningIds.length &&
-      earningsRows.every(
-        (e) => e.brokerage_id === ctx.brokerageId && e.vendor_id === params.vendorId,
-      )
-    if (!allOk) {
-      return { success: false, error: "Forbidden: earnings not in your brokerage / vendor" }
-    }
+  // Stripe: the Connect account is read BEFORE anything is claimed, so "not set up" changes nothing.
+  // Vendor Connect account on the unified owner model — tenant scope was
+  // already enforced by verifyVendorInCallerBrokerage above.
+  const connect = method === "stripe" ? await readVendorStripeConnect(svc, params.vendorId) : null
+  if (method === "stripe" && (!connect?.accountId || !connect.onboardingComplete)) {
+    return { success: false, error: "Vendor Stripe account not set up", w9Warning }
   }
 
-  let stripeTransferId: string | undefined
-
-  if (method === "stripe") {
-    // Vendor Connect account on the unified owner model — tenant scope was
-    // already enforced by verifyVendorInCallerBrokerage above.
-    const connect = await readVendorStripeConnect(svc, params.vendorId)
-
-    if (!connect.accountId || !connect.onboardingComplete) {
-      return { success: false, error: "Vendor Stripe account not set up" }
-    }
-
-    const transfer = await stripe.transfers.create({
-      amount: Math.round(params.amount * 100), // cents
-      currency: "usd",
-      destination: connect.accountId,
-      metadata: { vendorId: params.vendorId, brokerageId: ctx.brokerageId },
-    })
-    stripeTransferId = transfer.id
+  // ── WAVE 156 (156N, C26): RECONCILE BEFORE ANY NEW TRANSFER ─────────────────────────────────────────────────────────
+  // A Stripe payout still 'pending' with no transfer id is one whose answer was lost (a crash, a timeout, a 5xx between the
+  // transfer and the row update). Its earnings stay claimed and it is settled HERE, before anything new is claimed or sent:
+  // found on Stripe → the row takes the transfer id; provably absent → it is re-sent under its OWN idempotency key (Stripe
+  // hands back the original if it did land); still unknown → this request is refused and nothing new moves.
+  const gates = ["resolveWriteContextForTenant (session tenant)", requester === "vendor_seat" ? "the vendor's own seat (requireVendorActor + decideClaimedTenant)" : "isTenantCommerceAdmin (TENANT_COMMERCE_ADMIN_USER_TYPES)", "verifyVendorInCallerBrokerage", "amount = the vendor's AVAILABLE earnings, claimed once (available → paid_out)", "payout row written before the transfer", "Stripe Connect onboarding complete"]
+  const recon = await reconcileUnconfirmedStripePayouts(svc, { vendorId: params.vendorId, brokerageId: ctx.brokerageId, actorUserId: ctx.actorUserId, requester, gates })
+  if (recon.unresolved.length > 0) {
+    return { success: false, error: `An earlier Stripe payout (${recon.unresolved.join(", ")}) has not been confirmed with Stripe yet, so nothing new was sent. Try again shortly.`, w9Warning, earningsWarning: recon.warning }
   }
 
+  // ── WHAT A PAYOUT MAY COVER: THE VENDOR'S AVAILABLE EARNINGS, EACH ONCE ─────────────────────────────────────────────
+  // The amount used to be the caller's number, and the vendor button sent no earningIds — so nothing was ever marked
+  // paid out and the same "available" balance could be requested again and again. claimAvailableEarnings reads this
+  // vendor's 'available' earnings in THIS brokerage (the selected ones when earningIds are given), refuses an amount that
+  // is not their sum, and CLAIMS them ('available' → 'paid_out', counted). A second request finds nothing left to claim.
+  const bound = await claimAvailableEarnings(svc, { vendorId: params.vendorId, brokerageId: ctx.brokerageId, earningIds: params.earningIds, requestedAmount: params.amount })
+  if (!bound.ok && recon.settled.length > 0) {
+    // The retry WAS the reconcile: the earlier payout is now recorded with its transfer and nothing new was owed.
+    return { success: true, payoutId: recon.settled[0], w9Warning, earningsWarning: recon.warning ?? `An earlier payout was confirmed with Stripe; nothing new was sent.` }
+  }
+  if (!bound.ok) return { success: false, error: bound.error, w9Warning }
+
+  // The payout row is written BEFORE the transfer (status 'pending'): every claim has an owning record while its money is
+  // in flight, and a crash between here and the transfer leaves a visible pending payout — not earnings that silently
+  // read "paid out". (It used to be written after the transfer, so a failed insert left money moved with no record.)
   const { data: payout, error } = await svc
     .from("vendor_payouts")
     .insert({
       vendor_id: params.vendorId,
       brokerage_id: ctx.brokerageId,
-      amount: params.amount,
+      amount: bound.amount,
       payout_method: method,
-      stripe_transfer_id: stripeTransferId ?? null,
+      // `stripe_transfer_id` IS NOT WRITE-ONLY — its reader is the webhook
+      // matcher at lib/vendors/vendor-payout-events.ts:130, which finds this
+      // row by `.eq(mapping.column, …)` where `mapping.column` comes from
+      // VENDOR_PAYOUT_COMPLETION_EVENTS (:77-78). Because the column name is a
+      // VARIABLE, no static scanner can resolve the term — the opposite-missing
+      // census counts it under "unresolvable filter terms" and reports the
+      // column as read by nobody. It is the id transfer.created / transfer.reversed
+      // arrive quoting, so deleting it would strand every Stripe payout in
+      // 'processing' forever. Nothing to build and nothing to delete (§1).
+      // Set by the update below once the transfer exists.
+      stripe_transfer_id: null,
       cash_app_reference: params.cashAppReference ?? null,
-      status: stripeTransferId ? "processing" : "pending",
-      earnings_ids: params.earningIds ?? [],
+      status: "pending",
+      earnings_ids: bound.ids,
       note: params.note ?? null,
     })
     .select("id")
     .single()
 
-  if (error || !payout) return { success: false, error: error?.message ?? "Failed" }
+  if (error || !payout) {
+    // Nothing moved. Give the claim back, and say so if that could not be done.
+    const undo = await releaseClaimedEarnings(svc, { vendorId: params.vendorId, brokerageId: ctx.brokerageId, ids: bound.ids })
+    return { success: false, error: error?.message ?? "The payout could not be recorded — nothing was paid.", w9Warning, earningsWarning: undo.warning }
+  }
 
-  // Mark covered earnings as paid_out — scoped
-  if (params.earningIds?.length) {
-    await svc
-      .from("vendor_earnings")
-      .update({ status: "paid_out" })
-      .in("id", params.earningIds)
-      .eq("brokerage_id", ctx.brokerageId)
-      .eq("vendor_id", params.vendorId)
+  let earningsWarning: string | undefined
+
+  if (method === "stripe" && connect) {
+    // ── THE BROKERAGE'S MONEY LEAVES THE BROKERAGE'S ACCOUNT ─────────────────
+    //
+    // `vendor_job_bill` (lib/billing/stripe-account-scope.ts): the payer is the
+    // BROKERAGE and the payee is the vendor. This used to be
+    // `stripe.transfers.create()` on the platform seam, so the funds left the
+    // PRODUCT's balance — a payout that succeeded, returned a transfer id and
+    // rendered a green badge while paying a vendor the product never hired, out of
+    // a balance that owes them nothing, on a 1099 issued by the wrong entity.
+    //
+    // The scope is the BROKERAGE and deliberately not `ctx.userId` / the caller's
+    // team: `vendor_payouts.brokerage_id` and `vendor_earnings.brokerage_id` name
+    // the brokerage as the party on the hook, and the rule this repo states once is
+    // that the account belongs to the PAYER/PAYEE — never to whoever clicked. An
+    // agent-scoped resolution would let WHO PRESSED THE BUTTON pick the balance.
+    //
+    // Fail-closed: a brokerage with no Stripe credential gets the resolver's
+    // sentence back as `error`, which app/vendor/earnings/payout-button.tsx renders
+    // verbatim. It never falls through to the platform's account.
+    // WAVE 155 (lane 155R8, D 152): a SECOND payout door (a vendor invoice is not a commission — the commission release gate does
+    // not apply), so it writes its OWN decision record: the transfer runs inside ledgerToolCall (session human → authorized_human;
+    // claim → transfer → settle on ONE row, its detail.governance naming the gates above). Secrets never enter the detail.
+    // WAVE 156 (156N, C26): the send and its settlement are ONE helper (sendAndSettleStripePayout, below) shared with the
+    // reconcile-before-retry path, so a first send and a re-send carry the same idempotency key and read failures the same way.
+    const sent = await sendAndSettleStripePayout(svc, {
+      payout: { id: payout.id, amount: bound.amount, earningsCount: bound.ids.length, earningIds: bound.ids },
+      vendorId: params.vendorId, brokerageId: ctx.brokerageId, actorUserId: ctx.actorUserId, requester, gates, destinationAccountId: connect.accountId!,
+    })
+    earningsWarning = sent.warning
+    if (sent.state !== "sent") {
+      return { success: false, error: sent.error ?? "The payout could not be sent.", w9Warning, earningsWarning }
+    }
   }
 
   // THE CHASE: payout activity with no W-9 on file → governed b2b transactional
@@ -488,7 +751,281 @@ export async function initiateVendorPayout(params: {
     }
   }
 
-  return { success: true, payoutId: payout.id, w9Warning }
+  return { success: true, payoutId: payout.id, w9Warning, earningsWarning }
+}
+
+// ── WAVE 156 (lane 156N, canary C26): send → settle, and reconcile before any re-send (module-private) ──────────────
+//
+// THE DEFECT (red at b261c474): every failed create was read as "no money moved", so a timeout or a 5xx AFTER Stripe had
+// created the transfer marked the payout 'failed' and released its earnings, and the vendor's next request paid them a
+// second time. A crash between the transfer and the row update left the row 'pending' with no transfer id, which nothing
+// ever read again. Now: the create carries an idempotency key derived from the payout row and the row's id as its
+// transfer_group; only a PROVABLE refusal releases earnings; an unknown answer is looked up on Stripe first, and a row
+// still unconfirmed blocks every new payout for that vendor until it is settled.
+
+type StripePayoutSendState = "sent" | "failed" | "unconfirmed"
+
+/** The idempotency key a payout row's transfer is created under: the same row always sends under the same key. */
+function vendorPayoutIdempotencyKey(payoutId: string): string {
+  return `vendor-payout-${payoutId}`
+}
+
+async function sendAndSettleStripePayout(
+  svc: PayoutDb,
+  a: {
+    payout: { id: string; amount: number; earningsCount: number; earningIds: string[] }
+    vendorId: string; brokerageId: string; actorUserId: string; requester: string; gates: string[]; destinationAccountId: string; resend?: boolean
+  },
+): Promise<{ state: StripePayoutSendState; transferId?: string; error?: string; warning?: string }> {
+  const { ledgerToolCall, governanceRecord, decisionRefFromRow } = await import("@/lib/kernel/action-ledger")
+  const scope = { side: "tenant" as const, brokerageId: a.brokerageId }
+  // ── THE ONE GATE IN FRONT OF THE ONE SEAM (every provider call of this door — first send and reconcile re-send — is below) ──
+  // The vendor is verified in the caller's tenant, and the money rides a claim: a first send rides the claim its caller just made
+  // with claimAvailableEarnings; a re-send rides the claim its payout row ALREADY holds. confirmClaimedEarnings proves that claim
+  // here (the row is this vendor's, this tenant's, still pending without a transfer, its earnings read paid out in this tenant and
+  // sum to its amount) — so neither path reaches Stripe on a claim it cannot show.
+  if (!(await verifyVendorInCallerBrokerage(a.vendorId, a.brokerageId))) return { state: "unconfirmed", error: "Forbidden: vendor not in your workspace" }
+  const claim = await confirmClaimedEarnings(svc, { payoutId: a.payout.id, vendorId: a.vendorId, brokerageId: a.brokerageId, earningIds: a.payout.earningIds, amount: a.payout.amount })
+  if (!claim.ok) return { state: "unconfirmed", error: claim.error, warning: `Payout ${a.payout.id} was not sent: ${claim.error}` }
+  // A RE-SEND IS THE SAME PAYOUT THE PERSON ALREADY AUTHORIZED: it carries that recorded decision (the first transfer's ledger row,
+  // read by decisionRefFromRow — checked at the sink for tenant and superseded facts), never a new authorization minted by the
+  // later request. A first send has no prior decision: the person's click is the decision.
+  let carried: ReturnType<typeof decisionRefFromRow> = null
+  if (a.resend) {
+    const { data: prior } = await svc.from("agent_action_ledger").select("id, brokerage_id, actor_manager_key, actor_user_id, detail")
+      .eq("brokerage_id", a.brokerageId).eq("action", "vendor.payout.transfer").eq("detail->>payout_id", a.payout.id).order("created_at", { ascending: true }).limit(1)
+    carried = decisionRefFromRow(((prior ?? []) as Array<Record<string, any>>)[0] as never)
+  }
+  const transfer = (await ledgerToolCall({
+    brokerageId: a.brokerageId, action: "vendor.payout.transfer", channel: "payout_sink", actor: { type: "user", userId: a.actorUserId },
+    subject: { type: "vendor", id: a.vendorId }, riskClass: "IRREVERSIBLE", systemSource: "vendor_payout", reasonCode: "HUMAN_REQUESTED",
+    ...(carried ? { sink: { decision: carried, decisionRequired: true } } : {}),
+    trustClass: "authorized_human", approvalBasis: "policy_permitted", dependencies: [{ type: "vendor", id: a.vendorId, version: null }, { type: "vendor_payout", id: a.payout.id, version: null }, ...a.payout.earningIds.slice(0, 20).map((id) => ({ type: "vendor_earning", id, version: null }))],
+    detail: { amount: a.payout.amount, earnings: a.payout.earningsCount, requested_by: a.requester, payout_id: a.payout.id, idempotency_key: vendorPayoutIdempotencyKey(a.payout.id), authorized_by: carried ? `the decision recorded when this payout was first sent (${carried.id})` : a.resend ? "this request (no recorded first-send decision — a payout from before the ledger)" : "this request", governance: governanceRecord({
+      plane: "tool_boundary", verdict: "allow", scope: { brokerageId: a.brokerageId, userId: a.actorUserId }, actor: { type: "user", id: a.actorUserId },
+      entity: { type: "vendor", id: a.vendorId, version: null }, objective: "vendor.payout.transfer", policyConstraints: ["sink rule (D 152): irreversible payout — second door", ...a.gates],
+      rationale: "a vendor payout from the brokerage's own Stripe account", trustClass: "authorized_human", approvalBasis: "policy_permitted",
+    }) },
+  }, () => createTransfer(
+    {
+      amount: a.payout.amount,
+      destinationAccountId: a.destinationAccountId,
+      description: `Vendor payout — ${a.vendorId}`,
+      metadata: { vendorId: a.vendorId, brokerageId: a.brokerageId, payoutId: a.payout.id },
+      idempotencyKey: vendorPayoutIdempotencyKey(a.payout.id),
+      transferGroup: a.payout.id,
+    },
+    { side: "tenant", brokerageId: a.brokerageId },
+  ))) as Awaited<ReturnType<typeof createTransfer>> & { governance?: unknown }
+
+  let transferId = transfer.success ? transfer.transferId : undefined
+  let reconciled = false
+  if (!transferId) {
+    // A refusal at the action-ledger sink never ran the call; a provider refusal is definite. Anything else may have landed.
+    const provablyRefused = transfer.outcome === "refused" || (transfer.governance !== undefined && !("outcome" in transfer))
+    if (provablyRefused) {
+      // No money moved. The payout row says so ('failed' — an honest record of the attempt, never a pending payout nobody is
+      // going to make) and its earnings go back to 'available' through the ONE release rule (lib/vendors/vendor-payout-events.ts).
+      const { data: marked, error: markErr } = await svc
+        .from("vendor_payouts")
+        .update({ status: "failed" })
+        .eq("id", a.payout.id)
+        .eq("brokerage_id", a.brokerageId)
+        .eq("status", "pending")
+        .select("id")
+      let warning: string | undefined
+      if (markErr || (marked ?? []).length !== 1) {
+        warning = `Payout ${a.payout.id} did not send, but its record could not be marked failed (${markErr?.message ?? "no row matched"}) — its earnings stay reserved until that is corrected.`
+      } else {
+        const { releaseEarningsOfFailedPayout } = await import("@/lib/vendors/vendor-payout-events")
+        const release = await releaseEarningsOfFailedPayout(svc, a.payout.id)
+        if (!release.ok || release.released !== a.payout.earningsCount) {
+          warning = `Payout ${a.payout.id} did not send, but only ${release.released} of ${a.payout.earningsCount} earnings were made available again${release.error ? ` (${release.error})` : ""}.`
+        }
+      }
+      if (warning) console.error(`[initiateVendorPayout] ${warning}`)
+      return { state: "failed", error: transfer.error ?? "The payout could not be sent.", warning }
+    }
+    // UNKNOWN: ask Stripe whether this payout's transfer exists before anything is released or re-sent.
+    const found = await findTransferForPayout({ payoutId: a.payout.id, destinationAccountId: a.destinationAccountId }, scope)
+    if (!found.ok || !found.transfer) {
+      const warning = `Stripe did not confirm payout ${a.payout.id} (${transfer.error ?? "no answer"}${found.ok ? "" : `; lookup: ${found.error ?? "failed"}`}). It stays pending with its earnings reserved and is confirmed before anything else is sent.`
+      console.error(`[initiateVendorPayout] ${warning}`)
+      return { state: "unconfirmed", error: "Stripe did not confirm this payout. It is held as pending and will be confirmed before anything else is sent.", warning }
+    }
+    transferId = found.transfer.id
+    reconciled = true
+  }
+
+  // The money moved. The row now carries the transfer id the provider's completion event will quote, and reads
+  // 'processing' until that event closes it (the writer never marks a payout paid itself).
+  const { data: sentRows, error: sentErr } = await svc
+    .from("vendor_payouts")
+    .update({ stripe_transfer_id: transferId, status: "processing" })
+    .eq("id", a.payout.id)
+    .eq("brokerage_id", a.brokerageId)
+    .eq("status", "pending")
+    .select("id")
+  if (sentErr || (sentRows ?? []).length !== 1) {
+    // The transfer EXISTS; the next request's reconcile finds it by the same lookup. The record that could not be updated
+    // rides beside the success, loudly.
+    const warning = `Transfer ${transferId} was sent, but payout ${a.payout.id} still reads pending (${sentErr?.message ?? "no row matched"}) — it is reconciled before the next payout for this vendor.`
+    console.error(`[initiateVendorPayout] ${warning}`)
+    return { state: "sent", transferId, warning }
+  }
+  return { state: "sent", transferId, warning: reconciled ? `Stripe's answer was lost, but transfer ${transferId} for payout ${a.payout.id} was found and recorded.` : undefined }
+}
+
+/**
+ * Every Stripe payout of this vendor in this brokerage still 'pending' with no transfer id: settled BEFORE any new claim or
+ * transfer. Found on Stripe → recorded (no new transfer). Provably absent → re-sent under the row's own idempotency key and the
+ * row's OWN amount (never a new number). Unconfirmed → returned, and the caller refuses the new request.
+ */
+async function reconcileUnconfirmedStripePayouts(
+  svc: PayoutDb,
+  a: { vendorId: string; brokerageId: string; actorUserId: string; requester: string; gates: string[] },
+): Promise<{ unresolved: string[]; settled: string[]; warning?: string }> {
+  const { data, error } = await svc
+    .from("vendor_payouts")
+    .select("id, amount, earnings_ids, initiated_at")
+    .eq("vendor_id", a.vendorId)
+    .eq("brokerage_id", a.brokerageId)
+    .eq("payout_method", "stripe")
+    .eq("status", "pending")
+    .is("stripe_transfer_id", null)
+  if (error) return { unresolved: ["(unreadable)"], settled: [], warning: `Earlier payouts could not be read (${error.message}) — nothing new was sent.` }
+  const rows = (data ?? []) as Array<{ id: string; amount: number | string; earnings_ids: string[] | null; initiated_at?: string | null }>
+  if (rows.length === 0) return { unresolved: [], settled: [] }
+  const connect = await readVendorStripeConnect(svc, a.vendorId)
+  if (!connect?.accountId) return { unresolved: rows.map((r) => r.id), settled: [], warning: "The vendor's Stripe account could not be read to confirm an earlier payout." }
+  const scope = { side: "tenant" as const, brokerageId: a.brokerageId }
+  const unresolved: string[] = [], settled: string[] = []
+  const warnings: string[] = []
+  for (const row of rows) {
+    const found = await findTransferForPayout({ payoutId: row.id, destinationAccountId: connect.accountId, createdSince: row.initiated_at ?? null }, scope)
+    if (!found.ok) { unresolved.push(row.id); warnings.push(found.error ?? "lookup failed"); continue }
+    if (found.transfer) {
+      const { data: rec, error: recErr } = await svc
+        .from("vendor_payouts")
+        .update({ stripe_transfer_id: found.transfer.id, status: "processing" })
+        .eq("id", row.id)
+        .eq("brokerage_id", a.brokerageId)
+        .eq("status", "pending")
+        .is("stripe_transfer_id", null)
+        .select("id")
+      if (recErr || (rec ?? []).length !== 1) { unresolved.push(row.id); warnings.push(`payout ${row.id}: transfer ${found.transfer.id} found but not recorded`) } else { settled.push(row.id); warnings.push(`Stripe transfer ${found.transfer.id} for earlier payout ${row.id} was found and recorded; nothing was sent twice.`) }
+      continue
+    }
+    const ids = row.earnings_ids ?? []
+    const resent = await sendAndSettleStripePayout(svc, {
+      payout: { id: row.id, amount: Number(row.amount), earningsCount: ids.length, earningIds: ids },
+      vendorId: a.vendorId, brokerageId: a.brokerageId, actorUserId: a.actorUserId, requester: a.requester, gates: [...a.gates, "reconciled before re-send (C26)"], destinationAccountId: connect.accountId, resend: true,
+    })
+    if (resent.state === "unconfirmed") unresolved.push(row.id); else if (resent.state === "sent") settled.push(row.id)
+    if (resent.warning) warnings.push(resent.warning)
+  }
+  return { unresolved, settled, warning: warnings.length ? warnings.join(" ") : undefined }
+}
+
+/**
+ * The claim a payout row holds, proven before any provider call: the row is this vendor's and this tenant's, still 'pending' with no
+ * transfer id, and every earning it names reads 'paid_out' for this vendor in this tenant and they sum to the row's amount. A first
+ * send passes because claimAvailableEarnings just made exactly that claim; a re-send passes only while the original claim stands.
+ */
+async function confirmClaimedEarnings(
+  svc: PayoutDb,
+  a: { payoutId: string; vendorId: string; brokerageId: string; earningIds: string[]; amount: number },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { data: row, error } = await svc.from("vendor_payouts").select("id, amount, status, stripe_transfer_id")
+    .eq("id", a.payoutId).eq("vendor_id", a.vendorId).eq("brokerage_id", a.brokerageId).maybeSingle()
+  if (error || !row) return { ok: false, error: "the payout record could not be read in this workspace" }
+  const r = row as { amount: number | string; status: string; stripe_transfer_id: string | null }
+  if (r.status !== "pending" || r.stripe_transfer_id) return { ok: false, error: "the payout is no longer waiting to be sent" }
+  if (!a.earningIds.length) return { ok: false, error: "the payout names no earnings" }
+  const { data: held, error: heldErr } = await svc.from("vendor_earnings").select("id, net_amount")
+    .in("id", a.earningIds).eq("vendor_id", a.vendorId).eq("brokerage_id", a.brokerageId).eq("status", "paid_out")
+  if (heldErr) return { ok: false, error: "the payout's earnings could not be read" }
+  const rows = (held ?? []) as Array<{ net_amount: number | string | null }>
+  const cents = rows.reduce((s, e) => s + Math.round(Number(e.net_amount ?? 0) * 100), 0)
+  if (rows.length !== a.earningIds.length || cents !== Math.round(Number(r.amount) * 100) || cents !== Math.round(a.amount * 100)) {
+    return { ok: false, error: "the payout's earnings no longer match its claim" }
+  }
+  return { ok: true }
+}
+
+// ── the binding's two halves (module-private: a "use server" file exports only its actions) ──────────────────────────
+
+type PayoutDb = ReturnType<typeof createServiceClient>
+
+/**
+ * Read this vendor's AVAILABLE earnings in this brokerage, refuse an amount that is not their sum, and CLAIM them.
+ * The claim is one conditional update ('available' → 'paid_out', pinned to vendor + brokerage, `.select()`ed and
+ * COUNTED — CLAUDE.md §3): two requests racing for the same earnings cannot both match them, so the loser gets fewer
+ * rows than it read, gives back what it took, and is refused. The amount returned is the sum of what was claimed.
+ */
+async function claimAvailableEarnings(
+  svc: PayoutDb,
+  a: { vendorId: string; brokerageId: string; earningIds?: string[]; requestedAmount: number },
+): Promise<{ ok: true; ids: string[]; amount: number } | { ok: false; error: string }> {
+  const wanted = a.earningIds?.length ? [...new Set(a.earningIds)] : null
+  let q = svc
+    .from("vendor_earnings")
+    .select("id, net_amount")
+    .eq("vendor_id", a.vendorId)
+    .eq("brokerage_id", a.brokerageId)
+    .eq("status", "available")
+  if (wanted) q = q.in("id", wanted)
+  const { data: availableRows, error: readErr } = await q
+  if (readErr) return { ok: false, error: "The available earnings could not be read — nothing was paid." }
+  const rows = (availableRows ?? []) as Array<{ id: string; net_amount: number | string | null }>
+  if (wanted && rows.length !== wanted.length) {
+    return { ok: false, error: "Some of the selected earnings are not available for payout — they are already paid out, on hold, or not this vendor's." }
+  }
+  const cents = rows.reduce((sum, r) => sum + Math.round(Number(r.net_amount ?? 0) * 100), 0)
+  if (rows.length === 0 || !(cents > 0)) return { ok: false, error: "There are no available earnings to pay out." }
+  const due = cents / 100
+  if (!Number.isFinite(Number(a.requestedAmount)) || Math.abs(Number(a.requestedAmount) - due) > 0.005) {
+    return { ok: false, error: `A payout must equal the available earnings (${due.toFixed(2)}). Refresh the page and try again.` }
+  }
+  const ids = rows.map((r) => r.id)
+  const { data: claimedRows, error: claimErr } = await svc
+    .from("vendor_earnings")
+    .update({ status: "paid_out" })
+    .in("id", ids)
+    .eq("vendor_id", a.vendorId)
+    .eq("brokerage_id", a.brokerageId)
+    .eq("status", "available")
+    .select("id")
+  if (claimErr) return { ok: false, error: "The available earnings could not be reserved — nothing was paid." }
+  const claimed = ((claimedRows ?? []) as Array<{ id: string }>).map((r) => r.id)
+  if (claimed.length !== ids.length) {
+    // Another request took some of them between the read and the claim. Give back what this one took.
+    const undo = await releaseClaimedEarnings(svc, { vendorId: a.vendorId, brokerageId: a.brokerageId, ids: claimed })
+    if (undo.warning) console.error(`[initiateVendorPayout] ${undo.warning}`)
+    return { ok: false, error: "These earnings were just claimed by another payout request. Refresh the page and try again." }
+  }
+  return { ok: true, ids: claimed, amount: due }
+}
+
+/** Give a claim back when NO payout row holds it yet ('paid_out' → 'available', pinned and counted). */
+async function releaseClaimedEarnings(
+  svc: PayoutDb,
+  a: { vendorId: string; brokerageId: string; ids: string[] },
+): Promise<{ released: number; warning?: string }> {
+  if (a.ids.length === 0) return { released: 0 }
+  const { data, error } = await svc
+    .from("vendor_earnings")
+    .update({ status: "available" })
+    .in("id", a.ids)
+    .eq("vendor_id", a.vendorId)
+    .eq("brokerage_id", a.brokerageId)
+    .eq("status", "paid_out")
+    .select("id")
+  const released = (data ?? []).length
+  if (error || released !== a.ids.length) {
+    return { released, warning: `Only ${released} of ${a.ids.length} reserved earnings were made available again${error ? ` (${error.message})` : ""} — the rest still read paid out with no payout behind them.` }
+  }
+  return { released }
 }
 
 // ---------------------------------------------------------------------------
@@ -505,8 +1042,8 @@ export async function getVendorEarningsSummary(
     const actor = await requireVendorActor(vendorId)
     brokerageId = actor.brokerageId
   } catch {
-    const ctx = await resolveWriteContext()
-    if (ctx.isAuthenticated && ctx.brokerageId &&
+    const ctx = await resolveActingContext()
+    if (ctx.ok && ctx.brokerageId &&
         await verifyVendorInCallerBrokerage(vendorId, ctx.brokerageId)) {
       brokerageId = ctx.brokerageId
     }
@@ -536,7 +1073,19 @@ export async function getVendorEarningsSummary(
         .order("created_at", { ascending: false }),
       svc
         .from("vendor_payouts")
-        .select("id, amount, payout_method, status, initiated_at, completed_at")
+        // cash_app_reference is the manual-payout transaction ref written at
+        // payout creation and read by nobody — without it a vendor could not
+        // match a "cash_app" payout row to the payment that actually reached them.
+        // `note` and `earnings_ids` were the same shape of orphan write: the
+        // brokerage's explanation of the payout, and the set of earnings it
+        // settled. Both are written by initiateVendorPayout above and neither had
+        // a reader, so a vendor saw an amount with no account of what it covered.
+        // `stripe_transfer_id` is the SAME shape for the Stripe method: the tr_…
+        // reference the payee matches against their own Stripe balance. Read here
+        // (2026-09-07) beside cash_app_reference — the webhook matcher at
+        // lib/vendors/vendor-payout-events.ts:130 reads it too, but through a
+        // variable column name no static scan can see.
+        .select("id, amount, payout_method, status, initiated_at, completed_at, cash_app_reference, stripe_transfer_id, note, earnings_ids")
         .eq("vendor_id", vendorId)
         .eq("brokerage_id", brokerageId)
         .order("initiated_at", { ascending: false }),
@@ -571,6 +1120,12 @@ export async function getVendorEarningsSummary(
       status: p.status,
       initiatedAt: p.initiated_at,
       completedAt: p.completed_at,
+      cashAppReference: p.cash_app_reference ?? null,
+      stripeTransferId: p.stripe_transfer_id ?? null,
+      note: p.note ?? null,
+      // The column is a uuid[] with DEFAULT '{}'. A non-array (legacy null) must
+      // read as 0 covered earnings, never as a crash on .length.
+      coveredEarningsCount: Array.isArray(p.earnings_ids) ? p.earnings_ids.length : 0,
     })),
   }
 }
@@ -579,6 +1134,41 @@ export async function getVendorEarningsSummary(
 // completeStripeConnectOnboarding — called from the return URL to mark complete
 // ---------------------------------------------------------------------------
 
+/**
+ * WIRED (w4s1) — `app/vendor/earnings/page.tsx` calls this when Stripe redirects
+ * the vendor back with `?stripe=complete`. It is also the only implementation that
+ * can turn `stripe_onboarding_complete` back OFF.
+ *
+ * Survivor for the "flip the flag on" half: `app/api/billing/webhook/route.ts`,
+ * the `account.updated` branch → `lib/connections/vendor-stripe.ts:
+ * setStripeOnboardingByAccount`. That path is wired and works, so this is not the
+ * only writer and cannot simply be "wired" as the missing one.
+ *
+ * But it is NOT redundant, because the webhook branch is
+ *     if (details_submitted && charges_enabled) setStripeOnboardingByAccount(..., true)
+ * — it only ever sets TRUE. This function computes the same boolean and passes it
+ * through, so it also DEMOTES. That matters on a money path: when Stripe later
+ * restricts a connected account (expired documents, failed verification,
+ * `charges_enabled` goes false), the webhook leaves the flag true forever, and
+ * `initiateVendorPayout` hard-gates on exactly that flag before calling
+ * `stripe.transfers.create()`. So the payout lane keeps transferring to a
+ * destination that can no longer receive, on a stale flag.
+ *
+ * It is also the synchronous confirmation for a vendor returning from Stripe's
+ * hosted flow — webhooks are eventually consistent, and Connect events have to be
+ * separately enabled on the endpoint for that branch to ever fire.
+ *
+ * Correctly gated (`requireVendorActor(vendorId)` — the caller must BE this vendor),
+ * so the vendorId passed in must be a `vendors.id` (the canonical linkage is
+ * `user_role_assignments.vendor_id`; `vendors` has no user_id).
+ *
+ * DONE (was a handoff): the survivor's promote-only hole is fixed — the webhook's
+ * `account.updated` branch now passes the computed boolean instead of gating on it.
+ * DONE (was a handoff): `initiateStripeConnectOnboarding` now returns the vendor to
+ * `/vendor/earnings?stripe=complete` (it pointed at `/vendor/settings`, a bare
+ * `redirect('/settings/general')` stub that drops the query string), and that page
+ * calls this on the param.
+ */
 export async function completeStripeConnectOnboarding(vendorId: string): Promise<{
   success: boolean
   error?: string
@@ -590,6 +1180,8 @@ export async function completeStripeConnectOnboarding(vendorId: string): Promise
   } catch {
     return { success: false, error: "Unauthorized" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: actor.brokerageId, action: "vendor.stripe_connect.complete", actor: { type: "user", userId: actor.userId }, subject: { type: "vendor", id: vendorId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const svc = createServiceClient()
 
@@ -608,6 +1200,7 @@ export async function completeStripeConnectOnboarding(vendorId: string): Promise
   await setVendorStripeOnboarding(svc, vendorId, complete)
 
   return { success: complete, error: complete ? undefined : "Onboarding not yet complete in Stripe" }
+  })
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -635,7 +1228,7 @@ async function recordDirectCollectionEarnings(args: {
   gross: number
 }): Promise<void> {
   const svc = createServiceClient()
-  await svc.from("vendor_earnings").insert({
+  await sentinelWrite(svc, svc.from("vendor_earnings").insert({
     vendor_id: args.vendorId,
     brokerage_id: args.brokerageId,
     invoice_id: args.invoiceId,
@@ -643,7 +1236,7 @@ async function recordDirectCollectionEarnings(args: {
     platform_fee: 0,
     net_amount: args.gross,
     status: "paid_out",
-  })
+  }), { table: "vendor_earnings", flow: "vendor_direct_collection_earnings", brokerageId: args.brokerageId, reason: "earnings history for a collection that already happened off-platform (never offered for payout); a lost row is ledgered, never fails the paid invoice" })
 }
 
 /** Best-effort push of a paid/issued invoice into the VENDOR's QuickBooks. Never
@@ -920,10 +1513,15 @@ export async function markClientInvoiceCollected(params: {
 
 // ---------------------------------------------------------------------------
 // Contact pay-online lane — Stripe Checkout DESTINATION CHARGE on the vendor's
-// connected account. The platform key creates the session; funds settle on the
-// VENDOR's Stripe account (transfer_data.destination). 'paid' is only recorded
-// after Stripe confirms payment_status='paid' on the session (real provider
-// acceptance — never on redirect alone).
+// connected account. The BROKERAGE's Stripe account creates the session (it is the
+// merchant of record — the name on the hosted page and on the payer's statement);
+// funds settle on the VENDOR's Stripe account (transfer_data.destination). 'paid'
+// is only recorded after Stripe confirms payment_status='paid' on the session (real
+// provider acceptance — never on redirect alone).
+//
+// It was the PLATFORM's key that created the session until the ruling "no sites
+// should move tenant money on the platform key"; see the import header at the top
+// of this file for where each half went.
 // ---------------------------------------------------------------------------
 
 async function verifyContactCaller(
@@ -986,6 +1584,18 @@ export async function startVendorInvoiceCheckout(params: {
     return { success: false, error: `Invoice is not payable (status: ${invoice.status})` }
   }
 
+  // THE TENANT COMES FROM THE SESSION (CLAUDE.md §4). `gate.contact` is the row
+  // verifyContactCaller matched against the SIGNED-IN user; its brokerage_id is the
+  // only tenant claim on this request that the caller did not supply. The invoice's
+  // own brokerage_id is caller-reachable data, so it is CHECKED against the session's
+  // rather than trusted — otherwise the invoice id would be selecting which
+  // brokerage's Stripe account collects, which is the IDOR shape this repo keeps
+  // finding, pointed at a bank account.
+  const sessionBrokerageId = gate.contact.brokerage_id
+  if (!sessionBrokerageId || invoice.brokerage_id !== sessionBrokerageId) {
+    return { success: false, error: "Invoice not found" }
+  }
+
   // The vendor must have completed Stripe Connect onboarding — otherwise the portal
   // shows honest pay-the-vendor-directly instructions instead of this button.
   const connect = await readVendorStripeConnect(svc, invoice.vendor_id)
@@ -1003,38 +1613,42 @@ export async function startVendorInvoiceCheckout(params: {
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"
   const invoiceLabel = invoice.invoice_number ?? `INV-${invoice.id.slice(0, 8).toUpperCase()}`
 
-  try {
-    const session = await stripe.checkout.sessions.create({
-      mode: "payment",
-      line_items: [
-        {
-          quantity: 1,
-          price_data: {
-            currency: "usd",
-            unit_amount: amountCents,
-            product_data: { name: `Invoice ${invoiceLabel} — ${vendorName}` },
-          },
-        },
-      ],
-      // DESTINATION CHARGE: funds settle on the vendor's connected account.
-      payment_intent_data: {
-        transfer_data: { destination: connect.accountId },
-        metadata: {
-          vendor_invoice_id: invoice.id,
-          vendor_id: invoice.vendor_id,
-          brokerage_id: invoice.brokerage_id ?? "",
-        },
-      },
+  // ── THE MERCHANT OF RECORD IS THE BROKERAGE, NOT THE PRODUCT ──────────────
+  //
+  // `client_payment` (lib/billing/stripe-account-scope.ts): a contact pays; the
+  // brokerage collects. This used to be `stripe.checkout.sessions.create()` on the
+  // platform seam, which made the PRODUCT the merchant on a sale it had no part in
+  // — Stripe's hosted page carries the account's business name and support email,
+  // and the buyer's card statement carries its descriptor, so the wrong merchant was
+  // not a bookkeeping detail here but the thing the payer actually read. The refund
+  // would have come out of the product's balance too.
+  //
+  // The DESTINATION CHARGE is unchanged in intent — funds still settle on the
+  // VENDOR's connected account — but it is now made FROM the brokerage's account, so
+  // the two sides of the charge finally name the same tenant. `createCheckoutSession`
+  // refuses, with a sentence, when those two cannot address each other.
+  const checkout = await createCheckoutSession(
+    {
+      amount: Number(invoice.total_amount ?? 0),
+      currency: "usd",
+      productName: `Invoice ${invoiceLabel} — ${vendorName}`,
+      destinationAccountId: connect.accountId,
+      customerEmail: gate.contact.email ?? undefined,
       metadata: { vendor_invoice_id: invoice.id, contact_id: params.contactId },
-      customer_email: gate.contact.email ?? undefined,
-      success_url: `${appUrl}/portal/${params.contactId}/invoices?checkout=success&invoice=${invoice.id}&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${appUrl}/portal/${params.contactId}/invoices?checkout=cancelled&invoice=${invoice.id}`,
-    })
-    if (!session.url) return { success: false, error: "Stripe did not return a checkout URL" }
-    return { success: true, url: session.url }
-  } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : String(err) }
+      paymentIntentMetadata: {
+        vendor_invoice_id: invoice.id,
+        vendor_id: invoice.vendor_id,
+        brokerage_id: sessionBrokerageId,
+      },
+      successUrl: `${appUrl}/portal/${params.contactId}/invoices?checkout=success&invoice=${invoice.id}&session_id={CHECKOUT_SESSION_ID}`,
+      cancelUrl: `${appUrl}/portal/${params.contactId}/invoices?checkout=cancelled&invoice=${invoice.id}`,
+    },
+    { side: "tenant", brokerageId: sessionBrokerageId },
+  )
+  if (!checkout.success || !checkout.url) {
+    return { success: false, error: checkout.error ?? "Could not start checkout" }
   }
+  return { success: true, url: checkout.url }
 }
 
 export async function confirmVendorInvoiceCheckout(params: {
@@ -1058,23 +1672,32 @@ export async function confirmVendorInvoiceCheckout(params: {
   if (!invoice) return { success: false, error: "Invoice not found" }
   if (invoice.status === "paid") return { success: true, alreadyPaid: true }
 
+  // Same session-derived tenant as startVendorInvoiceCheckout, and checked the same
+  // way — the session lives on the BROKERAGE's Stripe account, so this read has to
+  // be made on that same account or Stripe answers "no such checkout session" and a
+  // genuinely paid invoice never settles.
+  const sessionBrokerageId = gate.contact.brokerage_id
+  if (!sessionBrokerageId || invoice.brokerage_id !== sessionBrokerageId) {
+    return { success: false, error: "Invoice not found" }
+  }
+
   // REAL provider acceptance: retrieve the session and require payment_status='paid'
   // for THIS invoice. A redirect with an unpaid/foreign session changes nothing.
-  let session
-  try {
-    session = await stripe.checkout.sessions.retrieve(params.sessionId)
-  } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : String(err) }
+  const session = await retrieveCheckoutSession(params.sessionId, {
+    side: "tenant",
+    brokerageId: sessionBrokerageId,
+  })
+  if (!session.success) {
+    return { success: false, error: session.error ?? "The payment could not be verified with Stripe." }
   }
   if (session.metadata?.vendor_invoice_id !== params.invoiceId) {
     return { success: false, error: "Checkout session does not match this invoice" }
   }
-  if (session.payment_status !== "paid") {
+  if (session.paymentStatus !== "paid") {
     return { success: false, error: "Payment not completed" }
   }
 
-  const paymentIntentId =
-    typeof session.payment_intent === "string" ? session.payment_intent : session.payment_intent?.id ?? null
+  const paymentIntentId = session.paymentIntentId
 
   const { error } = await svc
     .from("vendor_invoices")
@@ -1167,8 +1790,8 @@ export async function issueVendorCharge(params: {
   dueDate?: string
   notes?: string
 }): Promise<{ success: boolean; invoiceId?: string; invoiceNumber?: string; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
   const isAdminCharger = VENDOR_CHARGE_ADMIN_ROLES.has(ctx.userType)
   if (!isAdminCharger && ctx.userType !== "agent") {
     return { success: false, error: "Forbidden: broker, admin, team lead, or agent only" }
@@ -1230,13 +1853,23 @@ export async function issueVendorCharge(params: {
   if (!created.success || !created.invoiceId) return { success: false, error: created.error }
 
   // createVendorInvoice writes 'draft' — issue it (same transition submitVendorInvoice makes).
+  //
+  // `.select("id")` and the zero-row check are load-bearing: a supabase-js UPDATE
+  // that matches nothing resolves with `error` null (CLAUDE.md §3), so without them
+  // this reported {success:true} AND SENT THE VENDOR AN EMAIL saying an invoice had
+  // been issued, while the row sat at 'draft' — a bill announced to the payer that
+  // the ledger says was never raised. Charging nobody, loudly.
   const svc = createServiceClient()
-  const { error: issueErr } = await svc
+  const { data: issued, error: issueErr } = await svc
     .from("vendor_invoices")
     .update({ status: "submitted" })
     .eq("id", created.invoiceId)
     .eq("brokerage_id", ctx.brokerageId)
+    .select("id")
   if (issueErr) return { success: false, error: issueErr.message }
+  if (!issued || issued.length === 0) {
+    return { success: false, error: "The charge was drafted but could not be issued — it is still a draft, and the vendor has not been notified." }
+  }
 
   // Best-effort B2B transactional notification to the vendor.
   try {
@@ -1288,14 +1921,16 @@ export async function markVendorChargePaid(params: {
   invoiceId: string
   paymentMethod?: string
 }): Promise<InvoiceResult> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
   if (!VENDOR_CHARGE_ADMIN_ROLES.has(ctx.userType) && ctx.userType !== "agent") {
     return { success: false, error: "Forbidden: broker, admin, team lead, or agent only" }
   }
 
   const verify = await verifyInvoiceInCallerBrokerage(params.invoiceId, ctx.brokerageId)
   if (!verify.ok) return { success: false, error: "Forbidden" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "vendor.charge.mark_paid", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "vendor_invoice", id: params.invoiceId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<InvoiceResult> => {
   if (verify.billed_to !== "vendor") return { success: false, error: "Not a vendor charge" }
   if (verify.status === "paid") return { success: false, error: "Invoice already marked paid" }
   if (verify.status === "cancelled") return { success: false, error: "Invoice was cancelled" }
@@ -1332,4 +1967,5 @@ export async function markVendorChargePaid(params: {
 
   if (error) return { success: false, error: error.message }
   return { success: true, invoiceId: params.invoiceId }
+  })
 }

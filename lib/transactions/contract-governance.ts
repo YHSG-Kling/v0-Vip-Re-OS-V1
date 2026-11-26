@@ -38,11 +38,12 @@ export async function setContractDate(params: {
     throw new Error("Compliance has not passed — cannot set contract date")
   }
 
-  await supabase
+  const { error: contractDateErr } = await supabase
     .from("transactions")
     .update({ contract_date: contractDate })
     .eq("id", transactionId)
     .eq("brokerage_id", brokerageId)
+  if (contractDateErr) throw new Error(`Could not set the contract date: ${contractDateErr.message}`)
 
   await transitionLifecycle({
     brokerageId: brokerageId,

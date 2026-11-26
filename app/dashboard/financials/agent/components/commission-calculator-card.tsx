@@ -242,7 +242,7 @@ export function CommissionCalculatorCard({
                 <div className="flex items-center justify-between text-sm">
                   <span className="text-muted-foreground">After Tax Estimate</span>
                   <div className="text-right">
-                    <span className="font-medium text-amber-600">
+                    <span className="font-medium text-amber-700">
                       {fmt(breakdown.agentNet - breakdown.taxEstimate.totalEstimatedTax)}
                     </span>
                     <Badge variant="outline" className="ml-2 text-xs bg-amber-50 text-amber-700 border-amber-200">

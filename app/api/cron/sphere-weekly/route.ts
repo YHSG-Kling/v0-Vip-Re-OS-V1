@@ -11,23 +11,20 @@
  * Auth: CRON_SECRET — same pattern as other cron endpoints in this codebase.
  */
 import { NextResponse, type NextRequest } from "next/server"
+import { verifyCronAuth } from "@/lib/cron-auth"
+import { createCronRunContextAction, recordCronSuccessAction, recordCronFailureAction } from "@/app/actions/cron-kernel"
 import { createServiceClient } from "@/lib/supabase/service"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
 
-function unauthorized() {
-  return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-}
-
 export async function GET(req: NextRequest) {
-  // Vercel cron sends the secret as a header; manual runs from local dev use the
-  // ?secret= query param. Match the established pattern from other cron routes.
-  const headerSecret = req.headers.get("authorization")?.replace("Bearer ", "")
-  const querySecret  = new URL(req.url).searchParams.get("secret")
-  const expected     = process.env.CRON_SECRET
-  if (!expected) return NextResponse.json({ skipped: "CRON_SECRET not configured" })
-  if (headerSecret !== expected && querySecret !== expected) return unauthorized()
+  // The ONE cron gate (lib/cron-auth.ts): Bearer CRON_SECRET, fail closed when
+  // unset. The old ?secret= query credential is retired (lane 88E).
+  const denied = verifyCronAuth(req)
+  if (denied) return denied
+  const cronRun = await createCronRunContextAction({ cron_name: "sphere-weekly", cron_path: "/app/api/cron/sphere-weekly/route.ts" }) // run row + cron decision door (155R1)
+  if (cronRun.data?.held) return NextResponse.json({ success: true, held: true, decision: cronRun.data.decision })
 
   const svc = createServiceClient()
 
@@ -36,6 +33,7 @@ export async function GET(req: NextRequest) {
   const { data: brokerages, error } = await svc
     .from("brokerages")
     .select("id, name")
+  if (error && cronRun.data) await recordCronFailureAction({ context_id: cronRun.data.context_id, error: error.message, stage: "load" })
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
   const results: Array<{ brokerage_id: string; brokerage_name: string | null; result: string }> = []
@@ -66,6 +64,7 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  if (cronRun.data) await recordCronSuccessAction({ context_id: cronRun.data.context_id, records_processed: results.length })
   return NextResponse.json({
     ran_at: new Date().toISOString(),
     brokerages_processed: results.length,

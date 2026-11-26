@@ -21,9 +21,8 @@ import { createClient } from "@/lib/supabase/server"
 import { aiCounterOfferStrategy, aiCalculateEscalation } from "./ai-offer-creation"
 import { buildMultiOfferMatrix } from "@/lib/workflow/intelligence/multi-offer-matrix"
 import { isValidUUID } from "@/lib/validations"
-import { generateText } from "ai"
-import { generateObjectRouted } from "@/lib/ai/models"
-import { resolveModel } from "@/lib/ai/resolve-model"
+// Wave 97 (97C): the reply draft rides the routed lane too (books ai_tool_usage; negotiation_reply_draft = gpt-4o-mini).
+import { generateObjectRouted, generateTextRouted } from "@/lib/ai/models"
 import { z } from "zod"
 
 export interface NegotiationStrategy {
@@ -306,12 +305,20 @@ export async function negotiationCoPilot(params: {
     listPrice,
     suggestedCounterPrice: strategy?.suggestedCounterPrice ?? null,
     existingConcession,
+    // §4 — off the listing row loaded above through the caller's own RLS-bound
+    // client (listings SELECT is brokerage-scoped, verified live), plus the
+    // authenticated user. Neither is a request-body value.
+    brokerageId: (listing as { brokerage_id?: string | null } | null)?.brokerage_id ?? null,
+    userId: user.id,
   })
 
   // ─── 3. Draft response message in agent voice ────────────────────────────
   const buyerName = buyer ? `${buyer.first_name ?? ""} ${buyer.last_name ?? ""}`.trim() || "the buyer" : "the buyer"
   const draftResponse = strategy
     ? await draftCounterResponse({
+        // Wave 97 (97C): the booking tenant + actor — same §4 sources as the concession matrix above.
+        brokerageId: (listing as { brokerage_id?: string | null } | null)?.brokerage_id ?? null,
+        userId: user.id,
         side,
         recommendedResponse: strategy.recommendedResponse,
         suggestedCounterPrice: strategy.suggestedCounterPrice ?? null,
@@ -360,13 +367,13 @@ async function summarizeComparables(input: {
   // RentCast comps (the platform comps provider). Returns recent sold comps with
   // sale_price / days_on_market / price_per_sqft — the fields the medians use.
   try {
-    const { getRentcastComps } = await import("@/lib/property/rentcast")
+    const { requestPropertyComparables } = await import("@/lib/avm/provider-chain") // TOMBSTONE (156I r4, LAW 3): getRentcastComps by name → lib/avm/provider-chain.ts:857
     const comps = input.brokerageId
-      ? await getRentcastComps({
+      ? (await requestPropertyComparables({
           brokerageId: input.brokerageId,
           address: [input.address, input.city, input.state, input.zip].filter(Boolean).join(", "),
           limit: 20,
-        }).catch(() => null)
+        }).then((c) => c.pull.comps).catch(() => null))
       : null
 
     if (comps && Array.isArray(comps) && comps.length > 0) {
@@ -415,6 +422,8 @@ async function summarizeComparables(input: {
 }
 
 async function draftCounterResponse(input: {
+  brokerageId: string | null
+  userId: string
   side: "seller" | "buyer"
   recommendedResponse: string
   suggestedCounterPrice: number | null
@@ -458,10 +467,10 @@ Audience: LISTING agent. Tone: professional, them-first, collaborative, no high-
 Respond with JSON only: { "subject": "<email subject ≤ 60 chars>", "body": "<message body>" }`
 
   try {
-    const result = await generateText({
-      model: resolveModel("openai/gpt-4o-mini"),
+    const result = await generateTextRouted({
+      feature: "negotiation_reply_draft", brokerageId: input.brokerageId, userId: input.userId,
       prompt: input.side === "buyer" ? buyerSidePrompt : sellerSidePrompt,
-      maxOutputTokens: 400,
+      maxTokens: 400,
     })
     const jsonMatch = result.text.match(/\{[\s\S]*\}/)
     if (!jsonMatch) return undefined
@@ -487,6 +496,11 @@ async function buildConcessionMatrix(input: {
   listPrice:              number
   suggestedCounterPrice:  number | null
   existingConcession:     number
+  /** Tenant + actor for the AI cost ledger. The brokerage comes off the
+   *  LISTING row the caller already loaded through the caller's own RLS-bound
+   *  client — never from `params` (§4). */
+  brokerageId:            string | null
+  userId:                 string | null
 }): Promise<ConcessionMatrix | undefined> {
   const basePrice = input.suggestedCounterPrice ?? input.offerPrice
   if (basePrice <= 0) return undefined
@@ -560,6 +574,8 @@ ${scenarios.map((s, i) => `${i + 1}. ${s.label} — seller Δnet ${formatUsd(s.n
 
 In 1-2 sentences, give the agent a direct framing: which scenario should they advocate for and how should they pitch it to their client (${input.side === "seller" ? "the seller" : "the buyer"})? No jargon.`
     const r = await generateObjectRouted({
+      brokerageId: input.brokerageId,
+      userId: input.userId,
       feature: "concession_trade_off",
       schema: z.object({ bottomLine: z.string() }),
       prompt,

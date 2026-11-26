@@ -13,9 +13,12 @@
 // when nothing was attempted). quickbooks_sync_log is retired.
 
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
 import { QuickBooksProvider } from "@/lib/providers/accounting/quickbooks"
+import type { ActionContext } from "@/lib/kernel/action-ledger"
+import type { AccountingWriteResult } from "@/lib/providers/accounting/quickbooks"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -78,6 +81,33 @@ async function resolveExpenseAccountRef(svc: Svc, brokerageId: string, category:
   return null
 }
 
+/**
+ * WAVE 153 (lane 153A) — THE BUSINESS UNIT. A multi-location tenant's office expense must land in the connected books
+ * under that office, not dissolve into the company total. The mapping is TENANT-CONFIGURED on the office itself
+ * (`locations.settings.accounting.quickbooks_department_id` — QuickBooks' Location/Department dimension), written
+ * through the existing office editor (app/actions/admin/locations.ts updates `settings`). Never inferred from a name.
+ *   · no office on the expense (main office / single-office tenant)   → no business unit (the company itself);
+ *   · the tenant maps NO office at all (it does not track locations in its books) → pushed without one, and the
+ *     payload snapshot records that the books do not track offices;
+ *   · the tenant maps SOME offices but not this one                    → an honest BUSINESS_UNIT_NOT_MAPPED sync error
+ *     (never filed under the company by default — that would misstate both the office's and the company's books).
+ * A refused read is a refusal (the push is not attempted with a guessed unit).
+ */
+async function resolveBusinessUnit(svc: Svc, brokerageId: string, locationId: string | null):
+  Promise<{ ok: true; tracked: boolean; departmentRef: string | null } | { ok: false; error: string }> {
+  if (!locationId) return { ok: true, tracked: false, departmentRef: null }
+  const { data, error } = await svc.from("locations").select("id, settings").eq("brokerage_id", brokerageId)
+  if (error) return { ok: false, error: `office mapping read refused: ${error.message}` }
+  const refOf = (settings: unknown): string | null => {
+    const v = ((settings as { accounting?: { quickbooks_department_id?: unknown } } | null)?.accounting?.quickbooks_department_id)
+    return typeof v === "string" && v.trim() ? v.trim() : typeof v === "number" ? String(v) : null
+  }
+  const rows = (data ?? []) as Array<{ id: string; settings: unknown }>
+  const tracked = rows.some((r) => refOf(r.settings) !== null)
+  const mine = rows.find((r) => r.id === locationId)
+  return { ok: true, tracked, departmentRef: mine ? refOf(mine.settings) : null }
+}
+
 export interface AccountingPushOutcome {
   attempted: boolean
   success: boolean
@@ -85,11 +115,33 @@ export interface AccountingPushOutcome {
   error?: string
 }
 
+type EgressErrorCode = "CONNECTION_FAILED" | "ACCOUNT_NOT_MAPPED" | "CUSTOMER_NOT_MAPPED" | "PROVIDER_REFUSED" | "BUSINESS_UNIT_NOT_MAPPED"
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** One accounting_sync_log row per attempted push — and, on a FAILED push, one sync_errors row naming the record.
+ *
+ *  WAVE 152 (integrator, after lane 152K retired the fake bulk route app/api/accounting/sync/route.ts): that route was the
+ *  only code that ever wrote sync_errors, and it wrote rows for records it had never tried to send. With it gone the
+ *  Sync errors panel (app/actions/accounting-sync.ts getSyncErrors / retrySyncError, app/settings/accounting) read a table
+ *  NOBODY wrote — while this module's own doc comments promised "an honest failure the sync errors UI surfaces". No
+ *  duplicate writer exists, so the missing half is BUILT here (orphan doctrine §1.2): the real push path files the real
+ *  failure, linked to its log row, with the record id when the caller has one and a payload snapshot (amounts and
+ *  mapping keys only — never a token) so a retry knows what was being sent. */
 async function logSync(
   svc: Svc,
-  p: { brokerageId: string; syncType: "expense" | "commission" | "invoice" | "journal"; startedAt: string; success: boolean; error?: string | null },
+  p: {
+    brokerageId: string
+    syncType: "expense" | "commission" | "invoice" | "journal"
+    startedAt: string
+    success: boolean
+    error?: string | null
+    errorCode?: EgressErrorCode
+    recordId?: string | null
+    payload?: Record<string, unknown> | null
+  },
 ) {
-  await svc.from("accounting_sync_log").insert({
+  let syncLogId: string | null = null
+  await sentinelWrite(svc, svc.from("accounting_sync_log").insert({
     brokerage_id: p.brokerageId,
     provider: "quickbooks",
     sync_type: p.syncType,
@@ -99,7 +151,50 @@ async function logSync(
     started_at: p.startedAt,
     completed_at: new Date().toISOString(),
     error_summary: p.success ? null : (p.error ?? "unknown error").slice(0, 500),
-  })
+  }).select("id").single().then((r) => { syncLogId = ((r.data as { id?: string } | null)?.id) ?? null; return r }),
+  { table: "accounting_sync_log", flow: "accounting_egress_log", brokerageId: p.brokerageId, reason: "sync log of a push that already happened (or failed) at QuickBooks; the caller already has the push result" })
+  if (p.success) {
+    // THE COMPLETION HALF (wave 155, lane 155B2 — wave 154 gap row 19). KernelEvent.SYSTEM_SYNC_COMPLETED had a consumer
+    // (lib/kernel/event-reactor.ts branch 22: Data Steward → Finance Manager) and no writer since the fake bulk route was
+    // retired (wave 152K); its START counterpart SYSTEM_SYNC_TRIGGERED is still emitted by app/actions/accounting-sync.ts. A REAL
+    // completion is this landed 'completed' row — so it is announced here, ONCE per row: the entity is the row's own id and the
+    // dedupe key names it (a re-run of logSync for another push is another row). Tenant: the push's brokerage (the caller's
+    // verified one). No row id (the log insert was refused) → nothing is announced; the refusal is already ledgered above.
+    if (syncLogId) await announceSyncCompleted(svc, p.brokerageId, syncLogId, p.syncType)
+    return
+  }
+  await sentinelWrite(svc, svc.from("sync_errors").insert({
+    sync_log_id: syncLogId,
+    brokerage_id: p.brokerageId,
+    record_type: p.syncType,
+    record_id: p.recordId && UUID_RE.test(p.recordId) ? p.recordId : null,
+    error_code: p.errorCode ?? "PROVIDER_REFUSED",
+    error_message: (p.error ?? "unknown error").slice(0, 1000),
+    payload_snapshot: p.payload ?? null,
+  }), { table: "sync_errors", flow: "accounting_egress_errors", brokerageId: p.brokerageId, reason: "the failed push already returned its error to the caller; this row is what the Sync errors panel shows and retries" })
+}
+
+/** One SYSTEM_SYNC_COMPLETED per landed 'completed' accounting_sync_log row (see logSync). Through the ONE kernel emitter
+ *  (lib/kernel/emit.ts — row + reactor fan-out), on the push's own client. Never throws: the push already happened. */
+async function announceSyncCompleted(svc: Svc, brokerageId: string, syncLogId: string, syncType: string): Promise<void> {
+  try {
+    const { emitKernelEvent } = await import("@/lib/kernel/emit")
+    const { KernelEvent } = await import("@/lib/kernel/events")
+    const r = await emitKernelEvent({
+      brokerageId,
+      event: KernelEvent.SYSTEM_SYNC_COMPLETED,
+      entityType: "accounting_sync_log",
+      entityId: syncLogId,
+      actorUserId: null,
+      metadata: { provider: "quickbooks", sync_type: syncType, records_synced: 1, sync_log_id: syncLogId },
+      dedupeKey: `system_sync_completed:${syncLogId}`,
+      dedupeWindowSec: 7 * 86_400,
+      client: svc,
+    })
+    if (r.error) console.error(`[accounting-egress] sync completion not announced for ${syncLogId}: ${r.error}`)
+  } catch (e) {
+    console.error(`[accounting-egress] sync completion announce threw for ${syncLogId}:`, e instanceof Error ? e.message : e)
+  }
 }
 
 /** Push ONE brokerage-scoped expense to the brokerage's QuickBooks as a
@@ -108,37 +203,59 @@ async function logSync(
  *  this: those books don't roll up to the brokerage ledger (owner rule). */
 export async function pushExpenseToAccounting(
   svc: Svc,
-  expense: { brokerageId: string; amount: number; category: string; description?: string | null; expenseDate?: string | null },
+  expense: { brokerageId: string; amount: number; category: string; description?: string | null; expenseDate?: string | null; expenseId?: string | null; locationId?: string | null },
+  origin?: BooksOrigin,
 ): Promise<AccountingPushOutcome> {
   const startedAt = new Date().toISOString()
+  const failed = { recordId: expense.expenseId ?? null, payload: { amount: expense.amount, category: expense.category, expense_date: expense.expenseDate ?? null, location_id: expense.locationId ?? null } as Record<string, unknown> }
   let qbo: QuickBooksProvider | null
   try {
     qbo = await buildQuickBooksForBrokerage(expense.brokerageId, { teamId: null })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    await logSync(svc, { brokerageId: expense.brokerageId, syncType: "expense", startedAt, success: false, error: msg })
+    await logSync(svc, { brokerageId: expense.brokerageId, syncType: "expense", startedAt, success: false, error: msg, errorCode: "CONNECTION_FAILED", ...failed })
     return { attempted: true, success: false, error: msg }
   }
   if (!qbo) return { attempted: false, success: false }
 
+  // 155R8: the ONE decision record at the books sink — AFTER the connection gate (no QuickBooks = nothing attempted, no row, as
+  // before) and BEFORE the account / business-unit gates and the provider write.
+  return booksDecision(expense.brokerageId, "finance.expense.push", expense.expenseId ?? null, origin, async (): Promise<AccountingPushOutcome> => {
   const expenseAccountRef = await resolveExpenseAccountRef(svc, expense.brokerageId, expense.category)
   const paymentAccountRef = await resolveExpenseAccountRef(svc, expense.brokerageId, "payment_account")
   if (!expenseAccountRef || !paymentAccountRef) {
     const missing = !expenseAccountRef ? `category '${expense.category}'` : "'payment_account'"
     const msg = `No QuickBooks account mapped for ${missing} — map it in Settings → Accounting → Tax categories (provider_account_id)`
-    await logSync(svc, { brokerageId: expense.brokerageId, syncType: "expense", startedAt, success: false, error: msg })
+    await logSync(svc, { brokerageId: expense.brokerageId, syncType: "expense", startedAt, success: false, error: msg, errorCode: "ACCOUNT_NOT_MAPPED", ...failed })
     return { attempted: true, success: false, error: msg }
   }
 
-  const result = await qbo.createPurchase({
+  const unit = await resolveBusinessUnit(svc, expense.brokerageId, expense.locationId ?? null)
+  if (!unit.ok) {
+    await logSync(svc, { brokerageId: expense.brokerageId, syncType: "expense", startedAt, success: false, error: unit.error, errorCode: "BUSINESS_UNIT_NOT_MAPPED", ...failed })
+    return { attempted: true, success: false, error: unit.error }
+  }
+  failed.payload.business_unit = unit.departmentRef ?? (expense.locationId ? (unit.tracked ? "unmapped" : "books_do_not_track_offices") : "company")
+  if (expense.locationId && unit.tracked && !unit.departmentRef) {
+    const msg = "This office has no QuickBooks location mapped while other offices do — map it in Settings → Offices so the expense lands under the right office"
+    await logSync(svc, { brokerageId: expense.brokerageId, syncType: "expense", startedAt, success: false, error: msg, errorCode: "BUSINESS_UNIT_NOT_MAPPED", ...failed })
+    return { attempted: true, success: false, error: msg }
+  }
+
+  // The purchase carries the office's department when one is mapped. (The provider's Purchase builder sending
+  // DepartmentRef is lane 153G's file — Outside-lane request in lane 153A's notes; the snapshot above records the unit.)
+  const purchase: Parameters<QuickBooksProvider["createPurchase"]>[0] & { departmentRef?: string } = {
     amount: expense.amount,
     expenseAccountRef,
     paymentAccountRef,
     description: expense.description ?? undefined,
     txnDate: expense.expenseDate ?? undefined,
-  })
-  await logSync(svc, { brokerageId: expense.brokerageId, syncType: "expense", startedAt, success: result.success, error: result.error })
+    ...(unit.departmentRef ? { departmentRef: unit.departmentRef } : {}),
+  }
+  const result = await qbo.createPurchase(purchase)
+  await logSync(svc, { brokerageId: expense.brokerageId, syncType: "expense", startedAt, success: result.success, error: result.error, errorCode: "PROVIDER_REFUSED", ...failed })
   return { attempted: true, success: result.success, externalId: result.externalId, error: result.error }
+  })
 }
 
 /** Push a closed commission to the brokerage's QuickBooks as an invoice
@@ -147,22 +264,25 @@ export async function pushExpenseToAccounting(
  *  missing refs fail honestly into the sync-errors UI. */
 export async function pushCommissionToAccounting(
   svc: Svc,
-  commission: { brokerageId: string; grossCommission: number; description?: string | null; qbCustomerRef?: string | null; qbItemRef?: string | null },
+  commission: { brokerageId: string; grossCommission: number; description?: string | null; qbCustomerRef?: string | null; qbItemRef?: string | null; commissionId?: string | null },
+  origin?: BooksOrigin,
 ): Promise<AccountingPushOutcome> {
   const startedAt = new Date().toISOString()
+  const failed = { recordId: commission.commissionId ?? null, payload: { gross_commission: commission.grossCommission, customer_mapped: !!commission.qbCustomerRef } }
   let qbo: QuickBooksProvider | null
   try {
     qbo = await buildQuickBooksForBrokerage(commission.brokerageId, { teamId: null })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    await logSync(svc, { brokerageId: commission.brokerageId, syncType: "commission", startedAt, success: false, error: msg })
+    await logSync(svc, { brokerageId: commission.brokerageId, syncType: "commission", startedAt, success: false, error: msg, errorCode: "CONNECTION_FAILED", ...failed })
     return { attempted: true, success: false, error: msg }
   }
   if (!qbo) return { attempted: false, success: false }
 
+  return booksDecision(commission.brokerageId, "finance.commission.push", commission.commissionId ?? null, origin, async (): Promise<AccountingPushOutcome> => {
   if (!commission.qbCustomerRef) {
     const msg = "No QuickBooks customer mapped for commission income — set qb_customer_id on the QuickBooks connection"
-    await logSync(svc, { brokerageId: commission.brokerageId, syncType: "commission", startedAt, success: false, error: msg })
+    await logSync(svc, { brokerageId: commission.brokerageId, syncType: "commission", startedAt, success: false, error: msg, errorCode: "CUSTOMER_NOT_MAPPED", ...failed })
     return { attempted: true, success: false, error: msg }
   }
 
@@ -171,6 +291,84 @@ export async function pushCommissionToAccounting(
     amount: commission.grossCommission,
     description: commission.description ?? undefined,
   })
-  await logSync(svc, { brokerageId: commission.brokerageId, syncType: "commission", startedAt, success: result.success, error: result.error })
+  await logSync(svc, { brokerageId: commission.brokerageId, syncType: "commission", startedAt, success: result.success, error: result.error, errorCode: "PROVIDER_REFUSED", ...failed })
   return { attempted: true, success: result.success, externalId: result.externalId, error: result.error }
+  })
 }
+
+/** A MANUAL entry (invoice / expense / journal) a finance admin posts from Settings → Accounting (app/actions/accounting-sync.ts
+ *  pushAccountingEntry — its role gate and SESSION tenant run first). WAVE 155 (lane 155R8, 155B2 request 7): this used to call the
+ *  provider straight from the action and write its own accounting_sync_log rows — no sync_errors row on failure, no
+ *  SYSTEM_SYNC_COMPLETED on success, no decision record. It now leaves through this sink: the same connection gate, logSync, the
+ *  record. Not connected → a failed log row exactly as before (the manual push always recorded that). */
+export async function pushManualAccountingEntry(
+  svc: Svc,
+  brokerageId: string,
+  entry:
+    | { kind: "invoice"; customerRef: string; amount: number; description?: string; currency?: string }
+    | { kind: "journal"; lines: Array<{ amount: number; accountRef: string; postingType: "Debit" | "Credit" }>; description?: string }
+    | { kind: "expense"; amount: number; expenseAccountRef: string; paymentAccountRef: string; description?: string; txnDate?: string },
+  origin?: BooksOrigin,
+): Promise<{ ok: true; result: AccountingWriteResult } | { ok: false; error: string }> {
+  const out = await booksDecision(brokerageId, `finance.${entry.kind}.push`, null, origin, async (): Promise<{ ok: true; result: AccountingWriteResult; success: boolean; error?: string } | { ok: false; error: string; success: false }> => {
+    const startedAt = new Date().toISOString()
+    let qbo: QuickBooksProvider | null
+    try {
+      qbo = await buildQuickBooksForBrokerage(brokerageId, { teamId: null })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      await logSync(svc, { brokerageId, syncType: entry.kind, startedAt, success: false, error: msg, errorCode: "CONNECTION_FAILED" })
+      return { ok: false, success: false, error: msg }
+    }
+    if (!qbo) {
+      await logSync(svc, { brokerageId, syncType: entry.kind, startedAt, success: false, error: "QuickBooks not connected", errorCode: "CONNECTION_FAILED" })
+      return { ok: false, success: false, error: "QuickBooks is not connected for this brokerage" }
+    }
+    const result =
+      entry.kind === "invoice"
+        ? await qbo.createInvoice({ customerRef: entry.customerRef, amount: entry.amount, description: entry.description, currency: entry.currency })
+        : entry.kind === "expense"
+          ? await qbo.createPurchase({ amount: entry.amount, expenseAccountRef: entry.expenseAccountRef, paymentAccountRef: entry.paymentAccountRef, description: entry.description, txnDate: entry.txnDate })
+          : await qbo.createJournalEntry({ lines: entry.lines, description: entry.description })
+    await logSync(svc, { brokerageId, syncType: entry.kind, startedAt, success: result.success, error: result.error, errorCode: "PROVIDER_REFUSED" })
+    // `success` / `error` are for the ledger's settle (a provider refusal is a failed write); the caller receives `{ ok, result }`.
+    return { ok: true, result, success: result.success, error: result.success ? undefined : result.error }
+  })
+  return out.ok ? { ok: true, result: out.result } : { ok: false, error: out.error ?? "The entry could not be posted." }
+}
+
+/** Who stated the books decision. Absent = an internal caller (a session action passes its user; a sweep passes nothing). A model /
+ *  inbound origin MUST be stated (`trustClass`) — the sink rule then holds it unless a named verification cleared it. */
+export type BooksOrigin = Pick<ActionContext, "trustClass" | "sink" | "cycle"> & { actorUserId?: string | null }
+
+/**
+ * WAVE 155 (lane 155R8, directive D 152) — THE ONE DECISION RECORD AT THE BOOKS SINK. Every QuickBooks write of this module runs
+ * inside lib/kernel/action-ledger.ts ledgerToolCall: the PURE sink rule decides first (an untrusted origin with no recorded verification
+ * is HELD — one `finance.decision.wait` row, the connection, the mapping reads and the provider are never reached); an allowed write is
+ * claimed → run → settled on ONE row whose detail.governance carries trust class, risk class (FINANCIAL), approval basis and the gates
+ * that decide inside. Round trips: claim + settle (+0 for a refusal: one insert, nothing else). No model, no secret in the detail.
+ */
+async function booksDecision<T extends object>(brokerageId: string, action: string, recordId: string | null, origin: BooksOrigin | undefined, run: () => Promise<T>): Promise<T | BooksRefusal> {
+  const { ledgerToolCall, governanceRecord } = await import("@/lib/kernel/action-ledger")
+  const actor = origin?.actorUserId ? { type: "user" as const, userId: origin.actorUserId } : { type: "system" as const }
+  const trustClass = origin?.trustClass ?? (origin?.actorUserId ? "authorized_human" : "tenant_policy")
+  const approvalBasis = origin?.sink?.verification?.kind === "authorized_human" ? "human_approval" : "policy_permitted"
+  const subject = recordId && UUID_RE.test(recordId) ? { type: "accounting_record", id: recordId } : { type: "brokerage", id: brokerageId }
+  const gates = ["buildQuickBooksForBrokerage (the brokerage's own connection)", "resolveExpenseAccountRef / resolveBusinessUnit (tenant-mapped accounts)", "logSync (sync log + sync_errors)"]
+  const r = await ledgerToolCall<T>({
+    brokerageId, action, channel: "accounting_sink", actor, subject, riskClass: "FINANCIAL", systemSource: "accounting_egress",
+    reasonCode: actor.type === "user" ? "HUMAN_REQUESTED" : null, cycle: origin?.cycle ?? null,
+    trustClass, approvalBasis, dependencies: [{ type: subject.type, id: subject.id, version: null }],
+    sink: origin?.sink ?? null,
+    detail: { governance: governanceRecord({
+      plane: "tool_boundary", verdict: "allow", scope: { brokerageId, userId: origin?.actorUserId ?? null }, actor: { type: actor.type, id: origin?.actorUserId ?? null },
+      entity: { type: subject.type, id: subject.id, version: null }, objective: action, policyConstraints: ["sink rule (D 152): books", ...gates],
+      rationale: `books write at the sink; origin ${trustClass}`, trustClass, approvalBasis, verification: origin?.sink?.verification ?? null,
+    }) },
+  }, run)
+  // The run's own result carries `attempted` / `ok`; anything else is the ledger's (a sink refusal, or a replay of a keyed call).
+  if ("attempted" in r || "ok" in r) return r as T
+  const e = (r as { error?: string }).error
+  return { attempted: false, success: false, ok: false, error: e ?? "already done — not repeated" }
+}
+type BooksRefusal = { attempted: false; success: false; ok: false; error: string }

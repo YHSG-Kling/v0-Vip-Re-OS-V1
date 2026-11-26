@@ -18,6 +18,8 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
+import { BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 const VALID_STATUS = "prospect" as const
 
@@ -58,14 +60,29 @@ export async function submitRecruitInquiry(
   const svc = createServiceClient()
 
   // ── Resolve the brokerage from its slug ───────────────────────────────────
-  const { data: brokerage } = await svc
-    .from("brokerages")
-    .select("id, name")
-    .eq("slug", input.brokerageSlug)
-    .maybeSingle()
-  if (!brokerage) {
-    return { success: false, error: "Brokerage not found" }
+  // WAVE 155 (lane 155R18 — G10): as the DECISION's opt-in read, BEFORE the recruit row or any notification — the per-IP cap,
+  // then the TENANT'S OWN OPT-IN: the live brokerage its public slug names (the recruiting page's own slug predicate, minus a
+  // tenant that is archived, deleted or deactivated — an archived brokerage's page must not keep collecting recruits).
+  const { decidePublicDoor, publicCallerIp } = await import("@/lib/security/public-rate-limit")
+  const seen: { brokerage: { id: string; name: string | null } | null } = { brokerage: null }
+  const door = await decidePublicDoor({
+    surface: "recruit-inquiry", callerKey: await publicCallerIp(), cap: { limit: 10, windowMs: 10 * 60_000 },
+    optIn: async () => {
+      const { data, error } = await svc
+        .from("brokerages")
+        .select("id, name, is_active, archived_at, deleted_at")
+        .eq("slug", input.brokerageSlug)
+        .maybeSingle()
+      const b = data as { id: string; name: string | null; is_active: boolean | null; archived_at: string | null; deleted_at: string | null } | null
+      if (error || !b || b.is_active === false || b.archived_at || b.deleted_at) return null
+      seen.brokerage = { id: b.id, name: b.name }
+      return { brokerageId: b.id, basis: "brokerages.slug (live tenant: active, not archived, not deleted)" }
+    },
+  })
+  if (!door.allowed || !seen.brokerage) {
+    return { success: false, error: !door.allowed && door.reason === "rate_limited" ? "Too many requests from this connection — try again shortly." : "Brokerage not found" }
   }
+  const brokerage = seen.brokerage
 
   // ── Validate the referring agent (if any) belongs to this brokerage ──────
   // We don't trust the URL param. If the agent isn't in this brokerage we
@@ -79,6 +96,39 @@ export async function submitRecruitInquiry(
       .maybeSingle()
     if (agentRow && agentRow.brokerage_id === brokerage.id) {
       recruiterAgentId = agentRow.id
+    }
+  }
+
+  // ── WAVE 156 (lane 156K): who may become a prospect ───────────────────────
+  // lib/recruiting/stale-recruit-policy.ts recruitIntakeVerdict, read by lib/recruit-pipeline/recruit-processor.ts
+  // readRecruitIntake. A suspended or current member is never re-filed as a prospect, a DECLINED recruit is not re-opened by a
+  // form anyone can fill in with their address, and a person already in the pipeline gets no second row. The broker is told and
+  // decides (a person reaching out again is a human's call). The public answer is the same thanks in every case, so this page
+  // never tells a stranger whether an address belongs to a member, a suspended seat or a declined recruit. A refused read files
+  // nothing (fail closed).
+  {
+    const { readRecruitIntake } = await import("@/lib/recruit-pipeline/recruit-processor")
+    const intake = await readRecruitIntake(svc, { brokerageId: brokerage.id, email: input.email.trim().toLowerCase(), firstName: input.firstName.trim(), lastName: input.lastName.trim() })
+    if (!intake.ok) return { success: false, error: "We could not record your interest right now — please try again shortly." }
+    if (!intake.verdict.admit) {
+      const v = intake.verdict
+      const what = v.reason === "suspended_member" ? "belongs to a SUSPENDED member of your workspace — no recruit was filed; restoring a seat is the user's own reactivation"
+        : v.reason === "current_member" ? "belongs to a current member of your workspace — no recruit was filed"
+        : v.reason === "declined_recruit" ? "belongs to a recruit who DECLINED — their record was not re-opened; move the stage yourself if they want to talk"
+        : "is already in your recruiting pipeline — no second record was filed"
+      try {
+        const { data: brokerUsers } = await svc.from("users").select("id").eq("brokerage_id", brokerage.id).in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES]).limit(5)
+        const rows = ((brokerUsers ?? []) as Array<{ id: string }>).map((u) => ({
+          user_id: u.id, brokerage_id: brokerage.id, type: "recruit_inquiry", priority: "medium", channel: "in_app", is_read: false,
+          title: `Recruiting page submitted again`,
+          body: `Someone submitted ${brokerage.name}'s recruiting page with an address that ${what}.`,
+          entity_type: "recruit", entity_id: v.recruitId,
+        }))
+        if (rows.length > 0) await sentinelWrite(svc, svc.from("notifications").insert(rows), { table: "notifications", flow: "recruit_inquiry_broker_notice", brokerageId: brokerage.id, reason: "nothing was filed; the broker notice must not fail the public form" })
+      } catch (notifyErr) {
+        console.error("[submitRecruitInquiry] intake notice failed:", notifyErr)
+      }
+      return { success: true }
     }
   }
 
@@ -115,7 +165,7 @@ export async function submitRecruitInquiry(
       .from("users")
       .select("id")
       .eq("brokerage_id", brokerage.id)
-      .in("user_type", ["broker", "admin"])
+      .in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES])
       .limit(5)
     const recipients = (brokerUsers ?? []).map((u: { id: string }) => u.id)
     if (recipients.length > 0) {
@@ -131,7 +181,15 @@ export async function submitRecruitInquiry(
         channel:       "in_app",
         is_read:       false,
       }))
-      await svc.from("notifications").insert(rows)
+      // A refused insert used to vanish (the try/catch sees only a THROW, and
+      // supabase-js resolves a refusal). sentinelWrite reads the error and
+      // ledgers the loss for the repair digest (lane 87E, swallowed-refusal census).
+      await sentinelWrite(svc, svc.from("notifications").insert(rows), {
+        table: "notifications",
+        flow: "recruit_inquiry_broker_notice",
+        brokerageId: brokerage.id,
+        reason: "the recruit row is already written; the broker notice must not fail the public form",
+      })
     }
   } catch (notifyErr) {
     console.error("[submitRecruitInquiry] Notification failed:", notifyErr)
@@ -146,7 +204,7 @@ export async function submitRecruitInquiry(
         .eq("id", recruiterAgentId)
         .maybeSingle()
       if (agentUser?.user_id) {
-        await svc.from("notifications").insert({
+        await sentinelWrite(svc, svc.from("notifications").insert({
           user_id:       agentUser.user_id,
           brokerage_id:  brokerage.id,
           type:          "recruit_referral_inquiry",
@@ -157,6 +215,11 @@ export async function submitRecruitInquiry(
           priority:      "medium",
           channel:       "in_app",
           is_read:       false,
+        }), {
+          table: "notifications",
+          flow: "recruit_inquiry_referrer_notice",
+          brokerageId: brokerage.id,
+          reason: "the recruit row is already written; the referrer notice must not fail the public form",
         })
       }
     } catch (notifyErr) {
@@ -164,5 +227,6 @@ export async function submitRecruitInquiry(
     }
   }
 
-  return { success: true, recruitId: recruit.id }
+  // No internal id in the public answer (wave 156, 156K): the same thanks as every intake refusal above.
+  return { success: true }
 }

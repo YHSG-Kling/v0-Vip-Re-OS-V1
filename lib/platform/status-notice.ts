@@ -58,7 +58,8 @@ export interface StatusNoticeState {
 const SEVERITIES: StatusNoticeSeverity[] = ["info", "degraded", "outage"]
 
 /** PURE: merge a stored status_notice jsonb into a safe shape; bad values fall back. */
-export function resolveStatusNotice(raw: any): StatusNotice {
+// Module-private since 2026-09-07 — no importer outside this file (lane O / opposite-missing cascade).
+function resolveStatusNotice(raw: any): StatusNotice {
   const r = raw ?? {}
   const message = typeof r.message === "string" ? r.message.trim().slice(0, 500) : ""
   const active = r.active === true && message.length > 0
@@ -72,7 +73,8 @@ export function resolveStatusNotice(raw: any): StatusNotice {
 }
 
 /** PURE: resolve a stored `proposed` blob; anything malformed → no proposal. */
-export function resolveProposedStatusNotice(raw: any): ProposedStatusNotice | null {
+// Module-private since 2026-09-07 — no importer outside this file (lane O / opposite-missing cascade).
+function resolveProposedStatusNotice(raw: any): ProposedStatusNotice | null {
   if (!raw || typeof raw !== "object") return null
   const message = typeof raw.message === "string" ? raw.message.trim().slice(0, 500) : ""
   const provider = typeof raw.provider === "string" ? raw.provider.trim() : ""
@@ -90,7 +92,8 @@ export function resolveProposedStatusNotice(raw: any): ProposedStatusNotice | nu
 }
 
 /** PURE: resolve the whole stored jsonb into { notice, proposed }. */
-export function resolveStatusNoticeState(raw: any): StatusNoticeState {
+// Module-private since 2026-09-07 — no importer outside this file (lane O / opposite-missing cascade).
+function resolveStatusNoticeState(raw: any): StatusNoticeState {
   return {
     notice: resolveStatusNotice(raw),
     proposed: resolveProposedStatusNotice((raw ?? {})?.proposed),
@@ -105,9 +108,8 @@ const PROVIDER_CAPABILITY: Record<string, string> = {
   supabase_db: "loading and saving your data",
   anthropic: "AI drafting and assistant features",
   sendgrid: "outbound email",
-  twilio: "text messaging and phone calls",
+  twilio: "text messaging, phone calls, and the AI phone receptionist",
   stripe: "billing and payments",
-  vapi: "the AI phone receptionist",
 }
 
 /** PURE: prefill the proposal copy for a provider that keeps failing checks. */

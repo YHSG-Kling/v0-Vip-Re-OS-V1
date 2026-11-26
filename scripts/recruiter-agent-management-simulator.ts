@@ -163,18 +163,49 @@ async function main() {
   const now2 = new Date()
   const cleanup: Array<{ table: string; id: string }> = []
   let agentId: string | null = null
+  // The cap is configured in agent_cap_tracking — the LEDGER the forecaster
+  // reads. A borrowed window is restored; a seeded one is deleted. See the same
+  // pattern and the same reasoning in scripts/commission-forecaster-simulator.ts.
   let savedCap: number | null | undefined
+  let borrowedCapRowId: string | null = null
+  let seededCapRowId: string | null = null
 
   try {
-    const { data: agent } = await svc.from("agents").select("id, brokerage_id, cap_amount")
+    const { data: agent } = await svc.from("agents").select("id, brokerage_id")
       .not("brokerage_id", "is", null).limit(1).single()
     if (!agent) { console.log("  ⏭  Skipped — need an agent."); report(); return }
     const brokerageId = (agent as any).brokerage_id
     agentId = (agent as any).id
-    savedCap = (agent as any).cap_amount
 
-    // Configure a LOW cap so the seeded closed GCI crosses it → 'crushed' deterministically.
-    await svc.from("agents").update({ cap_amount: 50_000 }).eq("id", agentId)
+    // Configure a LOW cap so the seeded closed GCI crosses it → 'crushed'
+    // deterministically. This used to write `agents.cap_amount`, which the
+    // forecaster no longer consults: that column is the copy the commission
+    // engine never applied, and seeding it would prove nothing about what the
+    // engine does. The window must CONTAIN the run date — that is the filter
+    // resolveCap uses, copied from stage 07.
+    const today2 = now2.toISOString().slice(0, 10)
+    const { data: liveCapRows, error: liveCapErr } = await svc
+      .from("agent_cap_tracking")
+      .select("id, cap_amount")
+      .eq("agent_id", agentId).eq("brokerage_id", brokerageId)
+      .lte("anniversary_start", today2).gte("anniversary_end", today2)
+      .limit(1)
+    if (liveCapErr) { console.log(`  ⏭  Skipped — could not read the cap ledger: ${liveCapErr.message}`); report(); return }
+
+    const liveCapRow = (liveCapRows ?? [])[0] as { id: string; cap_amount: number | null } | undefined
+    if (liveCapRow) {
+      borrowedCapRowId = liveCapRow.id
+      savedCap = liveCapRow.cap_amount
+      await svc.from("agent_cap_tracking").update({ cap_amount: 50_000 }).eq("id", liveCapRow.id)
+    } else {
+      const { data: seeded } = await svc.from("agent_cap_tracking").insert({
+        agent_id: agentId, brokerage_id: brokerageId,
+        anniversary_start: `${now2.getUTCFullYear()}-01-01`,
+        anniversary_end: `${now2.getUTCFullYear()}-12-31`,
+        cap_amount: 50_000, cap_paid_to_date: 0, is_capped: false,
+      }).select("id").single()
+      seededCapRowId = (seeded as any)?.id ?? null
+    }
 
     const { data: con } = await svc.from("contacts").select("id").eq("brokerage_id", brokerageId).limit(1).maybeSingle()
     const contactId = (con as any)?.id ?? null
@@ -238,8 +269,15 @@ async function main() {
       .eq("signal_type", "agent_crushed_cap").eq("entity_id", agentId).eq("status", "open")
     check("idempotent: at most one OPEN crushed-cap signal per agent (bus dedupe)", (sigCount ?? 0) === 1, `count=${sigCount}`)
   } finally {
-    // Restore the agent's original cap.
-    if (agentId) { try { await svc.from("agents").update({ cap_amount: savedCap ?? null }).eq("id", agentId) } catch { /* noop */ } }
+    // Put the cap ledger back: a BORROWED window keeps its original cap_amount
+    // (its cap_paid_to_date is real collections history and is never deleted), a
+    // SEEDED window goes away entirely.
+    if (borrowedCapRowId) {
+      try { await svc.from("agent_cap_tracking").update({ cap_amount: savedCap ?? null }).eq("id", borrowedCapRowId) } catch { /* noop */ }
+    }
+    if (seededCapRowId) {
+      try { await svc.from("agent_cap_tracking").delete().eq("id", seededCapRowId) } catch { /* noop */ }
+    }
     // Delete every seeded row in reverse order.
     for (const c of [...cleanup].reverse()) {
       try { await svc.from(c.table).delete().eq("id", c.id) } catch { /* noop */ }
@@ -251,6 +289,11 @@ async function main() {
           .eq("to_manager", "recruiting_manager").eq("signal_type", "agent_crushed_cap").eq("entity_id", agentId)
       : { count: 0 }
     check("cleanup verified — 0 seeded recruiting signals remain", (sigLeft ?? 0) === 0)
+    if (seededCapRowId) {
+      const { count: capLeft } = await svc.from("agent_cap_tracking")
+        .select("id", { count: "exact", head: true }).eq("id", seededCapRowId)
+      check("cleanup verified — the seeded cap ledger row is gone", (capLeft ?? 0) === 0)
+    }
   }
 
   report()

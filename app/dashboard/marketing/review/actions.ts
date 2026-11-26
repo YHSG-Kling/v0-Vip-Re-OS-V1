@@ -16,8 +16,9 @@
  * actions in app/actions/listing-media.ts are reused.
  */
 
-import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { requireCallerTenant } from "@/lib/auth/require-caller"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 const MEDIA_TRIGGERS = ["video.generated", "image.generated"]
 
@@ -61,6 +62,8 @@ export interface MarketingReviewSnapshot {
     listing_id:   string | null
     scan_count:   number
     created_at:   string
+    /** Server-rendered PNG of the tracked scan link (wave 81D) — null when the render failed. */
+    image_data_url: string | null
   }>
 }
 
@@ -69,6 +72,19 @@ export async function loadMarketingReview(params: {
   agentUserId: string | null
   isAgentScope: boolean
 }): Promise<MarketingReviewSnapshot> {
+  // SESSION GATE (lane 91D2, CLAUDE.md §4). This "use server" export had NO gate:
+  // any caller naming a brokerage id read its pending AI drafts (with contact
+  // names), social posts, media and QR codes on the service client. The tenant is
+  // now the session's (a different body brokerage is refused), the scoped user is
+  // the signed-in one, and only a tenant admin (the one roster) may widen to the
+  // whole brokerage — a caller can no longer pass isAgentScope:false for itself.
+  const caller = await requireCallerTenant(params.brokerageId)
+  if (!caller.ok) throw new Error(caller.error)
+  params = {
+    brokerageId: caller.brokerageId,
+    agentUserId: caller.userId,
+    isAgentScope: params.isAgentScope || !isAdminOrBroker({ user_type: caller.userType }),
+  }
   const svc = createServiceClient()
   const since7d = new Date(Date.now() - 7 * 86_400_000).toISOString()
 
@@ -112,7 +128,7 @@ export async function loadMarketingReview(params: {
     .from("listing_media")
     .select(`
       id, listing_id, media_type, file_url, thumbnail_url, created_at,
-      listings!listing_id(property_address, agent_id)
+      listings!listing_id(address, agent_id)
     `)
     .eq("brokerage_id", params.brokerageId)
     .eq("approval_required", true)
@@ -177,16 +193,22 @@ export async function loadMarketingReview(params: {
     .map((m: any) => ({
       id:            m.id,
       listing_id:    m.listing_id,
-      listing_label: m.listings?.property_address ?? null,
+      listing_label: m.listings?.address ?? null,
       media_type:    m.media_type,
       file_url:      m.file_url,
       thumbnail_url: m.thumbnail_url ?? null,
       created_at:    m.created_at,
     }))
 
-  const recentQrCodes = (qrRes.data ?? [])
+  // The PNG is rendered here by the ONE QR image source (renderQrPng) and encodes
+  // the tracked scan URL. The review board used to point an <img> at
+  // api.qrserver.com with that URL in the query string — the lead-bearing scan
+  // link handed to a third party on every page view (wave 81D).
+  const { renderQrPng, normalizeOrigin } = await import("@/lib/marketing/tracked-qr")
+  const scanOrigin = normalizeOrigin()
+  const recentQrCodes = await Promise.all((qrRes.data ?? [])
     .filter((q: any) => !params.isAgentScope || q.agent_id === agentRowId)
-    .map((q: any) => ({
+    .map(async (q: any) => ({
       id:         q.id,
       label:      q.label,
       slug:       q.slug,
@@ -195,7 +217,8 @@ export async function loadMarketingReview(params: {
       listing_id: q.listing_id ?? null,
       scan_count: q.scan_count ?? 0,
       created_at: q.created_at,
-    }))
+      image_data_url: await renderQrPng(`${scanOrigin}/api/qr/scan?slug=${q.slug}`, 240).catch(() => null),
+    })))
 
   return { drafts, socialPosts, pendingMedia, recentQrCodes }
 }
@@ -206,18 +229,27 @@ export async function loadMarketingReview(params: {
  * sent}, so we always use 'dismissed' here — not 'rejected'.
  */
 export async function dismissDraft(draftId: string): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Not authenticated" }
-
+  // WAVE 155 (155R17 — CLAUDE.md §4): this door updated ANY tenant's draft on the service client (no tenant predicate). The
+  // tenant and the scope are now the SESSION's, exactly as loadMarketingReview reads them (requireCallerTenant; an agent acts
+  // only on drafts addressed to them, the tenant admin roster on the tenant's), and a zero-row update is not a success (§3).
+  const caller = await requireCallerTenant(null)
+  if (!caller.ok) return { success: false, error: caller.error }
+  const agentScope = !isAdminOrBroker({ user_type: caller.userType })
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: caller.brokerageId, action: "marketing.message_draft.dismiss", actor: { type: "user", userId: caller.userId }, subject: { type: "ai_message_draft", id: draftId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ success: boolean; error?: string }> => {
   const svc = createServiceClient()
-  const { error } = await svc
+  let q = svc
     .from("ai_message_drafts")
     .update({ status: "dismissed", acted_at: new Date().toISOString() })
     .eq("id", draftId)
+    .eq("brokerage_id", caller.brokerageId)
     .eq("status", "pending")
+  if (agentScope) q = q.eq("agent_user_id", caller.userId)
+  const { data, error } = await q.select("id")
   if (error) return { success: false, error: error.message }
+  if (!data || data.length === 0) return { success: false, error: "Draft not found or already handled" }
   return { success: true }
+  })
 }
 
 /**
@@ -227,16 +259,24 @@ export async function dismissDraft(draftId: string): Promise<{ success: boolean;
  * 'cancelled' which is the canonical "agent chose not to send" state.
  */
 export async function cancelSocialPost(postId: string): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Not authenticated" }
-
+  // WAVE 155 (155R17 — CLAUDE.md §4): same defect and same fix as dismissDraft above — the SESSION's tenant and scope
+  // (loadMarketingReview's social query: an agent's own posts, the admin roster the tenant's), and zero rows is not success.
+  const caller = await requireCallerTenant(null)
+  if (!caller.ok) return { success: false, error: caller.error }
+  const agentScope = !isAdminOrBroker({ user_type: caller.userType })
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: caller.brokerageId, action: "marketing.social_post.cancel", actor: { type: "user", userId: caller.userId }, subject: { type: "social_post", id: postId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ success: boolean; error?: string }> => {
   const svc = createServiceClient()
-  const { error } = await svc
+  let q = svc
     .from("social_posts")
     .update({ status: "cancelled" })
     .eq("id", postId)
+    .eq("brokerage_id", caller.brokerageId)
     .in("status", ["scheduled", "draft"])
+  if (agentScope) q = q.eq("user_id", caller.userId)
+  const { data, error } = await q.select("id")
   if (error) return { success: false, error: error.message }
+  if (!data || data.length === 0) return { success: false, error: "Post not found or already handled" }
   return { success: true }
+  })
 }

@@ -7,7 +7,7 @@ import {
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
 import { verifyCronAuth } from "@/lib/cron-auth"
-import { refreshRecentContactSpines } from "@/lib/kernel/conversation-memory"
+import { refreshRecentContactSpines, realSummaryRewriter } from "@/lib/kernel/conversation-memory"
 
 /**
  * CONTEXT SPINE REFRESH cron. The write side of the conversation-memory spine: for each
@@ -24,6 +24,7 @@ export async function GET(req: NextRequest) {
     cron_name: "context-spine-refresh",
     cron_path: "/app/api/cron/context-spine-refresh/route.ts",
   })
+  if (contextResult.data?.held) return NextResponse.json({ success: true, held: true, decision: contextResult.data.decision }) // cron decision door (155R1): held before any domain write
   if (!contextResult.success || !contextResult.data) {
     return NextResponse.json({ error: "Failed to create cron context" }, { status: 500 })
   }
@@ -39,7 +40,10 @@ export async function GET(req: NextRequest) {
     if (error) throw error
     for (const b of (rows ?? []) as Array<{ id: string }>) {
       try {
-        const r = await refreshRecentContactSpines(b.id, {}, supabase)
+        // The warm-paragraph rewriter is an opt-in seam (the simulator injects its own);
+        // PRODUCTION opts in here. realSummaryRewriter may only re-phrase the deterministic
+        // facts and returns null on any failure, so the deterministic draft always stands.
+        const r = await refreshRecentContactSpines(b.id, { rewriter: realSummaryRewriter }, supabase)
         contactsConsidered += r.contactsConsidered
         spinesRefreshed += r.spinesRefreshed
         if (r.errors.length) errors.push(...r.errors.slice(0, 3))

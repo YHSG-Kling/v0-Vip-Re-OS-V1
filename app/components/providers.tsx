@@ -1,7 +1,7 @@
 "use client"
 
 import type React from "react"
-import { AuthProvider } from "@/lib/auth/client"
+import { AuthProvider } from "@/contexts/AuthContext"
 import { Toaster } from "@/components/ui/toaster"
 import { Toaster as SonnerToaster } from "@/app/components/ui/sonner"
 

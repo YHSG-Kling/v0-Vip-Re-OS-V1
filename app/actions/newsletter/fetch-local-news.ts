@@ -113,6 +113,8 @@ export async function recordNewsletterLocalContent(
   if (!user) throw new Error('Not authenticated')
   const { data: userData } = await supabase.from('users').select('brokerage_id').eq('id', user.id).single()
   if (!userData?.brokerage_id) throw new Error('User has no brokerage assigned')
+  const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+  return resultFamily(await ledgerSessionAction({ brokerageId: userData.brokerage_id, action: "marketing.newsletter_local_content.record", actor: { type: "user", userId: user.id }, subject: { type: "newsletter_campaign", id: newsletterId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { items: items.length } }, async () => {
 
   // Tenant check on the campaign the rows attach to.
   const { data: campaign } = await supabase
@@ -130,6 +132,7 @@ export async function recordNewsletterLocalContent(
   const { error } = await supabase.from('newsletter_local_content').insert(rows)
   if (error) throw new Error(`Failed to record local content: ${error.message}`)
   return { success: true, recorded: rows.length }
+  }))
 }
 
 export async function setupLocalNewsSource(
@@ -151,6 +154,8 @@ export async function setupLocalNewsSource(
     .single()
 
   if (!userData?.brokerage_id) throw new Error('User has no brokerage assigned')
+  const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+  return resultFamily(await ledgerSessionAction({ brokerageId: userData.brokerage_id, action: "marketing.local_news_source.setup", actor: { type: "user", userId: user.id }, subject: { type: "local_news_source", id: null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { zip_count: zipCodes.length, refresh: refreshFrequency } }, async () => {
 
   // Check if news source exists
   const { data: existing } = await supabase
@@ -202,4 +207,5 @@ export async function setupLocalNewsSource(
     newsSourceId: newSource.id,
     message: 'News source created',
   }
+  }))
 }

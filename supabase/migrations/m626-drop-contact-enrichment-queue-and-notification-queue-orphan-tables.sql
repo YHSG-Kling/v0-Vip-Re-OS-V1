@@ -1,0 +1,60 @@
+-- m626-drop-contact-enrichment-queue-and-notification-queue-orphan-tables.sql
+-- ── APPLIED LIVE 2026-09-12 by the integrator (Supabase MCP apply_migration; both tables had 0 rows and 0 inbound FKs). ──
+
+-- Lane 61B, census round 7, §4 QUEUE/CRON PARITY — for every `_queue` table in
+-- scripts/live-tables.ts, confirm both an enqueuer AND a drainer exist in
+-- app/+lib/. Two of the seven do not, and neither has EVER had one in the
+-- code this repo can see (verified: no `.from("contact_enrichment_queue")` /
+-- `.from("notification_queue")` call site anywhere under app/ or lib/, live
+-- schema check via scripts/schema-snapshot.ts's own COVERAGE note — "tables
+-- the code queries" — confirms neither is in the 702-table snapshot the code
+-- touches, out of 757 live).
+--
+-- ── contact_enrichment_queue — orphan doctrine §1.3, functionality already
+--    elsewhere, SURVIVOR ALREADY NAMED IN CODE ──
+-- Both writers were tombstoned in a PRIOR wave (2026-09-04) onto
+-- lead_enrichment_queue: lib/kernel/consent-recovery.ts:107-121 and :167-180
+-- both carry "TOMBSTONE (orphan doctrine §1.1, 2026-09-04) ... SURVIVOR:
+-- lead_enrichment_queue" in their own comments, and
+-- lib/enrichment/contact-enrichment-core.ts::queueContactEnrichment states it
+-- is "THE ONE WRITER of a contact-triggered enrichment queue row" (writing
+-- lead_enrichment_queue, not this table). Those tombstones retired the CODE
+-- side; nobody came back to retire the TABLE, so it has sat in
+-- scripts/live-tables.ts and lib/kernel/manager-registry.ts's TABLE_MANAGER
+-- (data_steward) as a live table with zero readers and zero writers ever
+-- since — the tombstone's own logic (§1.3, "functionality already lives
+-- elsewhere") applies to the table exactly as it did to the writes into it.
+--
+-- ── notification_queue — orphan doctrine §1.3, functionality already
+--    elsewhere ──
+-- Created in supabase/migrations/063-rpcs-and-rls-fixes.sql alongside
+-- embedding_queue and push_notification_queue as one of three "system
+-- queues" (RLS-only scaffolding: platform-admin-gated select/update/delete,
+-- open insert). The other two were built out — embedding_queue gained a
+-- writer (app/actions/knowledge/search.ts) and a drainer
+-- (app/api/cron/queue-drain/route.ts §5); push_notification_queue gained
+-- both from day one (lib/transactions/notification-service.ts +
+-- app/api/cron/queue-drain/route.ts §2). notification_queue never gained
+-- either — no INSERT, no SELECT, no application code names it anywhere
+-- outside scripts/live-tables.ts, scripts/schema-fk-map.ts (which records its
+-- FK shape, not a query) and two RLS-narrowing audit docs listing it among
+-- other never-implemented tables (docs/wave27-audit.md). The delivery-
+-- scheduling capability it scaffolded for now lives on the canonical rails
+-- this same queue-drain cron already services: push_notification_queue for
+-- push, email_queue for email, and the `notifications` table for the
+-- in-app fallback (lib/transactions/notification-service.ts). No unique
+-- capability of notification_queue is unimplemented elsewhere; there is
+-- nothing to merge onto a survivor because nothing was ever built on it to
+-- carry forward.
+--
+-- Neither table carries a foreign key FROM another live table (checked
+-- against scripts/schema-fk-map.ts: only edges are contact_enrichment_queue's
+-- own outbound brokerage_id/contact_id and notification_queue's own outbound
+-- notification_id, both dropped with their owning table), so dropping either
+-- cannot orphan a child row elsewhere.
+--
+-- Applied by the integrator after confirming (per §1) no other in-flight lane
+-- has added a reader/writer for either table since this was written.
+
+DROP TABLE IF EXISTS public.contact_enrichment_queue;
+DROP TABLE IF EXISTS public.notification_queue;

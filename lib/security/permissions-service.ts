@@ -1,9 +1,13 @@
 "use client"
 
 /**
- * permissionsService — runtime permission checks used by Sidebar, hooks, and
- * dataAccessService.  All role logic delegates to the canonical role type
- * defined in lib/security/types.ts.
+ * permissionsService — runtime permission checks. All role logic delegates to
+ * the canonical role type defined in lib/security/types.ts.
+ *
+ * This is the ONLY permissionsService. It used to say it was used by "Sidebar,
+ * hooks, and dataAccessService"; those consumers were a parallel client-side
+ * permission stack with zero importers, removed in m370. Enforcement lives in
+ * RLS and the server guards under lib/auth — not in a hook.
  *
  * Legacy role strings (e.g. "transaction_coordinator", "compliance_manager")
  * must be normalised via toCanonicalRole() before reaching this service.
@@ -325,7 +329,38 @@ export const permissionsService = {
     return false
   },
 
-  isAdminOrBroker(role: UserRole): boolean {
+  /**
+   * DOES THIS ROLE SEE THE WHOLE BROKERAGE'S RECORDS?
+   *
+   * ── WHY THIS IS NOT lib/auth/resolve-user-role.ts#isAdminOrBroker ───────────
+   *
+   * It was called `isAdminOrBroker` — the SAME NAME as the canonical tenant-admin
+   * predicate, over a DIFFERENT roster. That is the owner's complaint made
+   * literal: "having more than one vocab over the same function or feature is
+   * dangerous." Two functions, one name, two answers, and nothing to tell a
+   * reader which one they were looking at.
+   *
+   * It is renamed rather than repointed, because it is DELIBERATELY NARROWER and
+   * collapsing it into the tenant-admin roster would WIDEN access, not tidy it:
+   *
+   *   · `team_lead` IS admin-class under the owner's ruling, and is admitted by
+   *     isAdminOrBroker. It must NOT be admitted HERE. getDataScope() two methods
+   *     above answers 'team' for team_lead, and canAccessRecord() below carries an
+   *     explicit team_lead branch that scopes to ctx.teamIds. Admitting team_lead
+   *     here would make both unreachable and silently promote every team lead from
+   *     TEAM scope to BROKERAGE-WIDE scope — including getQueryFilters(), which
+   *     would start handing them `{ brokerage_id }` instead of their team.
+   *
+   *   · `superadmin` is a CANONICAL role here, not the users.user_type marker the
+   *     tenant roster had to stop testing. This method receives an already-
+   *     canonicalized UserRole, so the value is meaningful at this layer.
+   *
+   * `broker_owner` needs no entry: it canonicalizes to 'broker'
+   * (lib/security/types.ts#LEGACY_ROLE_MAP), which is how it reaches this test at
+   * all — before that mapping it canonicalized to 'agent' and the brokerage's
+   * owner was scoped to their own records.
+   */
+  hasBrokerageWideScope(role: UserRole): boolean {
     return role === 'superadmin' || role === 'admin' || role === 'broker'
   },
 
@@ -360,7 +395,7 @@ export const permissionsService = {
       shared_with?: string[]
     }
   ): boolean {
-    if (this.isAdminOrBroker(ctx.role)) return true
+    if (this.hasBrokerageWideScope(ctx.role)) return true
 
     const isOwner =
       record.agent_id === ctx.agentId ||
@@ -399,7 +434,7 @@ export const permissionsService = {
   },
 
   getQueryFilters(ctx: UserAccessContext): Record<string, unknown> {
-    if (this.isAdminOrBroker(ctx.role)) return ctx.brokerageId ? { brokerage_id: ctx.brokerageId } : {}
+    if (this.hasBrokerageWideScope(ctx.role)) return ctx.brokerageId ? { brokerage_id: ctx.brokerageId } : {}
     if (ctx.role === 'agent') return { agent_id: ctx.agentId }
     if (ctx.role === 'tc') return { team_id: ctx.teamIds }
     if (ctx.role === 'contact') return { contact_id: ctx.contactId }
@@ -427,7 +462,7 @@ export const permissionsService = {
     const basePermission = permissionMap[entityType]?.[action]
     if (!basePermission) return false
 
-    if (this.isAdminOrBroker(ctx.role)) return true
+    if (this.hasBrokerageWideScope(ctx.role)) return true
 
     if (this.hasPermission(ctx.role, basePermission)) {
       if (entityOwnerId === ctx.userId || entityOwnerId === ctx.agentId || entityOwnerId === ctx.contactId) return true

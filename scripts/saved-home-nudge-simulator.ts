@@ -17,7 +17,10 @@ function main() {
     const n = classifySavedHomeNudge(k)
     check(`${k} → a nudge with headline + angle`, !!n && n.kind === k && n.headline.length > 0 && n.angle.length > 0)
   }
-  check("six nudge kinds incl. coming_soon", SAVED_HOME_NUDGE_KINDS.length === 6 && SAVED_HOME_NUDGE_KINDS.includes("coming_soon"))
+  // Re-asserted to the RULE (CLAUDE.md §2 — a pinned count is a waypoint: it read 6 until wave 151's lane 151J added the
+  // honest "no longer available" ending and would have gone red because the work finished): the roster is a SET with no
+  // duplicate, it carries the exclusive first look AND the ending, and every kind on it classifies (the loop above).
+  check("the roster is duplicate-free and carries coming_soon and no_longer_available", new Set(SAVED_HOME_NUDGE_KINDS).size === SAVED_HOME_NUDGE_KINDS.length && SAVED_HOME_NUDGE_KINDS.includes("coming_soon") && SAVED_HOME_NUDGE_KINDS.includes("no_longer_available"))
 
   console.log("\n[Avatar-worthy = the highest-emotion moments → Asset Manager makes the video]")
   check("price_drop → avatar-worthy", classifySavedHomeNudge("price_drop")!.avatarWorthy === true)
@@ -26,6 +29,8 @@ function main() {
   check("under_contract → NOT avatar (keep it light, text)", classifySavedHomeNudge("under_contract")!.avatarWorthy === false)
   check("new_match → not avatar", classifySavedHomeNudge("new_match")!.avatarWorthy === false)
   check("open_house → not avatar", classifySavedHomeNudge("open_house")!.avatarWorthy === false)
+  // Wave 151 (151J): an ENDING is never a highlight reel, and it is told once at a calm urgency — a fact, then a pivot.
+  check("no_longer_available → NOT avatar, medium urgency, angle says only what the source reported", (() => { const n = classifySavedHomeNudge("no_longer_available")!; return n.avatarWorthy === false && n.urgency === "medium" && /never guess/i.test(n.angle) })())
 
   console.log("\n[Urgency + framing]")
   check("price_drop is high urgency", classifySavedHomeNudge("price_drop")!.urgency === "high")

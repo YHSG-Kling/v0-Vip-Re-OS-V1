@@ -60,3 +60,117 @@ export function brokerageNetFromSplit(grossCommission: number | null, agentSplit
   const split = Math.min(100, Math.max(0, agentSplitPercent))
   return Math.round(g * (1 - split / 100) * 100) / 100
 }
+
+// ─── WAVE 156 (lane 156K) — THE RECRUITING FUNNEL, FROM PERSISTED EVENTS ONLY ────────────────────────────────────────────
+//
+// verified prospect → contacted (a recruiting outreach a HUMAN approved, or the recorded stage) → conversation → offer → joined →
+// seat provisioned → trained (an onboarding certification on the agents row) → retained (the seat is still active) → producing
+// (a recruiting_analytics year with a transaction). Each count comes from a stored row: recruits (stage, provisioned), the action
+// ledger's recorded stage moves (app/api/recruiting/advance-stage, action recruiting.recruit.advance_stage), agent_client_messages,
+// agents, agent_certifications, recruiting_analytics. A stage whose source could not be read is null — never 0. Nothing here
+// reads, infers or scores a personal trait: the funnel counts recorded EVENTS per recruit, and no stage decides who may proceed.
+// @proofSeam PURE — scripts/wave156-k-guard.ts
+
+export const RECRUIT_FUNNEL_STAGES = [
+  { key: "sourced", label: "Verified prospects" },
+  { key: "contacted", label: "Contacted (human-approved outreach)" },
+  { key: "conversation", label: "Conversation / interview" },
+  { key: "offer", label: "Offer extended" },
+  { key: "joined", label: "Joined" },
+  { key: "seat_provisioned", label: "Seat provisioned" },
+  { key: "trained", label: "Certified in onboarding" },
+  { key: "retained", label: "Still active" },
+  { key: "producing", label: "Producing (a recorded transaction)" },
+] as const
+export type RecruitFunnelStageKey = (typeof RECRUIT_FUNNEL_STAGES)[number]["key"]
+
+/** The pipeline order of recruits.status (stale-recruit-policy RECRUIT_STATUSES minus the terminal "declined"). */
+const STAGE_RANK: Record<string, number> = { prospect: 0, contacted: 1, interviewing: 2, offer_extended: 3, joined: 4 }
+
+export interface RecruitFunnelFacts {
+  recruits: Array<{ id: string; status: string | null; provisioned: boolean | null; provisioned_user_id: string | null }>
+  /** recruit id → every stage a recorded, executed stage move took it to; null = the ledger could not be read. */
+  recordedMoves: Record<string, string[]> | null
+  /** recruit ids with a recruiting outreach a human approved (approved / sent); null = unreadable. */
+  approvedOutreach: string[] | null
+  /** provisioned users.id → the seat's facts; null = unreadable. Each inner fact may itself be null (its own read refused). */
+  seats: Record<string, { active: boolean | null; certified: boolean | null; producing: boolean | null }> | null
+  /** ROUND 2: stages this SEAT may not read (decided by the caller from the role rules) — reported as not_permitted, never 0
+   *  and never "unknown". */
+  notPermitted?: readonly RecruitFunnelStageKey[]
+}
+
+/** ROUND 2: three states a figure can be in. "ok" carries a real count (0 included); "unknown" = its source could not be read;
+ *  "not_permitted" = this seat may not read it. */
+export type RecruitFunnelFigureState = "ok" | "unknown" | "not_permitted"
+
+export function computeRecruitingFunnel(f: RecruitFunnelFacts): { stages: Array<{ key: RecruitFunnelStageKey; label: string; count: number | null; state: RecruitFunnelFigureState }>; declined: number } {
+  const reached = (r: RecruitFunnelFacts["recruits"][number], rank: number): boolean => {
+    if (r.provisioned) return true
+    const cur = STAGE_RANK[String(r.status ?? "")]
+    if (cur !== undefined && cur >= rank) return true
+    return (f.recordedMoves?.[r.id] ?? []).some((s) => (STAGE_RANK[s] ?? -1) >= rank)
+  }
+  const R = f.recruits
+  const outreach = new Set(f.approvedOutreach ?? [])
+  const seatIds = R.filter((r) => r.provisioned && r.provisioned_user_id).map((r) => r.provisioned_user_id as string)
+  const seatCount = (k: "active" | "certified" | "producing"): number | null => {
+    if (!f.seats) return null
+    let n = 0
+    for (const id of seatIds) { const s = f.seats[id]; if (!s || s[k] === null) return null; if (s[k]) n++ }
+    return n
+  }
+  const byRank = (rank: number): number => R.filter((r) => reached(r, rank)).length
+  // A stage that leans on the ledger reads as unknown when the ledger could not be read (a declined recruit's history lives there).
+  const counts: Record<RecruitFunnelStageKey, number | null> = {
+    sourced: R.length,
+    contacted: f.approvedOutreach === null || f.recordedMoves === null ? null : R.filter((r) => outreach.has(r.id) || reached(r, 1)).length,
+    conversation: f.recordedMoves === null ? null : byRank(2),
+    offer: f.recordedMoves === null ? null : byRank(3),
+    joined: R.filter((r) => r.provisioned || r.status === "joined").length,
+    seat_provisioned: seatIds.length,
+    trained: seatCount("certified"),
+    retained: seatCount("active"),
+    producing: seatCount("producing"),
+  }
+  return {
+    stages: RECRUIT_FUNNEL_STAGES.map((s) => {
+      if (f.notPermitted?.includes(s.key)) return { key: s.key, label: s.label, count: null, state: "not_permitted" as const }
+      const count = counts[s.key]
+      return { key: s.key, label: s.label, count, state: count === null ? "unknown" as const : "ok" as const }
+    }),
+    declined: R.filter((r) => r.status === "declined").length,
+  }
+}
+
+// ─── WAVE 156 (lane 156K, round 2 addendum) — ONE WAY TO HOLD A RECRUITING MONEY FIGURE ─────────────────────────────────
+// The five money exports of app/actions/recruiting-roi.ts refuse a seat that may not read the books with an Error whose message
+// starts "NOT_PERMITTED:", and throw any refused read. Their callers used to `.catch(() => ({ totalInvested: 0, … }))` — a
+// refusal drawn as $0. Every caller now settles the call through this instead: a value is "ok", a NOT_PERMITTED refusal is
+// "not_permitted" with its reason, anything else is "unknown" with its reason. Never a number it did not read.
+// (Across a client → server-action boundary a production build redacts the message, so a refusal there reads as "unknown" —
+// still words, never 0.)
+// @proofSeam PURE — scripts/wave156-k-guard.ts
+
+export type RecruitingFigure<T> =
+  | { state: "ok"; value: T }
+  | { state: "not_permitted"; reason: string }
+  | { state: "unknown"; reason: string }
+
+export const RECRUITING_NOT_PERMITTED_PREFIX = "NOT_PERMITTED:"
+
+export async function settleRecruitingFigure<T>(call: Promise<T>): Promise<RecruitingFigure<T>> {
+  try {
+    return { state: "ok", value: await call }
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    return message.startsWith(RECRUITING_NOT_PERMITTED_PREFIX)
+      ? { state: "not_permitted", reason: message.slice(RECRUITING_NOT_PERMITTED_PREFIX.length).trim() }
+      : { state: "unknown", reason: message }
+  }
+}
+
+/** The words a surface shows for a figure it does not have. */
+export function recruitingFigureWords(f: RecruitingFigure<unknown>): string | null {
+  return f.state === "ok" ? null : f.state === "not_permitted" ? "Not shown for your seat" : "Unknown — could not be read"
+}

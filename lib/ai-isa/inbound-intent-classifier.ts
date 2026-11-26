@@ -35,13 +35,16 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { guardedGenerateText } from "@/lib/data-guard/guarded-generate"
+import { logAIUsage } from "@/lib/ai/cost-tracking"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { shouldResurrectReengagement } from "./reengagement-policy"
 import {
   detectNegativeIntent,
   haltEngagementForNegativeReply,
 } from "./conversation-handler"
+import { callbackPositiveIntent, landCallbackOnAgentContact } from "./callback-task"
 import {
   convertSellerLeadOnIntent,
   type SellerIntentReason,
@@ -65,6 +68,26 @@ export interface ClassifiedIntent {
 
 /** What the live router knows about the lead/contact when it classifies. */
 export interface InboundContext {
+  /**
+   * WHO PAYS FOR THE CLASSIFIER'S MODEL CALL (CLAUDE.md §5 + §4).
+   *
+   * `aiClassifier` below runs a real model on the platform's own credentials for
+   * every inbound reply and booked NOTHING. It sits on `guardedGenerateText`,
+   * which is a DATA-GUARD chokepoint — redact, then call the raw SDK — so being
+   * on it satisfies data-guard-guard and says nothing about `ai_tool_usage`, the
+   * ledger that feeds meter_readings.ai_tokens and the overage projection.
+   *
+   * Carried on the CONTEXT rather than added as a fourth argument because
+   * `InboundClassifier` is an INJECTABLE SEAM: every classifier gets the same
+   * context object, so a replacement classifier that also spends can book
+   * without the seam's shape changing.
+   *
+   * OPTIONAL, and unbooked when absent — the same rule lib/ai/models.ts applies
+   * with its `if (request.brokerageId)`. classifyAndRouteInbound always sets it
+   * from `params.brokerageId`, which is session-resolved (§4); the simulators
+   * that build a context by hand simply do not book, which is correct.
+   */
+  brokerageId?: string | null
   /** The lead's known side, derived from motivation_type/lead_type. null = unknown. */
   knownSide: IntentSide | null
   /** Already has a saved search / criteria captured? (buyer) */
@@ -75,11 +98,41 @@ export interface InboundContext {
   hasCma: boolean
 }
 
-/** The injectable classifier seam — AI by default, keyword fallback as the floor. */
+/**
+ * WHO ANSWERED (CLAUDE.md §4 "nobody checked must never render as checked").
+ *
+ * `aiClassifier` used to swallow a model failure (`catch {}`) and return the
+ * keyword floor's verdict with nothing to say so — the router, the activity row
+ * and every caller then read a keyword guess as an AI verdict. The verdict now
+ * carries its PROVENANCE: which layer produced it, and, when it was the floor,
+ * WHY the model did not answer.
+ */
+export type ClassifierSource = "ai" | "keyword_fallback"
+export type ClassifierDegradedReason = "model_unavailable" | "unrecognized_label"
+
+export interface ClassifierVerdict {
+  intent: ClassifiedIntent | null
+  source: ClassifierSource
+  /** Set only when `source === "keyword_fallback"`. */
+  degraded?: ClassifierDegradedReason
+}
+
+/**
+ * The injectable classifier seam — AI by default, keyword fallback as the floor.
+ * A classifier may return a bare `ClassifiedIntent | null` (the simulators'
+ * injected classifiers do); the router tags such a verdict `source: "ai"`, i.e.
+ * "the injected layer answered", exactly as before.
+ */
 export type InboundClassifier = (
   message: string,
   ctx: InboundContext,
-) => Promise<ClassifiedIntent | null> | (ClassifiedIntent | null)
+) =>
+  | Promise<ClassifiedIntent | ClassifierVerdict | null>
+  | (ClassifiedIntent | ClassifierVerdict | null)
+
+function isVerdict(v: ClassifiedIntent | ClassifierVerdict | null): v is ClassifierVerdict {
+  return !!v && typeof v === "object" && "source" in v && "intent" in v
+}
 
 export interface ClassifyAndRouteParams {
   leadId: string
@@ -101,9 +154,20 @@ export interface ClassifyAndRouteResult {
   alreadyConverted?: boolean
   /** Negative intent detected → engagement halted, DNC set. */
   halted?: boolean
-  /** Why we did NOT convert (ambiguous, no lead, negative, …). */
-  reason?: "none" | "negative" | "lead_not_found" | "convert_failed"
+  /** Why we did NOT convert (ambiguous, no lead, negative, …). `degraded_held`
+   *  = the model was down and the keyword floor read only a BARE positive, which
+   *  is too weak to convert on without the model — held, kept nurturing. */
+  reason?: "none" | "negative" | "lead_not_found" | "convert_failed" | "degraded_held"
   error?: string
+  /** Wave 91 (lane 91B): the message asked for a callback (positive intent → converted). */
+  callbackRequested?: boolean
+  /** The callback landed as a follow-up on the assigned agent's contact. */
+  callbackLanded?: boolean
+  /** Which layer classified this message (absent on the negative halt and the
+   *  lead-not-found skip, where no classifier ran). */
+  classifierSource?: ClassifierSource
+  /** Why the keyword floor answered instead of the model, when it did. */
+  classifierDegraded?: ClassifierDegradedReason
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -195,6 +259,12 @@ export function keywordIntentFallback(
   if (sellsSignal && !buysSignal) return { side: "seller", reason: "positive_reply" }
   if (buysSignal && !sellsSignal) return { side: "buyer", reason: "positive_reply" }
 
+  // ── CALLBACK ASK = POSITIVE INTENT (wave 91, lane 91B, owner ruling) ────────
+  // An explicit "please call me back" converts, on the known side (buyer when unknown — the
+  // deriveLeadSide 'both' precedent). The ONE detector (callback-task.ts), negation-guarded.
+  const callbackAsk = callbackPositiveIntent<ClassifiedIntent>(message, null, knownSide ?? null)
+  if (callbackAsk) return callbackAsk as ClassifiedIntent
+
   // ── Bare POSITIVE reply — route on knownSide ────────────────────────────────
   const positiveReply = has(text, "yes", "interested", "tell me more", "sounds good",
     "sure", "let's talk", "lets talk", "i'm in", "im in", "okay", "ok", "absolutely",
@@ -245,11 +315,17 @@ function decodeIntentLabel(label: string): ClassifiedIntent | null {
  *
  * Falls back to keywordIntentFallback when the AI returns an unrecognized label —
  * HONEST CONSERVATISM means an unparseable AI answer never invents a conversion.
+ *
+ * The verdict says WHO answered. The model erroring and the model answering
+ * garbage are different facts (an outage vs. a prompt drift) and both are
+ * distinct from the model answering — the caller decides what the floor may
+ * convert on, and the logs show an outage as an outage instead of a quiet
+ * keyword-driven afternoon.
  */
 async function aiClassifier(
   message: string,
   ctx: InboundContext,
-): Promise<ClassifiedIntent | null> {
+): Promise<ClassifierVerdict> {
   // Negative is detected deterministically BEFORE we ever reach the converters
   // (the live router re-checks too) — but bias the AI to it as well.
   const sideHint =
@@ -283,21 +359,41 @@ Respond with ONLY the label, nothing else.`,
       messages: [{ role: "user", content: message }],
       maxOutputTokens: 12,
     })
+    // BOOK IT (§5). 'gpt-4o-mini' is the BILLING IDENTITY the live CHECK
+    // ai_tool_usage_model_is_priceable admits and calculateCost prices off — the
+    // gateway string this call site pins ("openai/gpt-4o-mini") is refused by
+    // that CHECK, and a refused insert loses the WHOLE row silently.
+    if (ctx.brokerageId) {
+      await logAIUsage({
+        userId:       null,
+        brokerageId:  ctx.brokerageId,
+        model:        "gpt-4o-mini",
+        inputTokens:  result.usage?.inputTokens ?? 0,
+        outputTokens: result.usage?.outputTokens ?? 0,
+        feature:      "inbound_intent_classification",
+      })
+    }
     const label = result.text.trim().toLowerCase().replace(/[^a-z_]/g, "")
     if ((INTENT_ENUM as readonly string[]).includes(label)) {
-      return decodeIntentLabel(label)
+      return { intent: decodeIntentLabel(label), source: "ai" }
     }
-  } catch {
-    // AI unavailable / errored — fall through to the deterministic floor.
+    console.warn(`[inbound-intent] model returned an unrecognized label "${label}" — keyword floor used`)
+    return { intent: keywordIntentFallback(message, ctx.knownSide), source: "keyword_fallback", degraded: "unrecognized_label" }
+  } catch (err) {
+    // AI unavailable / errored — the deterministic floor answers, and the
+    // outage is LOGGED (it used to be swallowed here with no trace at all).
+    console.error("[inbound-intent] model unavailable — keyword floor used:", err instanceof Error ? err.message : err)
+    return { intent: keywordIntentFallback(message, ctx.knownSide), source: "keyword_fallback", degraded: "model_unavailable" }
   }
-  return keywordIntentFallback(message, ctx.knownSide)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Layer 2 — LIVE router: read context → classify → halt / route / nurture
 // ─────────────────────────────────────────────────────────────────────────────
 
-function deriveSide(motivation: string | null, leadType: string | null): IntentSide | null {
+/** Exported (wave 91, lane 91B) so the callback converter (lib/ai-isa/callback-task.ts
+ *  convertLeadOnCallbackIntent) resolves a lead's side by THIS rule, not a second copy (§6). */
+export function deriveLeadSide(motivation: string | null, leadType: string | null): IntentSide | null {
   const m = (motivation ?? "").toLowerCase()
   const lt = (leadType ?? "").toLowerCase()
   // Explicit seller signal wins; 'both' and bare buyer map to buyer (mirrors
@@ -328,12 +424,17 @@ export async function classifyAndRouteInbound(
 
   // ── Gate 0: NEGATIVE intent halts everything FIRST — never reaches a converter ─
   if (detectNegativeIntent(params.message)) {
-    await haltEngagementForNegativeReply({
+    const halt = await haltEngagementForNegativeReply({
       leadId: params.leadId,
       body: params.message,
       brokerageId: params.brokerageId,
     })
-    return { outcome: "halted", halted: true, reason: "negative" }
+    // FAIL CLOSED (CLAUDE.md §4): we still refuse to convert, but a REFUSED
+    // contact-side DNC write means the row does not carry the opt-out. The
+    // result carries that instead of asserting a suppression that never landed.
+    return halt.contactSuppressionError
+      ? { outcome: "halted", halted: true, reason: "negative", error: halt.contactSuppressionError }
+      : { outcome: "halted", halted: true, reason: "negative" }
   }
 
   // ── Read the lead's known side + what's already known ───────────────────────
@@ -355,18 +456,18 @@ export async function classifyAndRouteInbound(
   //    (shouldResurrectReengagement excludes opted_out / completed).
   if (shouldResurrectReengagement((lead as any).reengagement_status)) {
     const fromStatus = (lead as any).reengagement_status as string
-    await svc.from("leads")
+    await sentinelWrite(svc, svc.from("leads")
       .update({ reengagement_status: "active", reengagement_attempt_count: 0, updated_at: new Date().toISOString() })
-      .eq("id", params.leadId).then(() => null, () => null)
-    await svc.from("lifecycle_events").insert({
-      brokerage_id: params.brokerageId, entity_type: "lead", entity_id: params.leadId,
-      event_type: "ISA_RECLAIMED_ON_REPLY",
+      .eq("id", params.leadId), { table: "leads", flow: "isa_reclaim_on_reply", reason: "re-engagement resurrection; the reply routing proceeds regardless and a loss is ledgered" })
+    await sentinelWrite(svc, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      brokerageId: params.brokerageId, entityType: "lead", entityId: params.leadId,
+      event: "ISA_RECLAIMED_ON_REPLY",
       metadata: { from_status: fromStatus, note: "reply re-armed the active cadence" },
-      created_at: new Date().toISOString(),
-    }).then(() => null, () => null)
+      createdAt: new Date().toISOString(),
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
   }
 
-  const knownSide = deriveSide((lead as any).motivation_type, (lead as any).lead_type)
+  const knownSide = deriveLeadSide((lead as any).motivation_type, (lead as any).lead_type)
 
   // What's already known on the (possibly already-converted) contact — lets the
   // SAME positive reply route correctly and avoids redundant milestone work.
@@ -385,24 +486,72 @@ export async function classifyAndRouteInbound(
     hasCma = (cmaC ?? 0) > 0
   }
 
-  const ctx: InboundContext = { knownSide, hasCriteria, hasPreapproval, hasCma }
+  // brokerageId rides the context so the classifier's model call is booked to the
+  // tenant this function was already scoped to — the same value every read above
+  // used as its tenant predicate, never a request body (§4).
+  const ctx: InboundContext = {
+    brokerageId: params.brokerageId,
+    knownSide, hasCriteria, hasPreapproval, hasCma,
+  }
 
   // ── Classify (AI by default; keyword fallback as the floor / injectable seam) ─
-  const classified = await classifier(params.message, ctx)
+  const raw = await classifier(params.message, ctx)
+  const verdict: ClassifierVerdict = isVerdict(raw) ? raw : { intent: raw, source: "ai" }
+  const provenance = { classifierSource: verdict.source, classifierDegraded: verdict.degraded }
+
+  // ── FAIL CLOSED ON A DEGRADED BARE POSITIVE (§4) ────────────────────────────
+  // With the model DOWN, the keyword floor still recognises explicit milestone
+  // asks ("what's my home worth", "can I tour 123 Main") — those phrases are what
+  // it was written for and they route below. A bare "ok" / "sure" / "yes" routed
+  // only by knownSide is the weakest signal the floor emits, and converting a
+  // lead on it while nobody checked is exactly the "checked and fine" the rule
+  // forbids. Held instead: nurture touch, provenance recorded, no conversion.
+  const heldForModel =
+    verdict.intent?.reason === "positive_reply" &&
+    verdict.source === "keyword_fallback" &&
+    verdict.degraded === "model_unavailable"
+  // CALLBACK = POSITIVE INTENT (wave 91, lane 91B — owner: "If the lead needs a callback, that
+  // is a positive intent so that lead gets converted."). An explicit callback ask converts even
+  // when the model read it as ambiguous, and even with the model down (it is a deterministic,
+  // negation-guarded ask — not the bare "ok" the degraded hold exists for). Negatives were halted
+  // at Gate 0 above. The callback then lands on the assigned agent's contact (below).
+  const callbackIntent = callbackPositiveIntent<ClassifiedIntent>(params.message, heldForModel ? null : verdict.intent, knownSide) as ClassifiedIntent | null
+  const classified: ClassifiedIntent | null = callbackIntent ?? (heldForModel ? null : verdict.intent)
 
   // AMBIGUOUS / no clear intent → NO conversion. Record a nurture touch, keep nurturing.
   if (!classified) {
-    await svc.from("activities").insert({
-      contact_id: params.leadId,
+    // SENTINELLED, not swallowed. This used to end `.then(() => null, () => null)`,
+    // which discards the refusal as well as the result — and this row is the ONLY
+    // trace that an inbound reply was seen and deliberately not converted. Losing
+    // it silently means a lead looks untouched. The service client cannot be
+    // RLS-refused, so a failure here is a real fault worth a ledger row rather
+    // than a tolerated one (write-sentinel.ts is the instrument the guard names
+    // for a service-client write).
+    await sentinelWrite(svc, svc.from("activities").insert({
+      // activities.contact_id FKs contacts(id) — a LEAD id is FK-rejected, so this
+      // insert was silently lost. The lead rides on entity_type/entity_id, the shape
+      // already used at the conversion branch above; contact_id stays honestly null.
+      contact_id: null,
+      entity_type: "lead",
+      entity_id: params.leadId,
       brokerage_id: params.brokerageId,
       activity_type: "ai_isa_inbound_nurture",
-      title: "Inbound reply — no conversion intent",
-      description: "AI ISA classified an inbound reply as ambiguous / no clear conversion intent. Kept nurturing (no conversion).",
+      title: heldForModel ? "Inbound reply — held (classifier degraded)" : "Inbound reply — no conversion intent",
+      description: heldForModel
+        ? "AI ISA classifier was DEGRADED (model unavailable); the keyword floor read only a bare positive reply, which is too weak to convert on without the model. Held — kept nurturing, no conversion. Re-classify when the model is back."
+        : verdict.source === "keyword_fallback"
+          ? `AI ISA classified an inbound reply as ambiguous / no clear conversion intent (keyword floor; model ${verdict.degraded === "model_unavailable" ? "unavailable" : "answered an unrecognized label"}). Kept nurturing (no conversion).`
+          : "AI ISA classified an inbound reply as ambiguous / no clear conversion intent. Kept nurturing (no conversion).",
       status: "completed",
       completed_at: new Date().toISOString(),
       created_at: new Date().toISOString(),
-    }).then(() => null, () => null)
-    return { outcome: "nurtured", reason: "none" }
+    }), {
+      table: "activities",
+      flow: "isa_inbound_nurture",
+      brokerageId: params.brokerageId,
+      reason: "the nurture breadcrumb is additive — the lead stays nurtured either way, but the loss is ledgered so a run of them is visible",
+    })
+    return { outcome: "nurtured", reason: heldForModel ? "degraded_held" : "none", ...provenance }
   }
 
   // ── RETURNING-CUSTOMER hook ─────────────────────────────────────────────────
@@ -454,13 +603,18 @@ export async function classifyAndRouteInbound(
       // the slot, so we deliberately do NOT fabricate one from an inbound reply.
     })
     if (!res.success) {
-      return { outcome: "skipped", classified, reason: "convert_failed", error: res.error }
+      return { outcome: "skipped", classified, reason: "convert_failed", error: res.error, ...provenance }
     }
+    const landed = callbackIntent && res.contactId
+      ? await landCallbackOnAgentContact(svc, { brokerageId: params.brokerageId, contactId: res.contactId, whenPhrase: params.message.slice(0, 200), reason: "asked for a callback in their reply" })
+      : null
     return {
       outcome: "converted",
       classified,
       contactId: res.contactId,
       alreadyConverted: res.alreadyConverted,
+      ...(callbackIntent ? { callbackRequested: true, callbackLanded: landed?.ok === true, ...(landed && !landed.ok ? { error: `callback not landed: ${landed.error}` } : {}) } : {}),
+      ...provenance,
     }
   }
 
@@ -475,12 +629,17 @@ export async function classifyAndRouteInbound(
     // outcome for a bare inbound reply. The agent enriches on follow-up.
   })
   if (!res.success) {
-    return { outcome: "skipped", classified, reason: "convert_failed", error: res.error }
+    return { outcome: "skipped", classified, reason: "convert_failed", error: res.error, ...provenance }
   }
+  const landed = callbackIntent && res.contactId
+    ? await landCallbackOnAgentContact(svc, { brokerageId: params.brokerageId, contactId: res.contactId, whenPhrase: params.message.slice(0, 200), reason: "asked for a callback in their reply" })
+    : null
   return {
     outcome: "converted",
     classified,
     contactId: res.contactId,
     alreadyConverted: res.alreadyConverted,
+    ...(callbackIntent ? { callbackRequested: true, callbackLanded: landed?.ok === true, ...(landed && !landed.ok ? { error: `callback not landed: ${landed.error}` } : {}) } : {}),
+    ...provenance,
   }
 }

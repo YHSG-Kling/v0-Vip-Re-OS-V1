@@ -23,6 +23,7 @@ export async function GET(req: NextRequest) {
     cron_name: "farm-play",
     cron_path: "/app/api/cron/farm-play/route.ts",
   })
+  if (contextResult.data?.held) return NextResponse.json({ success: true, held: true, decision: contextResult.data.decision }) // cron decision door (155R1): held before any domain write
   if (!contextResult.success || !contextResult.data) {
     return NextResponse.json({ error: "Failed to create cron context" }, { status: 500 })
   }

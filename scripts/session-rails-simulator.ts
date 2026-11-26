@@ -58,7 +58,9 @@ console.log("\n── PURE: board packet ──")
     optOutsHonored: 1, attributedGciCents: 41200000, attributedDeals: 2,
   })
   check("packet carries production + the AI team's measured month + the GCI-attribution retention line",
-    md.includes("$1,000,000") && md.includes("Marketing-attributed closed volume") && md.includes("412,000") && md.includes("compliance is a feature"))
+    // Wave 152 (lane 152K): the attributed figure is COMMISSION (GCI), never sale price — labelled so; "closed volume"
+    // stays the sold-price line ($1,000,000) and never names the commission figure.
+    md.includes("$1,000,000") && md.includes("Marketing-attributed closed commission") && !md.includes("Marketing-attributed closed volume") && md.includes("412,000") && md.includes("compliance is a feature"))
   check("delivered as PDF (owner rule) — pdf-lib renderer wired in the runner",
     src("lib/kernel/board-packet.ts").includes("renderBoardPacketPdf") && src("lib/kernel/board-packet.ts").includes('"application/pdf"'))
 }

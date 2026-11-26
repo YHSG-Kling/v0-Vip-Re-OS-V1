@@ -12,7 +12,6 @@ import {
   BarChart2,
   Target,
   Plus,
-  Trash2,
   Loader2,
   MapPin,
   ExternalLink,
@@ -232,9 +231,11 @@ export function CompetitorsClient({ initialCompetitors, agentId, defaultMarketAr
                         <Badge variant="outline" className="text-xs">{item.content_type}</Badge>
                       </div>
                       <p className="text-xs text-muted-foreground">{item.content_summary}</p>
-                      <div className="flex gap-4 text-xs text-muted-foreground">
-                        <span>Open rate: <strong>{item.openRate}%</strong></span>
-                        <span>Click rate: <strong>{item.clickRate}%</strong></span>
+                      {/* WAVE 154 (154G1): observed rows, not model-invented metrics — an unknowable rate reads "unknown". */}
+                      <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
+                        <span>Engagement: <strong>{typeof item.engagement === "number" ? item.engagement.toLocaleString() : "unknown"}</strong>{item.evidenceLabel ? ` (${item.evidenceLabel})` : ""}</span>
+                        <span>Open / click rate: <strong>{typeof item.openRate === "number" ? `${item.openRate}%` : "unknown"}</strong></span>
+                        {item.observed_at && <span>Observed {String(item.observed_at).slice(0, 10)}</span>}
                       </div>
                     </div>
                   ))}
@@ -341,7 +342,7 @@ export function CompetitorsClient({ initialCompetitors, agentId, defaultMarketAr
                       <ul className="space-y-1">
                         {landscape.differentiators.map((d: string, i: number) => (
                           <li key={i} className="flex items-start gap-1.5">
-                            <span className="text-green-600 mt-0.5">✓</span>
+                            <span className="text-green-700 mt-0.5">✓</span>
                             <span>{d}</span>
                           </li>
                         ))}

@@ -23,6 +23,7 @@ import {
   searchAvailableNumbers,
   provisionNumber,
   releaseNumber,
+  suggestLocalNumbers,
   type NumberCandidate,
 } from "@/lib/voice/number-provisioning"
 
@@ -56,6 +57,8 @@ export async function searchNumbersForTenant(params: {
   const svc = createServiceClient()
   const { data: brk } = await svc.from("brokerages").select("id").eq("id", params.brokerageId).maybeSingle()
   if (!brk) return { ok: false, error: "Tenant not found" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction({ brokerageId: params.brokerageId, action: "telephony.number_inventory.search", actor: { type: "user", userId: gate.userId }, subject: { type: "brokerage", id: params.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { platform_staff: true } }, async (): ReturnType<typeof searchNumbersForTenant> => {
 
   const res = await searchAvailableNumbers(svc, params.brokerageId, {
     areaCode: params.areaCode || null,
@@ -64,6 +67,28 @@ export async function searchNumbersForTenant(params: {
   })
   if (!res.ok) return res
   return { ok: true, candidates: res.candidates, credTier: res.credTier }
+  }); return "ok" in r ? r : { ok: false, error: r.error ?? "Not recorded" }
+}
+
+/** Wave 82D — LOCAL numbers nearest the chosen tenant (its area code first,
+ *  nearby fallback, toll-free only when asked). Staff pick the tenant (platform
+ *  sees all tenants, CLAUDE.md §4) behind the same providers write gate. */
+export async function suggestLocalNumbersForTenant(params: {
+  brokerageId: string
+  areaCode?: string
+  includeTollFree?: boolean
+}): Promise<{ ok: true; candidates: Array<{ phoneNumber: string; locality: string | null; region: string | null; rungLabel: string; inAreaCode: boolean; tollFree: boolean; registrationLane: "10dlc" | "tollfree" }>; anchor: string; areaCode: string | null; credTier: string } | { ok: false; error: string; notConfigured?: boolean }> {
+  const gate = await requirePlatformCapability("providers", { requireWrite: true })
+  if (!gate.ok || !gate.userId) return { ok: false, error: gate.error ?? "Forbidden" }
+  if (!params.brokerageId) return { ok: false, error: "brokerageId is required" }
+
+  const svc = createServiceClient()
+  const res = await suggestLocalNumbers(svc, params.brokerageId, { areaCode: params.areaCode || null, includeTollFree: params.includeTollFree === true, limit: 12 })
+  if (!res.ok) return res
+  return {
+    ok: true, anchor: res.anchor, areaCode: res.areaCode, credTier: res.credTier,
+    candidates: res.candidates.map((c) => ({ phoneNumber: c.phoneNumber, locality: c.locality, region: c.region, rungLabel: c.rungLabel, inAreaCode: c.inAreaCode, tollFree: c.tollFree, registrationLane: c.registrationLane })),
+  }
 }
 
 // ─── Provision ───────────────────────────────────────────────────────────────
@@ -74,7 +99,7 @@ export async function provisionNumberForTenant(params: {
   phoneNumber?: string
   areaCode?: string
 }): Promise<
-  | { ok: true; phoneNumber: string; twilioSid: string | null; credTier: string; bound: boolean; bindNote?: string }
+  | { ok: true; phoneNumber: string; twilioSid: string | null; credTier: string; bound: boolean; bindNote?: string; registration?: string | null }
   | { ok: false; error: string; notConfigured?: boolean }
 > {
   const gate = await requirePlatformCapability("providers", { requireWrite: true })
@@ -106,8 +131,10 @@ export async function provisionNumberForTenant(params: {
     cred_tier: result.credTier,
     bound_to_voice_lane: result.bound,
     ...(result.bindNote ? { bind_note: result.bindNote } : {}),
+    ...(result.registration ? { carrier_registration: { lane: result.registration.lane, kicked: result.registration.kicked, status: result.registration.statusLine } } : {}),
   })
-  return { ok: true, phoneNumber: result.phoneNumber, twilioSid: result.twilioSid, credTier: result.credTier, bound: result.bound, bindNote: result.bindNote }
+  const registration = result.registration ? `${result.registration.lane === "10dlc" ? "A2P 10DLC" : "Toll-free verification"}: ${result.registration.statusLine}${result.registration.reason ? ` — ${result.registration.reason}` : ""}` : null
+  return { ok: true, phoneNumber: result.phoneNumber, twilioSid: result.twilioSid, credTier: result.credTier, bound: result.bound, bindNote: result.bindNote, registration }
 }
 
 // ─── Release ─────────────────────────────────────────────────────────────────
@@ -123,7 +150,7 @@ export async function releaseNumberForTenant(params: {
   if (!params.brokerageId || !params.numberRowId) return { ok: false, error: "brokerageId and numberRowId are required" }
 
   const svc = createServiceClient()
-  const { data: row } = await svc.from("vapi_phone_numbers")
+  const { data: row } = await svc.from("tenant_phone_numbers")
     .select("id, brokerage_id, phone_number, is_active")
     .eq("id", params.numberRowId).maybeSingle()
   const n = row as any

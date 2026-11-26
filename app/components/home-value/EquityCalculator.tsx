@@ -96,7 +96,7 @@ export function EquityCalculator({ estimatedValue }: EquityCalculatorProps) {
           <div className="text-center p-4 bg-primary/5 rounded-lg">
             <p className="text-lg font-medium text-foreground">
               Your estimated equity is{" "}
-              <span className={equity >= 0 ? "text-green-600" : "text-red-600"}>
+              <span className={equity >= 0 ? "text-green-700" : "text-red-600"}>
                 {formatCurrency(Math.abs(equity))}
               </span>
               {equity < 0 && " underwater"}

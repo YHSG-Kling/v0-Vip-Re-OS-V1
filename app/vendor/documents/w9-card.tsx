@@ -13,7 +13,7 @@ import { useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { FileBadge, Loader2, ExternalLink, AlertTriangle } from "lucide-react"
-import { uploadVendorW9Action } from "@/app/actions/vendor-w9"
+import { uploadVendorW9Action, getMyVendorW9Action } from "@/app/actions/vendor-w9"
 // Client-safe pure vocab module — never the IO half (keeps the dispatch rail
 // out of the client bundle).
 import {
@@ -30,11 +30,18 @@ const STATUS_BADGE: Record<string, { label: string; cls: string }> = {
   expired: { label: "W-9 needs update", cls: "bg-red-100 text-red-800" },
 }
 
-export function VendorW9Card({ vendorId, w9 }: { vendorId: string; w9: VendorW9Read }) {
+export function VendorW9Card({ vendorId, w9: initialW9 }: { vendorId: string; w9: VendorW9Read }) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
-  const [showForm, setShowForm] = useState(w9.status !== "on_file")
+  // The posture is held in state (seeded from the server render) so that after
+  // an upload the card can re-read its OWN status through the gated portal read
+  // (getMyVendorW9Action → requireVendorActor → readVendorW9), which DERIVES
+  // 'expired' from the vendor's current legal name rather than trusting the
+  // stored status. router.refresh() below still runs so the sibling document
+  // list picks up the new client_documents row.
+  const [w9, setW9] = useState<VendorW9Read>(initialW9)
+  const [showForm, setShowForm] = useState(initialW9.status !== "on_file")
   const [legalName, setLegalName] = useState(w9.record?.legalName ?? "")
   const [businessType, setBusinessType] = useState<W9BusinessType>(w9.record?.businessType ?? "individual_sole_proprietor")
   const [tinType, setTinType] = useState<W9TinType>(w9.record?.tinType ?? "ein")
@@ -63,6 +70,11 @@ export function VendorW9Card({ vendorId, w9 }: { vendorId: string; w9: VendorW9R
         signatureDate,
       })
       if (!r.success) { setError(r.error ?? "Upload failed"); return }
+      // Re-read the derived posture. If the read is refused or fails we leave
+      // the previous posture in place rather than inventing an optimistic
+      // "on file" badge — the route refresh below is the backstop.
+      const fresh = await getMyVendorW9Action(vendorId).catch(() => null)
+      if (fresh && !("error" in fresh)) setW9(fresh)
       setShowForm(false)
       router.refresh()
     })
@@ -152,7 +164,7 @@ export function VendorW9Card({ vendorId, w9 }: { vendorId: string; w9: VendorW9R
               <input type="file" accept="application/pdf,image/png,image/jpeg"
                      onChange={(e) => setFile(e.target.files?.[0] ?? null)} className="block text-sm" />
             </label>
-            {error && <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded p-2">{error}</p>}
+            {error && <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded p-2">{error}</p>}
             <div className="flex gap-2">
               <Button size="sm" onClick={handleSubmit} disabled={isPending}>
                 {isPending ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Uploading…</> : "Save W-9"}

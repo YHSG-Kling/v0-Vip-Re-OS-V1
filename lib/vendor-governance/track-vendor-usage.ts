@@ -5,7 +5,7 @@
  */
 
 import { logVendorUsage, VendorUsageEvent } from './usage-logger'
-import { normalizeVendorCost } from './cost-normalizer'
+import { priceVendorUsage } from './cost-normalizer'
 import { validateAttribution, inferAttribution, AttributionContext } from './attribution'
 
 export interface TrackUsageParams {
@@ -31,6 +31,10 @@ export interface TrackUsageResult {
 function inferUsageType(vendorKey: string): string {
   if (vendorKey.includes('gpt') || vendorKey.includes('claude')) return 'tokens'
   if (vendorKey.includes('zenrows') || vendorKey.includes('apify')) return 'api_calls'
+  // Keyless OSINT-free lane (Nominatim + Overpass + Census) meters connector
+  // requests, matching VENDOR_PRICING['osint_free'].unitType. Checked BEFORE the
+  // 'data' rule below so it cannot be misread as a records vendor.
+  if (vendorKey.includes('osint')) return 'api_calls'
   if (vendorKey.includes('sendgrid') || vendorKey.includes('resend')) return 'emails'
   if (vendorKey.includes('twilio')) return 'minutes'
   if (vendorKey.includes('lob')) return 'pieces'
@@ -42,8 +46,10 @@ export async function trackVendorUsageService(
   params: TrackUsageParams
 ): Promise<TrackUsageResult> {
   try {
-    // STEP 1: Normalize cost
-    const estimatedCost = normalizeVendorCost(params.vendor, params.unitCount)
+    // STEP 1: Price the usage WITH its state (wave 139, 139C) — an unknown vendor's price is unknown
+    // (null → $0 on the NOT NULL column, price_state 'unknown' on the row), never a guessed rate.
+    const priced = priceVendorUsage(params.vendor, params.unitCount)
+    const estimatedCost = priced.costUsd ?? 0
 
     // STEP 2: Build attribution context
     let attribution: AttributionContext = {
@@ -86,6 +92,8 @@ export async function trackVendorUsageService(
         contactId: attribution.contactId,
         transactionId: attribution.transactionId,
       },
+      priceState: priced.priceState,
+      costBasis: priced.costBasis,
       timestamp: new Date(),
     }
 

@@ -52,6 +52,98 @@ Three flows, each with a VERIFY and CLEANUP:
 Always finish with the final cleanup-guard SELECT (expect every count = 0). This whole
 driver was run end-to-end in-session with all-zero leftovers.
 
+## Run the REAL functions (MCP replay bridge) — wave 91, lane 91D
+`*.supabase.co` is refused by the sandbox egress proxy and no service key exists, so
+supabase-js cannot run here. `mcp-bridge/` runs the app's real server functions
+in-process anyway: `@/lib/supabase/{service,server}` resolve to a bridge client that
+turns every query builder into SQL; the agent executes each batch with
+`execute_sql` and feeds the answer back (`run.ts <scenario> --ingest answer.json`).
+Writes whose result is unused are deferred and batched; each statement runs in its
+own subtransaction under `service_role` or `authenticated` + JWT claims (so RLS applies);
+a refusal is replayed at its own index. `journey-wave91.ts` is the prospect →
+lifetime-customer scenario. Traps paid for: un-awaited background chains reorder calls
+between runs — `quiesce()` after every step and identity-keyed replay handle it, but a
+cache recorded before those existed must be discarded (never replay a stale write);
+`auth.admin.*` is EMULATED on `auth.users` for demo emails only (no mail is sent);
+all `fetch` is refused (no Stripe/AI/mail call). Cleanup: `cleanup-template.sql`
+pattern in the lane-91D notes (per-table ROW_COUNT, passes until stable).
+
+### Wave 93 (lane 93D) additions — `journey-wave93.ts`, 825 calls end to end
+- **Shadowed reads.** A read scoped to the walk's brokerage (`setScopeBrokerage`) or to a
+  walk-owned id (`setScopeIds(col, ids)`, `setScopeTextIds(col, values)` for text columns;
+  `autoScope` adds every id an INSERT returns) is answered EMPTY locally when the last id
+  census proved that table holds none of them and nothing pending can have changed it
+  (`shadowEmptyOk`). A write on a trigger-free table (`TRIGGER_TABLES`, read from pg_trigger
+  2026-10-01 — refresh it if triggers change) cannot stale another table's census. Shadowed
+  answers are cached with label `shadow:empty`, so the audit shows which ones were local.
+- **The census answer.** Return `=` when the table list is unchanged (md5 of the sorted list
+  is compared). Return `+a,b` for additions. Return the full list when anything was removed.
+- **Volatile keys.** From `meta.msFrom` on, `"…_ms":N` and 13-digit epoch-ms values within
+  30 days are normalised in the replay key, the same as wall-clock countdowns. Without this,
+  `processing_time_ms` drift re-issued an already-applied INSERT.
+- **Other cache fixes.** A pending READ from the last run is recomputed rather than replayed.
+  From `meta.starFrom` on, a `select("*")` by id records its shape.
+- **Run the batch exactly as printed.** Never hand-rewrite the DO-wrapper writes into CTEs.
+  You may change only the final SELECT, for a fingerprint, but if that SELECT errors the
+  whole request rolls back. Re-run it verbatim.
+- **Trap: reuse by call number.** After a rewind, the newest cached answer for call N can
+  belong to a DIFFERENT statement. Before copying an answer forward, check its sig/SQL.
+  The lane's `reuse.cjs` prints its source row for this reason.
+- **Trap: an app change mid-walk shifts every later call index.** For example, adding a read
+  in `notification-engine` broke replay at call 26. Defer such changes until the walk ends,
+  or rewind to the first call they touch.
+- **Cleanup.** A whole-schema DO-block delete timed out at 60 s and rolled back. Use explicit
+  per-group CTE deletes with `RETURNING` counts instead. Prove inserted = deleted, and
+  prove 0 residual against every tag predicate and every `brokerage_id` table.
+
+### Wave 93 (lane 93D2) additions — `journey-wave93c.ts`, 574 calls, listing side to a lifetime customer
+- **A fresh tag set per walk.** Use a fresh name prefix, email suffix, notes tag and uuid
+  prefix (`Wave93c Demo%`, `@wave93c.test`, `wave93c-demo`, `BRIDGE_UUID_PREFIX=93dc`) so the
+  cleanup predicates cannot match an earlier walk's leftovers.
+- **The one-command loop.** A tiny wrapper (`go.mjs` in the lane scratchpad) does three things:
+  1. renames `answers/next.json` to the next `aNNNN.json`;
+  2. runs `run.ts <journey> --ingest` on it;
+  3. prints `NEED_SQL` plus `batch-current.sql`.
+
+  Run that batch VERBATIM through `execute_sql`, write the JSON result verbatim to
+  `answers/next.json`, then run the wrapper again. Running it with no `next.json` re-prints a
+  fresh batch and ingests nothing.
+- **Census answers.** Return `=` when nothing changed and `+a,b` for additions only. That
+  keeps the answer small.
+- **Volatile-key regex is digit-bounded.** Use `(?<!\d)\d{13}(?!\d)`. Without the bounds,
+  13-digit windows inside a longer number, such as a phone or an id, were normalised, so two
+  different statements collided on one key.
+- **Fixing app code mid-walk is safe when the fix only touches calls not yet executed.**
+  Identity-keyed replay re-issues only the keys that changed. Already-applied writes keep
+  their cached answers. If a fix changes an ALREADY-executed write, rewind to it instead.
+  When a background chain interleaves new reads at reused call numbers, answer the new
+  reads. Craft an answer by hand only for a read whose live answer drifted, and record that
+  you did.
+- **Cleanup that stays under 60 s:**
+  1. One EXISTS pass over every `brokerage_id` BASE TABLE (664 tables, ~0.3 s), written in
+     the `set_config` / `current_setting` form.
+  2. Delete only the tables that have hits, children first, with a `RETURNING` count each.
+  3. Delete the tagged non-tenant rows: prospects, `superadmin_audit_log` by `target_id`,
+     tenant-less `api_response_logs` by id, `public.users`, then `auth.users`.
+  4. Delete the brokerage.
+
+  Watch for these:
+  - `contact_lead_history` is a VIEW over `contacts` LEFT JOIN `leads`. Never delete from
+    it, and never add it to the tally.
+  - `offers` cascades from `transactions` (and from `contacts` and `listings`), so count
+    the cascade.
+  - Two probes that used `CREATE TEMP TABLE` for results timed out at 60 s, while the same
+    scan in `set_config` form ran in 0.27 s. The cause is unresolved. Prefer `set_config`.
+
+  Prove 0 residual with all of these:
+  - the EXISTS pass;
+  - an id pass over every uuid `id` table (the walk's uuid range plus the random-id rows
+    it created);
+  - every tag predicate.
+
+  Pair each pass with a positive control: the same finder run against the seed brokerage
+  and the seed id range must find rows.
+
 ## Run (UI / human path) — NOT available in the sandbox
 The app needs Supabase env. Fetch it with the Supabase MCP and write `.env.local`
 (gitignored):

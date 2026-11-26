@@ -2,10 +2,10 @@
 
 import { useChat } from "@ai-sdk/react"
 import { DefaultChatTransport } from "ai"
-import { useSearchParams } from "next/navigation"
 import { useEffect, useRef, useState, useCallback } from "react"
-import { Send, X, MessageCircle, Loader2, Video, Phone, ArrowLeft } from "lucide-react"
+import { Send, X, MessageCircle, Loader2, Phone, ArrowLeft } from "lucide-react"
 import { getMessageText } from "@/lib/ai/get-message-text"
+import { ConsentBoxes, useConsentBoxes } from "@/app/components/forms/ConsentBoxes"
 
 interface WidgetIdentity {
   assistant_name: string
@@ -13,12 +13,21 @@ interface WidgetIdentity {
   tone: string
   faq_knowledge: Array<{ question: string; answer: string }>
   followup_style: string
-  agent_has_did_avatar?: boolean
   display_name?: string
   brokerage_name?: string
 }
 
-type WidgetMode = "picker" | "chat" | "live_agent" | "callback"
+/**
+ * The "live_agent" mode is GONE (m336). It drove /api/widget/avatar-session +
+ * /api/widget/avatar-talk, a raw-fetch lane against D-ID's deprecated
+ * talks/streams + clips/streams that could never have worked: it looked up
+ * `agents.user_id = <an agents.id>`, so the session route 404'd on every call,
+ * and the picker's gate read agent_voice_profiles with the same wrong id class,
+ * so the button never rendered either. The real live/voice/talking agent is the
+ * EMBED widget (/embed/[publicId]), which rides the D-ID Agents SDK through
+ * Connection OS with usage caps, budget gating and metering.
+ */
+type WidgetMode = "picker" | "chat" | "callback"
 
 function getFingerprint(): string {
   const nav = navigator.userAgent + screen.width + screen.height + Intl.DateTimeFormat().resolvedOptions().timeZone
@@ -32,14 +41,22 @@ function getFingerprint(): string {
 
 const SESSION_KEY = "vip_widget_session"
 
-export default function WidgetChatClient() {
-  const params = useSearchParams()
-  // Support both old (?agent=&brokerage=) and new (?scope=&id=&brokerage=) param shapes
-  const agentId = params.get("agent") ?? (params.get("scope") === "agent" ? params.get("id") : undefined) ?? undefined
-  const brokerageId = params.get("brokerage") ?? ""
-  const scopeParam = (params.get("scope") ?? (agentId ? "agent" : "brokerage")) as "agent" | "team" | "brokerage"
-  const ownerId = params.get("id") ?? agentId ?? brokerageId
-
+/**
+ * Both identity values arrive as PROPS, resolved by the server component from
+ * the ?brokerage= / ?agent= params. The client no longer reads them itself and
+ * no longer POSTs a brokerage uuid: `brokerageSlug` is a public handle and
+ * /api/widget/session re-resolves it (and re-checks the agent against it)
+ * before it will mint anything. Every downstream widget call — message, intake,
+ * capture-lead, callback — carries only the server-issued session token, so the
+ * tenant is read off the session row rather than off this form.
+ */
+export default function WidgetChatClient({
+  brokerageSlug,
+  agentId,
+}: {
+  brokerageSlug: string | null
+  agentId: string | null
+}) {
   const [sessionToken, setSessionToken] = useState<string | null>(null)
   const [identity, setIdentity] = useState<WidgetIdentity | null>(null)
   const [sessionReady, setSessionReady] = useState(false)
@@ -59,48 +76,58 @@ export default function WidgetChatClient() {
   const [cbLastName, setCbLastName] = useState("")
   const [cbPhone, setCbPhone] = useState("")
   const [cbBestTime, setCbBestTime] = useState("")
-  const [cbConsent, setCbConsent] = useState(false)
   const [cbSubmitting, setCbSubmitting] = useState(false)
   const [cbSubmitted, setCbSubmitted] = useState(false)
   const [cbError, setCbError] = useState("")
-
-  // Live Agent WebRTC
-  const [liveSessionId, setLiveSessionId] = useState<string | null>(null)
-  const [liveError, setLiveError] = useState<string | null>(null)
-  const [liveConnecting, setLiveConnecting] = useState(false)
-  const videoRef = useRef<HTMLVideoElement>(null)
-  const pcRef = useRef<RTCPeerConnection | null>(null)
-  const prevAssistantCountRef = useRef(0)
+  // C15 (wave 148, lane 148B): the ONE consent component on both forms — named for the session's brokerage (THE one brand
+  // rule the intake and callback doors re-render the wording with).
+  const consentBrand = identity?.brokerage_name || "our brokerage"
+  const intakeConsent = useConsentBoxes("chat_widget", consentBrand)
+  const callbackConsent = useConsentBoxes("chat_widget", consentBrand, ["sms", "voice"])
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   // ── Session init ──────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!brokerageId) {
-      setSessionError("Widget misconfigured: brokerage ID missing.")
+    if (!brokerageSlug) {
+      setSessionError("This chat isn't available.")
       return
     }
     const stored = typeof window !== "undefined" ? sessionStorage.getItem(SESSION_KEY) : null
-    fetch("/api/widget/session", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        brokerage_id: brokerageId,
-        agent_id: agentId ?? null,
-        source: "website_widget",
-        visitor_fingerprint: getFingerprint(),
-        resume_token: stored ?? null,
-      }),
-    })
-      .then((r) => (r.ok ? r.json() : Promise.reject()))
-      .then((data) => {
+    ;(async () => {
+      try {
+        const res = await fetch("/api/widget/session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            brokerage_slug: brokerageSlug,
+            agent_id: agentId ?? null,
+            source: "website_widget",
+            visitor_fingerprint: getFingerprint(),
+            resume_token: stored ?? null,
+          }),
+        })
+        const data = await res.json().catch(() => ({}))
+        if (!res.ok) {
+          setSessionError(data.error ?? "Could not connect. Please try again later.")
+          return
+        }
         setSessionToken(data.session_token)
         setIdentity(data.identity)
+        // A resumed session that already captured the visitor's details must
+        // not re-prompt intake — capture_state mirrors chat_sessions' own
+        // state (§1: a returned field with no reader was silently ignored).
+        if (data.capture_state === "captured" || data.capture_state === "signals_captured") {
+          setIntakeSubmitted(true)
+        }
+        console.debug(`[widget] session ${data.session_id} ready (capture_state=${data.capture_state})`)
         sessionStorage.setItem(SESSION_KEY, data.session_token)
         setSessionReady(true)
-      })
-      .catch(() => setSessionError("Could not connect. Please try again later."))
-  }, [brokerageId, agentId])
+      } catch {
+        setSessionError("Could not connect. Please try again later.")
+      }
+    })()
+  }, [brokerageSlug, agentId])
 
   const [inputValue, setInputValue] = useState("")
   const { messages, sendMessage, status } = useChat({
@@ -131,36 +158,12 @@ export default function WidgetChatClient() {
     if (INTAKE_SIGNALS.test(text) && !showIntakeForm) setShowIntakeForm(true)
   }, [messages, showIntakeForm, intakeSubmitted])
 
-  // ── Live Agent: speak new AI responses via avatar ─────────────────────────
-  useEffect(() => {
-    if (mode !== "live_agent" || !liveSessionId) return
-    const assistantMessages = messages.filter((m) => m.role === "assistant")
-    if (assistantMessages.length <= prevAssistantCountRef.current) return
-    prevAssistantCountRef.current = assistantMessages.length
-    const text = getMessageText(assistantMessages[assistantMessages.length - 1])
-    if (!text) return
-    fetch("/api/widget/avatar-talk", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId: liveSessionId, text, agentId, brokerageId }),
-    }).catch(() => {})
-  }, [messages, mode, liveSessionId, agentId, brokerageId])
-
-  // ── Cleanup WebRTC on unmount ─────────────────────────────────────────────
-  useEffect(() => {
-    return () => {
-      pcRef.current?.close()
-      if (liveSessionId) {
-        fetch(`/api/widget/avatar-session?sessionId=${liveSessionId}`, { method: "DELETE" }).catch(() => {})
-      }
-    }
-  }, [liveSessionId])
-
   // ── Intake submit ─────────────────────────────────────────────────────────
   const handleIntakeSubmit = useCallback(
     async (e: React.FormEvent) => {
       e.preventDefault()
       if (!capturedEmail && !capturedPhone) return
+      if (!intakeConsent.serviceGiven) return
       setIntakeSubmitting(true)
       try {
         const lastMsg = [...messages].filter((m) => m.role === "user").slice(-3).map((m) => getMessageText(m)).join(" | ")
@@ -173,12 +176,13 @@ export default function WidgetChatClient() {
             email: capturedEmail || null,
             phone: capturedPhone || null,
             message: lastMsg || null,
-            agent_id: agentId ?? null,
-            brokerage_id: brokerageId,
+            // No agent_id / brokerage_id: the intake route reads both off the
+            // session row this token identifies.
             session_token: sessionToken,
             source: "website_widget",
-            tcpa_consent: true,
-            tcpa_consent_text: "I agree to be contacted by a real estate professional via phone, email, or text.",
+            // C15 (wave 148): the ONE consent component's boxes. TOMBSTONE: a hardcoded `tcpa_consent: true` + wording stood
+            // here — a consent sent for every visitor whether or not they gave it.
+            consent: intakeConsent.submission,
           }),
         })
         setIntakeSubmitted(true)
@@ -190,54 +194,14 @@ export default function WidgetChatClient() {
         setIntakeSubmitting(false)
       }
     },
-    [capturedName, capturedEmail, capturedPhone, messages, agentId, brokerageId, sessionToken, sendMessage]
+    [capturedName, capturedEmail, capturedPhone, messages, sessionToken, sendMessage, intakeConsent.serviceGiven, intakeConsent.submission]
   )
-
-  // ── Start Live Agent WebRTC ───────────────────────────────────────────────
-  const startLiveAgent = useCallback(async () => {
-    setLiveConnecting(true)
-    setLiveError(null)
-    try {
-      const initRes = await fetch("/api/widget/avatar-session", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agentId, brokerageId }),
-      })
-      if (!initRes.ok) throw new Error("Avatar session init failed")
-      const { sessionId, sdpOffer, iceServers } = await initRes.json()
-      setLiveSessionId(sessionId)
-
-      const pc = new RTCPeerConnection({ iceServers })
-      pcRef.current = pc
-
-      pc.ontrack = (ev) => {
-        if (videoRef.current && ev.streams[0]) videoRef.current.srcObject = ev.streams[0]
-      }
-
-      await pc.setRemoteDescription({ type: "offer", sdp: sdpOffer })
-      const answer = await pc.createAnswer()
-      await pc.setLocalDescription(answer)
-
-      await fetch("/api/widget/avatar-session", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, sdpAnswer: answer.sdp }),
-      })
-
-      setMode("live_agent")
-    } catch {
-      setLiveError("Live Agent video unavailable. Starting text chat instead.")
-      setMode("chat")
-    } finally {
-      setLiveConnecting(false)
-    }
-  }, [agentId, brokerageId])
 
   // ── Callback submit ───────────────────────────────────────────────────────
   const handleCallbackSubmit = useCallback(
     async (e: React.FormEvent) => {
       e.preventDefault()
-      if (!cbConsent || !cbPhone) return
+      if (!callbackConsent.serviceGiven || !cbPhone) return
       setCbSubmitting(true)
       setCbError("")
       try {
@@ -249,10 +213,10 @@ export default function WidgetChatClient() {
             lastName: cbLastName || undefined,
             phone: cbPhone,
             bestTime: cbBestTime || undefined,
-            tcpaConsent: true,
-            scope: scopeParam,
-            ownerId,
-            brokerageId,
+            consent: callbackConsent.submission,
+            // The callback route resolves brokerage AND recipient from the
+            // session row — it used to take both off this body.
+            session_token: sessionToken,
           }),
         })
         if (!res.ok) throw new Error("Request failed")
@@ -263,7 +227,7 @@ export default function WidgetChatClient() {
         setCbSubmitting(false)
       }
     },
-    [cbFirstName, cbLastName, cbPhone, cbBestTime, cbConsent, scopeParam, ownerId, brokerageId]
+    [cbFirstName, cbLastName, cbPhone, cbBestTime, callbackConsent.serviceGiven, callbackConsent.submission, sessionToken]
   )
 
   // ── Render guards ─────────────────────────────────────────────────────────
@@ -285,7 +249,6 @@ export default function WidgetChatClient() {
 
   const displayName = identity.display_name ?? identity.assistant_name
   const brokerageName = identity.brokerage_name ?? ""
-  const showLiveAgent = scopeParam === "agent" && !!agentId && !!identity.agent_has_did_avatar
 
   // ── Header ────────────────────────────────────────────────────────────────
   const header = (
@@ -293,17 +256,7 @@ export default function WidgetChatClient() {
       {mode !== "picker" && (
         <button
           className="text-white/70 hover:text-white mr-1"
-          onClick={() => {
-            if (mode === "live_agent") {
-              pcRef.current?.close()
-              pcRef.current = null
-              if (liveSessionId) {
-                fetch(`/api/widget/avatar-session?sessionId=${liveSessionId}`, { method: "DELETE" }).catch(() => {})
-                setLiveSessionId(null)
-              }
-            }
-            setMode("picker")
-          }}
+          onClick={() => setMode("picker")}
           aria-label="Back to menu"
         >
           <ArrowLeft className="h-4 w-4" />
@@ -345,28 +298,6 @@ export default function WidgetChatClient() {
             </div>
           </button>
 
-          {showLiveAgent && (
-            <button
-              onClick={startLiveAgent}
-              disabled={liveConnecting}
-              className="w-full flex items-start gap-3 border border-gray-200 rounded-xl px-4 py-3 hover:border-blue-400 hover:bg-blue-50 transition-colors text-left disabled:opacity-60"
-            >
-              <Video className="h-5 w-5 text-blue-600 mt-0.5 flex-shrink-0" />
-              <div>
-                {liveConnecting ? (
-                  <p className="font-medium text-gray-800 text-sm flex items-center gap-1.5">
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" /> Connecting…
-                  </p>
-                ) : (
-                  <>
-                    <p className="font-medium text-gray-800 text-sm">Live Agent</p>
-                    <p className="text-xs text-gray-500">See &amp; hear {displayName}</p>
-                  </>
-                )}
-              </div>
-            </button>
-          )}
-
           <button
             onClick={() => setMode("callback")}
             className="w-full flex items-start gap-3 border border-gray-200 rounded-xl px-4 py-3 hover:border-blue-400 hover:bg-blue-50 transition-colors text-left"
@@ -378,9 +309,6 @@ export default function WidgetChatClient() {
             </div>
           </button>
 
-          {liveError && (
-            <p className="text-xs text-amber-600 text-center mt-1">{liveError}</p>
-          )}
         </div>
       </div>
     )
@@ -435,65 +363,17 @@ export default function WidgetChatClient() {
                 value={cbBestTime}
                 onChange={(e) => setCbBestTime(e.target.value)}
               />
-              <label className="flex items-start gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={cbConsent}
-                  onChange={(e) => setCbConsent(e.target.checked)}
-                  className="mt-0.5 w-4 h-4 flex-shrink-0"
-                  required
-                />
-                <span className="text-[11px] text-gray-500 leading-tight">
-                  I agree to be contacted by a real estate professional via phone, email, or text.
-                </span>
-              </label>
+              <ConsentBoxes {...callbackConsent.boxProps} idPrefix="cb-consent" compact />
               {cbError && <p className="text-xs text-red-500">{cbError}</p>}
               <button
                 type="submit"
-                disabled={cbSubmitting || !cbConsent || !cbPhone}
+                disabled={cbSubmitting || !callbackConsent.serviceGiven || !cbPhone}
                 className="w-full bg-blue-700 text-white rounded-lg py-2 text-sm font-medium disabled:opacity-50"
               >
                 {cbSubmitting ? "Sending…" : "Request Callback"}
               </button>
             </form>
           )}
-        </div>
-      </div>
-    )
-  }
-
-  // ── Live Agent mode ───────────────────────────────────────────────────────
-  if (mode === "live_agent") {
-    return (
-      <div className="flex flex-col h-screen bg-white font-sans text-sm">
-        {header}
-        <div className="flex-1 flex flex-col overflow-hidden">
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            className="w-full flex-1 object-cover bg-gray-900"
-          />
-          <form
-            onSubmit={handleSubmit}
-            className="flex items-center gap-2 px-3 py-2 border-t border-gray-100 flex-shrink-0"
-          >
-            <input
-              className="flex-1 bg-gray-100 rounded-full px-4 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder:text-gray-400"
-              placeholder="Type to ask a question…"
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              disabled={!sessionReady || isLoading}
-            />
-            <button
-              type="submit"
-              disabled={!inputValue.trim() || !sessionReady || isLoading}
-              className="h-8 w-8 flex items-center justify-center bg-blue-700 text-white rounded-full disabled:opacity-40 flex-shrink-0"
-              aria-label="Send"
-            >
-              <Send className="h-3.5 w-3.5" />
-            </button>
-          </form>
         </div>
       </div>
     )
@@ -564,9 +444,7 @@ export default function WidgetChatClient() {
             value={capturedPhone}
             onChange={(e) => setCapturedPhone(e.target.value)}
           />
-          <p className="text-[10px] text-gray-400 leading-tight">
-            By submitting, you agree to be contacted by a real estate professional via phone, email, or text. Standard messaging rates may apply.
-          </p>
+          <ConsentBoxes {...intakeConsent.boxProps} idPrefix="intake-consent" compact />
           <button
             type="submit"
             disabled={intakeSubmitting || (!capturedEmail && !capturedPhone)}

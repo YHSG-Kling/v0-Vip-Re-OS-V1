@@ -6,7 +6,6 @@
  * This file must NEVER be modified to bypass or skip the gate.
  */
 
-import { evaluateOutbound } from "@/lib/kernel/compliance"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { evaluateKernelOutbound } from "@/lib/kernel/adapters/compliance"
 interface AuthorityCheckResult {
@@ -79,7 +78,7 @@ export async function checkSequenceAuthority(
     tcpa_consent: contact.tcpa_consent ?? false,
     isa_reengage_allowed: contact.isa_reengage_allowed ?? false,
   },
-})
+}, { client: supabase })
 
   return result.allowed
     ? { allowed: true }

@@ -69,6 +69,11 @@ export interface ClientEducationResult { topics: number; authored: number }
 export async function runClientEducationCurriculum(svc: Svc, params: { brokerageId: string; maxPerRun?: number }): Promise<ClientEducationResult> {
   const out: ClientEducationResult = { topics: CLIENT_SYLLABUS.length, authored: 0 }
   const cap = params.maxPerRun ?? 3
+  // WAVE 151 (lane 151I): client lessons go out under the BROKERAGE's voice — its versioned sender-voice brief (THE
+  // brand-voice reader, lib/kernel/brand-voice.ts) is compiled ONCE per run and conditions every lesson's first draft.
+  const voiceBrief = await import("@/lib/kernel/brand-voice")
+    .then(async ({ loadSenderVoiceBrief, renderSenderVoiceBrief }) => renderSenderVoiceBrief(await loadSenderVoiceBrief(svc as never, { brokerageId: params.brokerageId })))
+    .catch(() => null)
   for (const topic of CLIENT_SYLLABUS) {
     if (out.authored >= cap) break
     const tag = clientTag(topic)
@@ -76,7 +81,7 @@ export async function runClientEducationCurriculum(svc: Svc, params: { brokerage
       .select("id").eq("brokerage_id", params.brokerageId).eq("is_ai_generated", true).contains("gap_tags", [tag]).limit(1).maybeSingle()
     if (existing) continue
 
-    const curriculum = await authorClientModule(topic).catch(() => null)
+    const curriculum = await authorClientModule(topic, { voiceBrief }).catch(() => null)
     if (!curriculum) continue
     const ok = await persistClientModule(svc, params.brokerageId, tag, topic, curriculum)
     if (ok) out.authored++

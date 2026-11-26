@@ -45,12 +45,17 @@
 //
 // NOT server-only (simulator-driven). Pure helpers carry the scoring; the runner does I/O.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import type { CopyGenerator } from "@/lib/kernel/ai-copy"
 
 type Svc = ReturnType<typeof createServiceClient>
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+
+// Time-to-list annotation. The radar scores HOW motivated; this adds WHEN, so the ISA
+// works the right seller at the right MOMENT rather than only the hottest one.
+import { computeSellerListingTimeline, timelineRank, type SellerTimeline } from "@/lib/kernel/seller-listing-timeline"
 
 /** The REAL seller-intent signals the bench already scraped, normalized for scoring.
  *  Every field is OPTIONAL — different sources populate different subsets; the scorer
@@ -103,6 +108,14 @@ export interface SellerLeadCandidate {
 }
 
 export interface ScoredSellerLead extends SellerLeadCandidate {
+  /**
+   * WHEN this owner is likely to list, on top of HOW motivated they are. Different
+   * distress carries different known clocks: pre-foreclosure is a forced 30–90 day
+   * auction, probate runs a 6–12 month court timeline, a fresh expired is a 0–90 day
+   * window, FSBO is selling now. Annotation only — promotion still runs through the
+   * gate below, unchanged.
+   */
+  timeline: SellerTimeline
   /** 0..1 intent score from scoreSellerIntent. */
   intentScore: number
   /** The signal labels that earned the score (audit trail, no fabrication). */
@@ -251,9 +264,32 @@ export function rankSellerLeads(candidates: SellerLeadCandidate[]): ScoredSeller
   return candidates
     .map((c) => {
       const { score, reasons } = scoreSellerIntent(c.signals)
-      return { ...c, intentScore: score, reasons }
+      const timeline = computeSellerListingTimeline({
+        // The same real signals the scorer credits — motivation type, quickLists and
+        // intentSignals joined; nothing invented for the timeline's benefit.
+        tags: [
+          c.signals.source ?? "",
+          c.signals.motivationType ?? "",
+          ...(c.signals.quickLists ?? []),
+          ...(c.signals.intentSignals ?? []),
+          c.signals.isFsbo ? "fsbo" : "",
+          c.signals.isAbsentee ? "absentee" : "",
+          c.signals.isVacant ? "vacant" : "",
+        ].filter(Boolean),
+        expiredDaysAgo: c.signals.expiredDaysAgo ?? null,
+        tenureYears: c.signals.ownershipLengthYears ?? null,
+        equityPct: c.signals.equityPercent ?? null,
+      })
+      return { ...c, intentScore: score, reasons, timeline }
     })
-    .sort((a, b) => (b.intentScore - a.intentScore) || a.rawLeadId.localeCompare(b.rawLeadId))
+    // Intent still leads — a hot seller outranks a merely imminent one. Timeline
+    // breaks ties, so among equally motivated owners the nearest clock comes first.
+    .sort(
+      (a, b) =>
+        (b.intentScore - a.intentScore) ||
+        (timelineRank(a.timeline) - timelineRank(b.timeline)) ||
+        a.rawLeadId.localeCompare(b.rawLeadId),
+    )
 }
 
 // ─── Mapping the persisted scrape row → scoring signals (pure) ────────────────────
@@ -322,7 +358,7 @@ export function candidateFromRawRow(row: {
 // ─── Proposal copy (pure, deterministic fallback) ─────────────────────────────────
 
 /** A short, honest description of WHY this owner is a hot seller candidate (earned lines). */
-export function describeSellerReason(lead: ScoredSellerLead): string {
+function describeSellerReason(lead: ScoredSellerLead): string {
   const top = lead.reasons.slice(0, 3).map((r) => r.replace(/\s*\([^)]*\)\s*$/, "")).join(", ")
   const addr = lead.propertyAddress ?? "this property"
   return top
@@ -334,23 +370,15 @@ export function describeSellerReason(lead: ScoredSellerLead): string {
  *  AI ISA — which owns the lead until it qualifies + converts — can PRIORITIZE it and open
  *  its qualifying conversation with the right context. This is an INTERNAL lead note, NOT a
  *  client message; no contact info is fabricated and nothing is sent. */
-export function composeSellerIntentLeadNote(lead: ScoredSellerLead): string {
+function composeSellerIntentLeadNote(lead: ScoredSellerLead): string {
   const addr = lead.propertyAddress ?? "this property"
   const why = lead.reasons.slice(0, 4).map((r) => r.replace(/\s*\([^)]*\)\s*$/, "")).join("; ") || "scored seller intent"
   return `[Listing Inventory Radar] Seller-intent ${(lead.intentScore * 100).toFixed(0)}/100 for ${addr}. Why now: ${why}. Prioritize for AI-ISA qualification — NOT yet a contact (no portal, no client message until qualified + converted).`
 }
 
-/** Deterministic FALLBACK body for the CONTACT-BACKED seller brief (audience 'agent') — only
- *  ever composed when the owner is already a CRM contact (post-conversion, portal-eligible).
- *  Internal agent brief; the client-facing follow-up is the agent's gated next step. */
-export function composeProspectingBriefFallback(lead: ScoredSellerLead): string {
-  const addr = lead.propertyAddress ?? "a property we surfaced"
-  return [
-    `Seller-intent radar flagged ${addr} as a high-intent listing-inventory candidate (existing CRM contact).`,
-    `Why now: ${lead.reasons.slice(0, 4).map((r) => r.replace(/\s*\([^)]*\)\s*$/, "")).join("; ") || "scored seller intent"}.`,
-    `Suggested play: a "thinking of selling?" touch — open with the home's current market position. A gated CMA + a short listing/explainer reel are queued for your approval. Nothing sends until you approve it.`,
-  ].join(" ")
-}
+// TOMBSTONE (wave 147, integrator, 2026-10-31): composeProspectingBriefFallback MOVED to lib/kernel/prospecting-brief-fallback.ts
+// (its one external importer, lib/kernel/manager-signals.ts, now imports the light module; the radar itself never called it).
+// Reason: proxy-graph budget — composing one string pulled this whole module into every page that reaches the manager-signals hub.
 
 // ─── Live runner ──────────────────────────────────────────────────────────────
 
@@ -457,7 +485,7 @@ export async function runListingInventoryRadar(
   const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
   // THE GATE: default = the canonical processRawRecord; the simulator injects an equivalent.
   const promote = opts.promote ?? (async (rawLeadId: string, bId: string) => {
-    const { processRawRecord } = await import("@/lib/lead-pipeline")
+    const { processRawRecord } = await import("@/lib/lead-pipeline/pipeline-processor")
     const r = await processRawRecord(rawLeadId, bId)
     return { action: r.action, leadId: r.leadId }
   })
@@ -508,7 +536,7 @@ export async function runListingInventoryRadar(
       if (!alreadyStamped) patch.notes = existingNotes ? `${existingNotes}\n${note}` : note
       if (intentFloor > curScore) patch.lead_score = intentFloor
       if (Object.keys(patch).length > 0) {
-        await supabase.from("leads").update(patch).eq("id", leadId).eq("brokerage_id", brokerageId)
+        await sentinelWrite(supabase, supabase.from("leads").update(patch).eq("id", leadId).eq("brokerage_id", brokerageId), { table: "leads", flow: "leads_write", reason: "intent annotation/score floor on the lead; the routing signal below fires regardless" })
       }
     }
 

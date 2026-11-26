@@ -18,7 +18,9 @@ import {
 } from "lucide-react"
 import type { RoiSnapshot } from "./actions"
 
-const dollars = (cents: number) => {
+const dollars = (cents: number | null) => {
+  // Wave 152 (152B): null = commission is off this viewer's display, or not established — never a silent $0.
+  if (cents == null) return "Hidden"
   const d = cents / 100
   if (d >= 1000) return `$${(d / 1000).toFixed(1)}k`
   return `$${d.toFixed(0)}`
@@ -50,7 +52,7 @@ export function AgentRoiClient({ snapshot }: Props) {
   }
   const periodLabel = period === "7d" ? "last 7 days" : period === "30d" ? "last 30 days" : "year to date"
 
-  const isZeroState = snapshot.totalValueDollars === 0 && snapshot.byFeature.length === 0
+  const isZeroState = (snapshot.attributedRevenueCents ?? 0) === 0 && snapshot.closedDealsSourced === 0 && snapshot.byFeature.length === 0
 
   return (
     <div className="container max-w-5xl mx-auto py-8 px-4">
@@ -82,12 +84,12 @@ export function AgentRoiClient({ snapshot }: Props) {
             <div className="flex items-center gap-2 mb-1">
               <DollarSign className="h-4 w-4 text-emerald-600" />
               <span className="text-xs uppercase tracking-wide text-emerald-700 font-medium">
-                Revenue attributed
+                Commission sourced by campaigns
               </span>
             </div>
             <p className="text-3xl font-bold text-emerald-900">{dollars(snapshot.attributedRevenueCents)}</p>
             <p className="text-xs text-emerald-950/70 mt-1">
-              From AI-influenced deals across all campaign attribution models (linear).
+              {snapshot.moneyNote ?? "Earned commission on deals that closed in this period, each deal split once across the campaigns that reached its client (linear)."}
             </p>
           </CardContent>
         </Card>
@@ -110,12 +112,12 @@ export function AgentRoiClient({ snapshot }: Props) {
             <div className="flex items-center gap-2 mb-1">
               <TrendingUp className="h-4 w-4 text-indigo-600" />
               <span className="text-xs uppercase tracking-wide text-indigo-700 font-medium">
-                Total value
+                Closed deals sourced
               </span>
             </div>
-            <p className="text-3xl font-bold text-indigo-900">{dollars(snapshot.totalValueDollars)}</p>
+            <p className="text-3xl font-bold text-indigo-900">{snapshot.closedDealsSourced}</p>
             <p className="text-xs text-indigo-950/70 mt-1">
-              Revenue + the dollar value of the hours your AI saved you.
+              Deals that closed this period after a campaign reached the client. Time saved is an estimate and is never added to revenue.
             </p>
           </CardContent>
         </Card>
@@ -227,7 +229,7 @@ export function AgentRoiClient({ snapshot }: Props) {
                     <p className="text-xs text-muted-foreground">{relative(w.happenedAt)}</p>
                   </div>
                   {w.valueCents != null && w.valueCents > 0 && (
-                    <Badge className="bg-emerald-600 text-white">{dollars(w.valueCents)}</Badge>
+                    <Badge className="bg-emerald-700 text-white">{dollars(w.valueCents)}</Badge>
                   )}
                 </CardContent>
               </Card>
@@ -235,6 +237,91 @@ export function AgentRoiClient({ snapshot }: Props) {
           </div>
         </section>
       )}
+
+      {/* ── Attribution model comparison ─────────────────────────────────── */}
+      {/* The engine writes FOUR models per campaign on every close; the
+          headline above stays linear-pinned, and this panel is the derivation:
+          the same campaign's credit under each model, plus the touchpoint
+          window and count that produced each weight. A refused read renders
+          as a refusal — never as "no attribution". */}
+      <section className="mb-8">
+        <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
+          <DollarSign className="h-4 w-4 text-emerald-600" /> How the credit moves by attribution model
+        </h2>
+        {!snapshot.modelComparison.ok && "hidden" in snapshot.modelComparison ? (
+          <Card className="border-dashed">
+            <CardContent className="py-4 text-sm text-muted-foreground">
+              {snapshot.modelComparison.error}
+            </CardContent>
+          </Card>
+        ) : !snapshot.modelComparison.ok ? (
+          <Card className="border-destructive/50">
+            <CardContent className="py-4 text-sm text-destructive">
+              The attribution credits could not be read: {snapshot.modelComparison.error}.
+              The headline figures above may be incomplete for the same reason.
+            </CardContent>
+          </Card>
+        ) : snapshot.modelComparison.rows.length === 0 ? (
+          <Card className="border-dashed">
+            <CardContent className="py-4 text-sm text-muted-foreground">
+              No attribution credits in this window — no closed deal traced back to a campaign
+              touchpoint yet.
+            </CardContent>
+          </Card>
+        ) : (
+          <Card>
+            <CardContent className="p-0">
+              {snapshot.modelComparison.campaignNameLookupError && (
+                <p className="px-4 pt-3 text-xs text-amber-700">
+                  Campaign names unavailable — the lookup was refused:{" "}
+                  {snapshot.modelComparison.campaignNameLookupError}
+                </p>
+              )}
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b bg-muted/40 text-xs text-muted-foreground">
+                      <th className="px-4 py-2 text-left font-medium">Campaign</th>
+                      <th className="px-4 py-2 text-left font-medium">Touchpoints</th>
+                      <th className="px-4 py-2 text-left font-medium">Window (first → last)</th>
+                      <th className="px-4 py-2 text-right font-medium">First touch</th>
+                      <th className="px-4 py-2 text-right font-medium">Last touch</th>
+                      <th className="px-4 py-2 text-right font-medium">Linear (headline)</th>
+                      <th className="px-4 py-2 text-right font-medium">Time decay</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {snapshot.modelComparison.rows.map((r) => (
+                      <tr key={r.campaignId}>
+                        <td className="px-4 py-2 font-medium">
+                          {r.campaignName ?? `Campaign ${r.campaignId.slice(0, 8)}`}
+                        </td>
+                        <td className="px-4 py-2 text-muted-foreground">{r.touchpointCount}</td>
+                        <td className="px-4 py-2 text-muted-foreground whitespace-nowrap">
+                          {r.firstTouchpointAt && r.lastTouchpointAt
+                            ? `${new Date(r.firstTouchpointAt).toLocaleDateString()} → ${new Date(r.lastTouchpointAt).toLocaleDateString()}`
+                            : "—"}
+                        </td>
+                        <td className="px-4 py-2 text-right">{dollars(r.creditCentsByModel.first_touch)}</td>
+                        <td className="px-4 py-2 text-right">{dollars(r.creditCentsByModel.last_touch)}</td>
+                        <td className="px-4 py-2 text-right font-semibold text-emerald-800">
+                          {dollars(r.creditCentsByModel.linear)}
+                        </td>
+                        <td className="px-4 py-2 text-right">{dollars(r.creditCentsByModel.time_decay)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="px-4 py-3 text-xs text-muted-foreground border-t">
+                Linear is the platform&apos;s reporting model and is what the headline number uses. The
+                other three are the same closed-deal dollars re-divided: first/last touch give the
+                whole credit to one campaign; time decay weights recent touches (30-day half-life).
+              </p>
+            </CardContent>
+          </Card>
+        )}
+      </section>
 
       {/* ── How attribution works (transparency) ─────────────────────────── */}
       <Card className="bg-muted/30">

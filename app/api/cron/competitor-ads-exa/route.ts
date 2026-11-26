@@ -28,6 +28,8 @@
  * Auth: CRON_SECRET dual scheme. No-op when EXA_API_KEY is missing.
  */
 import { NextResponse, type NextRequest } from "next/server"
+import { verifyCronAuth } from "@/lib/cron-auth"
+import { decideCronRun } from "@/lib/kernel/cron-logging"
 import { createServiceClient } from "@/lib/supabase/service"
 import { fetchExaCompetitorAds } from "@/lib/competitive-intel/exa-competitor-ads"
 import { promoteCompetitorAdsToTopicBank } from "@/lib/competitive-intel/promote-to-topic-bank"
@@ -35,17 +37,12 @@ import { promoteCompetitorAdsToTopicBank } from "@/lib/competitive-intel/promote
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
 
-function unauthorized() {
-  return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-}
-
 export async function GET(req: NextRequest) {
-  const auth     = req.headers.get("authorization")?.replace("Bearer ", "")
   const url      = new URL(req.url)
-  const qs       = url.searchParams.get("secret")
-  const expected = process.env.CRON_SECRET
-  if (!expected) return NextResponse.json({ skipped: "CRON_SECRET not configured" })
-  if (auth !== expected && qs !== expected) return unauthorized()
+  const denied = verifyCronAuth(req)
+  if (denied) return denied
+  const cronDoor = await decideCronRun({ cron_name: "competitor-ads-exa", cron_path: "/app/api/cron/competitor-ads-exa/route.ts" }) // cron decision door (155R1)
+  if (cronDoor.held) return NextResponse.json({ success: true, held: true, decision: cronDoor.decision })
 
   if (!process.env.EXA_API_KEY) {
     return NextResponse.json({
@@ -86,7 +83,13 @@ export async function GET(req: NextRequest) {
     errors:          string[]
   }> = []
 
+  // ACTIVE-TERRITORY PRE-CHECK (wave 92, lane 92B — owner: "checking the active territories before
+  // scrapping and pulling data will cutdown on runs"): ONE resolution, every skipped run counted.
+  // TENANT-level: a competitor watchlist is the tenant's own; an inactive tenant costs no Exa run.
+  const { resolveActivePullGate } = await import("@/lib/lead-pipeline/scrape-territories")
+  const pullGate = await resolveActivePullGate(svc)
   for (const [brokerageId, competitors] of perBrokerage.entries()) {
+    if (!pullGate.check({ brokerageId }).allowed) continue
     let ingested = 0
     const upsertedAdIds: string[] = []
     const errors: string[] = []
@@ -133,10 +136,14 @@ export async function GET(req: NextRequest) {
             raw_payload:         { ...(ad.raw_payload ?? {}), page_name: ad.page_name },
             last_seen_at:        new Date().toISOString(),
           }, {
-            onConflict: "source_platform,provider_ad_id",
+            // WAVE 154 (m987): the conflict target LEADS WITH THE TENANT and is a non-partial unique index. The old target
+            // ("source_platform,provider_ad_id") named a global PARTIAL index PostgREST cannot infer — every upsert was
+            // refused (42P10) and the table stayed empty; had it been inferable it would have updated another tenant's row.
+            onConflict: "brokerage_id,source_platform,provider_ad_id",
           })
           if (error) {
-            errors.push(`upsert ${ad.provider_ad_id}: ${error.message}`)
+            // 23505 here is the OLD global index (owner SQL drops it): another tenant already stores this ad. Reported, never overwritten.
+            errors.push(`upsert ${ad.provider_ad_id}: ${error.code === "23505" ? "held — another tenant already stores this ad and the global index has not been dropped (owner SQL)" : error.message}`)
           } else {
             upsertedAdIds.push(ad.provider_ad_id)
             ingested++
@@ -164,6 +171,7 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     ran_at:               new Date().toISOString(),
     brokerages_processed: results.length,
+    territory_gate:       pullGate.tally,
     results,
   })
 }

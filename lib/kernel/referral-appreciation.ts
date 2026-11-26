@@ -25,7 +25,8 @@ import { sanitizeProperNoun } from "@/lib/compliance/client-text-guard"
 
 // ── Stages that earn the referrer an update ───────────────────────────────────
 export const REFERRAL_UPDATE_STAGES = ["contacted", "qualified", "under_contract", "closed"] as const
-export type ReferralUpdateStage = (typeof REFERRAL_UPDATE_STAGES)[number]
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+type ReferralUpdateStage = (typeof REFERRAL_UPDATE_STAGES)[number]
 
 export function isUpdateStage(status: string | null | undefined): status is ReferralUpdateStage {
   return !!status && (REFERRAL_UPDATE_STAGES as readonly string[]).includes(status)
@@ -79,9 +80,11 @@ export interface AppreciationSetting {
 /** Hard ceiling — referral gifts to unlicensed people must stay modest (state
  *  license law bars cash referral fees; keep it a token of thanks, not a fee). */
 export const APPRECIATION_HARD_CAP_CENTS = 25_000
-export const DEFAULT_APPRECIATION: AppreciationSetting = { enabled: false, maxValueCents: 5_000, kind: "handwritten card + small gift", note: null }
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+const DEFAULT_APPRECIATION: AppreciationSetting = { enabled: false, maxValueCents: 5_000, kind: "handwritten card + small gift", note: null }
 
-export interface AppreciationScopes {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface AppreciationScopes {
   agent?: Partial<AppreciationSetting> | null
   team?: Partial<AppreciationSetting> | null
   brokerage?: Partial<AppreciationSetting> | null
@@ -122,7 +125,8 @@ export function composeAppreciationProposal(p: {
 
 // ── The runner (rides the proactive-intelligence cron; best-effort) ───────────
 
-export interface ReferralAppreciationRun {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface ReferralAppreciationRun {
   scanned: number
   updatesProposed: number
   appreciationsProposed: number
@@ -160,7 +164,12 @@ export async function runReferralAppreciation(brokerageId: string, svc: any): Pr
 
   for (const r of rows) {
     if (!r.referrer_contact_id) { out.skippedNoReferrerLink++; continue }
-    const stage = r.status as ReferralUpdateStage
+    // The module's own type GUARD, not a cast: the query filters on REFERRAL_UPDATE_STAGES,
+    // but a cast would let a row outside the vocabulary compose STAGE_LINE[undefined];
+    // such a row is skipped instead of proposing an empty update.
+    const status: string | null = r.status ?? null
+    if (!isUpdateStage(status)) continue
+    const stage = status
 
     const [{ data: referrer }, { data: referred }, { data: agentRow }] = await Promise.all([
       svc.from("contacts").select("id, first_name, agent_id, team_id").eq("id", r.referrer_contact_id).maybeSingle(),
@@ -177,7 +186,7 @@ export async function runReferralAppreciation(brokerageId: string, svc: any): Pr
       out.skippedDuplicate++
     } else {
       const msg = composeReferrerUpdate({ referrerFirstName: (referrer as any).first_name, referredFirstName: (referred as any)?.first_name, stage })
-      await svc.from("agent_client_messages").insert({
+      const { error: referrerUpdateErr } = await svc.from("agent_client_messages").insert({
         brokerage_id: brokerageId,
         recipient_contact_id: r.referrer_contact_id,
         entity_type: "referral",
@@ -189,6 +198,7 @@ export async function runReferralAppreciation(brokerageId: string, svc: any): Pr
         body: msg.body,
         rationale: `${tag} Referrer kept in the loop — privacy-tasteful milestone update (no deal details).`,
       })
+      if (referrerUpdateErr) console.error(`[referral-appreciation] referrer update proposal NOT saved: ${referrerUpdateErr.message}`)
       out.updatesProposed++
     }
 
@@ -203,7 +213,7 @@ export async function runReferralAppreciation(brokerageId: string, svc: any): Pr
           out.skippedDuplicate++
         } else {
           const prop = composeAppreciationProposal({ referrerFirstName: (referrer as any).first_name, referredFirstName: (referred as any)?.first_name, setting })
-          await svc.from("agent_client_messages").insert({
+          const { error: appreciationErr } = await svc.from("agent_client_messages").insert({
             brokerage_id: brokerageId,
             recipient_contact_id: r.referrer_contact_id,
             entity_type: "referral",
@@ -215,6 +225,7 @@ export async function runReferralAppreciation(brokerageId: string, svc: any): Pr
             body: prop.body,
             rationale: `${aTag} Configured appreciation (${setting.kind}, cap $${(setting.maxValueCents / 100).toFixed(0)}) — human approves; gift_sent flips only when recorded.`,
           })
+          if (appreciationErr) console.error(`[referral-appreciation] appreciation proposal NOT saved: ${appreciationErr.message}`)
           out.appreciationsProposed++
         }
       }

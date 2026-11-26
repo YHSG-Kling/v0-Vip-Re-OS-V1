@@ -52,3 +52,9 @@ export const US_STATES = [
 ]
 
 export const STATE_CODES = US_STATES.map(s => s.code)
+
+/** Lane 89B — "TX" → "Texas" (null for an unknown code); the FSBO-site slug ("austin-texas") needs the full name. */
+export function stateNameFromCode(code: string | null | undefined): string | null {
+  const c = (code ?? '').trim().toUpperCase()
+  return US_STATES.find(s => s.code === c)?.name ?? null
+}

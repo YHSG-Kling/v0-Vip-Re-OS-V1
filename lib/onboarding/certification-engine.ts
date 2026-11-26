@@ -5,11 +5,14 @@
 // This module handles certification eligibility checks, awarding certifications,
 // and completing onboarding when all required certifications are earned.
 
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import type { EntityType } from "@/lib/kernel/types"
+import { BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -42,10 +45,13 @@ export async function checkCertificationEligibility(
   const supabase = createServiceClient()
   const missingRequirements: string[] = []
 
-  // Check if already awarded
+  // Check if already awarded. Tenant-scoped like the INSERT that creates these
+  // rows (line 336) — without it, another brokerage's award for the same agent
+  // id would read as "already awarded" and refuse this one.
   const { data: existingCert } = await supabase
     .from('agent_certifications')
     .select('id')
+    .eq('brokerage_id', brokerageId)
     .eq('agent_id', agentId)
     .eq('certification_name', certName)
     .maybeSingle()
@@ -75,12 +81,17 @@ async function checkPlatformFundamentalsEligibility(
   supabase: ReturnType<typeof createServiceClient>,
   missingRequirements: string[]
 ): Promise<CertificationEligibilityResult> {
-  // Requirement 1: All onboarding steps in 'platform_tour' category completed
+  // Requirement 1: all REQUIRED system-setup onboarding steps completed.
+  // This asked for category 'platform_tour', which onboarding_steps.category
+  // does not admit (system_setup|training|practice|compliance|certification).
+  // It matched zero steps, and "all zero of them are done" is vacuously true —
+  // so this requirement never gated anything. 'system_setup' is the bucket the
+  // real setup steps live in.
   const { data: platformTourSteps } = await supabase
     .from('onboarding_steps')
     .select('id, step_key, step_name')
     .or(`brokerage_id.is.null,brokerage_id.eq.${brokerageId}`)
-    .eq('category', 'platform_tour')
+    .eq('category', 'system_setup')
     .eq('required', true)
 
   if (platformTourSteps && platformTourSteps.length > 0) {
@@ -91,12 +102,13 @@ async function checkPlatformFundamentalsEligibility(
       .eq('completed', true)
 
     const completedIds = new Set((completedSteps || []).map(s => s.step_id))
-    
+
     for (const step of platformTourSteps) {
       if (!completedIds.has(step.id)) {
         missingRequirements.push(`Complete step: ${step.step_name || step.step_key}`)
       }
     }
+    await requireAttachedQuizzesPassed(supabase, agentId, platformTourSteps.map(s => s.id), missingRequirements)
   }
 
   // Requirement 2: All required platform_tour training videos watched >= 90%
@@ -130,6 +142,46 @@ async function checkPlatformFundamentalsEligibility(
   }
 }
 
+/**
+ * WAVE 155 (lane 155C — owner R1: "course needs to complete with quiz with acceptable passing %"). A certification whose
+ * steps carry an onboarding quiz is NOT earned by completing steps and watching videos (the watch percentage is self-posted):
+ * every attached quiz must hold a STORED attempt (agent_quiz_attempts, written only by the server grader submitQuizAttempt)
+ * whose score meets the quiz's own passing_score (resolveCoursePassingScore — the canonical 80 when the field is unusable).
+ * The stored `passed` flag is not trusted alone; the score is re-checked against the bar. A quiz with no valid question is
+ * NEVER an automatic pass — the certification says it cannot be completed yet. A refused read fails CLOSED (a missing
+ * requirement), never as "nothing required". A step with no quiz attached keeps its existing evidence rule (owner decision
+ * whether every certification must carry a quiz — lane 155C notes).
+ */
+async function requireAttachedQuizzesPassed(
+  supabase: ReturnType<typeof createServiceClient>,
+  agentId: string,
+  stepIds: string[],
+  missingRequirements: string[],
+): Promise<void> {
+  if (stepIds.length === 0) return
+  const { data: quizzes, error: quizErr } = await supabase
+    .from('onboarding_quizzes')
+    .select('id, quiz_name, passing_score, questions')
+    .in('step_id', stepIds)
+  if (quizErr) { missingRequirements.push(`Quiz requirements could not be checked (${quizErr.message}) — try again`); return }
+  const { resolveCoursePassingScore } = await import('@/lib/academy/quiz')
+  for (const quiz of (quizzes ?? []) as Array<{ id: string; quiz_name: string | null; passing_score: unknown; questions: unknown }>) {
+    const name = quiz.quiz_name || 'onboarding'
+    const valid = Array.isArray(quiz.questions) && quiz.questions.some((q) => !!q && typeof q === 'object' && (q as Record<string, unknown>).id != null && 'correctAnswer' in (q as Record<string, unknown>))
+    if (!valid) { missingRequirements.push(`The ${name} quiz has no valid questions yet, so this certification cannot be completed`); continue }
+    const bar = resolveCoursePassingScore(quiz)
+    const { data: passing, error: attemptErr } = await supabase
+      .from('agent_quiz_attempts')
+      .select('id')
+      .eq('agent_id', agentId)
+      .eq('quiz_id', quiz.id)
+      .gte('score', bar)
+      .limit(1)
+    if (attemptErr) { missingRequirements.push(`Your ${name} quiz attempts could not be read (${attemptErr.message}) — try again`); continue }
+    if ((passing ?? []).length === 0) missingRequirements.push(`Pass the ${name} quiz (${bar}% required)`)
+  }
+}
+
 async function checkComplianceBasicsEligibility(
   agentId: string,
   brokerageId: string,
@@ -160,6 +212,7 @@ async function checkComplianceBasicsEligibility(
         missingRequirements.push(`Complete acknowledgment: ${step.step_name || step.step_key}`)
       }
     }
+    await requireAttachedQuizzesPassed(supabase, agentId, complianceSteps.map(s => s.id), missingRequirements)
   } else {
     // If steps don't exist, still mark as requirements
     missingRequirements.push('Complete Fair Housing acknowledgment')
@@ -228,26 +281,17 @@ async function checkLeadManagementEligibility(
     }
   }
 
-  // Requirement 2: Lead Management Essentials course passed
-  const { data: leadCourse } = await supabase
-    .from('training_courses')
-    .select('id')
-    .eq('course_name', 'Lead Management Essentials')
-    .or(`brokerage_id.is.null,brokerage_id.eq.${brokerageId}`)
-    .maybeSingle()
-
-  if (leadCourse) {
-    const { data: courseProgress } = await supabase
-      .from('agent_courses')
-      .select('status, score')
-      .eq('agent_id', agentId)
-      .eq('training_course_id', leadCourse.id)
-      .maybeSingle()
-
-    if (!courseProgress || courseProgress.status !== 'passed') {
-      missingRequirements.push('Pass the Lead Management Essentials course')
-    }
-  }
+  // NOTE — the former "pass the Lead Management Essentials course" requirement
+  // read training_courses + agent_courses. Those tables are seed-only: nothing
+  // in the app ever WRITES agent_courses (the course-taking runtime was never
+  // built — superseded by the learning_modules / learning_assignments rail), so
+  // agent_courses.status could never become 'passed'. That made this the ONE
+  // permanently-unsatisfiable gate on a REQUIRED onboarding cert, which in turn
+  // made completeOnboarding() unreachable for every agent (all three required
+  // certs must be awarded). The live, writeable gate for lead-management
+  // competency is the required training_videos above (same pattern as the
+  // Platform Fundamentals and Compliance Basics certs); that is now the sole
+  // requirement, so the certification — and onboarding completion — is earnable.
 
   return {
     eligible: missingRequirements.length === 0,
@@ -283,10 +327,17 @@ export async function awardCertification(
   const issuedAt = new Date()
   let certificateUrl: string | null = null
   try {
-    const [{ data: agentUser }, { data: brokerage }] = await Promise.all([
-      supabase.from('users').select('first_name, last_name').eq('id', agentId).maybeSingle(),
+    // IDENTITY CLASS (m357). agentId is an AGENTS id — every other query in this
+    // file filters agents-class tables with it, and its caller resolves to one
+    // in all branches. This looked the NAME up in `users` BY that id, matched
+    // nothing, and fell through to the literal string 'Agent'. The certificate
+    // PDF — the artifact the agent frames and shows a client — was issued to
+    // "Agent". Read the users row THROUGH the agents row.
+    const [{ data: agentUserRow }, { data: brokerage }] = await Promise.all([
+      supabase.from('agents').select('users(first_name, last_name)').eq('id', agentId).maybeSingle(),
       supabase.from('brokerages').select('name').eq('id', brokerageId).maybeSingle(),
     ])
+    const agentUser = (agentUserRow as { users?: { first_name?: string; last_name?: string } | null } | null)?.users ?? null
     const agentName = agentUser
       ? `${agentUser.first_name ?? ''} ${agentUser.last_name ?? ''}`.trim() || 'Agent'
       : 'Agent'
@@ -307,8 +358,19 @@ export async function awardCertification(
     if (uploadError) {
       console.error('[CertificationEngine] Certificate PDF upload failed (certificate_url will be null):', uploadError)
     } else {
-      const { data: pub } = supabase.storage.from('documents').getPublicUrl(path)
-      certificateUrl = pub?.publicUrl ?? null
+      // `documents` is a document-class bucket (it also holds board packets,
+      // offer attachments and signed listing agreements), so a getPublicUrl here
+      // both leaks by class and STOPS RESOLVING the moment the bucket is flipped
+      // private. Signed via the ONE issuer; honest null when it cannot be signed
+      // (certificate_url is already nullable and the callers handle null).
+      const { issueBucketObjectUrl } = await import('@/lib/storage/document-buckets')
+      const issued = await issueBucketObjectUrl(supabase as never, { bucket: 'documents', objectPath: path })
+      if (issued.ok) {
+        certificateUrl = issued.url
+      } else {
+        console.error('[CertificationEngine] certificate URL not issued (certificate_url will be null):', issued.reason)
+        certificateUrl = null
+      }
     }
   } catch (err) {
     console.error('[CertificationEngine] Certificate PDF generation failed (certificate_url will be null):', err)
@@ -365,6 +427,7 @@ export async function awardCertification(
   const { data: allCerts } = await supabase
     .from('agent_certifications')
     .select('certification_name')
+    .eq('brokerage_id', brokerageId)
     .eq('agent_id', agentId)
     .eq('cert_type', 'onboarding')
 
@@ -408,8 +471,9 @@ export async function completeOnboarding(
 
   const previousState = onboarding.status || 'in_progress'
 
-  // 2. Update agent_onboarding
-  await supabase
+  // 2. Update agent_onboarding — THE completion. A refused write must not go on to
+  // announce completion (lifecycle + kernel event) for a record still in progress.
+  const { error: onboardingDoneErr } = await supabase
     .from('agent_onboarding')
     .update({
       certification_achieved: true,
@@ -419,15 +483,25 @@ export async function completeOnboarding(
       updated_at: new Date().toISOString(),
     })
     .eq('id', onboarding.id)
+  if (onboardingDoneErr) {
+    console.error(`[CertificationEngine] agent_onboarding completion REFUSED for agent ${agentId} — completion not announced: ${onboardingDoneErr.message}`)
+    return
+  }
 
   // 3. Update agents.onboarding_status
-  await supabase
+  // IDENTITY CLASS. agentId is an AGENTS id everywhere else in this file —
+  // agent_certifications, agent_step_completions and video_completion_tracking
+  // all key on it, and line ~289 reads `agents WHERE id = agentId`. This one
+  // matched on user_id, so it updated no row: certification completed and the
+  // agent's onboarding_status silently stayed where it was.
+  const { error: agentStatusErr } = await supabase
     .from('agents')
     .update({
       onboarding_status: 'completed',
       updated_at: new Date().toISOString(),
     })
-    .eq('user_id', agentId)
+    .eq('id', agentId)
+  if (agentStatusErr) console.error(`[CertificationEngine] agents.onboarding_status NOT set for ${agentId}: ${agentStatusErr.message}`)
 
   // 4. Transition lifecycle (only once, check prevents duplicate)
   await transitionLifecycle({
@@ -456,24 +530,28 @@ export async function completeOnboarding(
     console.error('[CertificationEngine] Onboarding completed notification failed:', err)
   })
 
-  // 6. Get agent details for admin notification
-  const { data: agent } = await supabase
-    .from('users')
-    .select('first_name, last_name')
+  // 6. Get agent details for admin notification. Same class rule as the
+  // certificate above (m357): agentId is an AGENTS id, so the users row is read
+  // THROUGH agents. Keyed directly it matched nothing, and the brokerage admins
+  // were told that "Agent" had completed onboarding.
+  const { data: agentRowForNotify } = await supabase
+    .from('agents')
+    .select('users(first_name, last_name)')
     .eq('id', agentId)
-    .single()
+    .maybeSingle()
 
-  const agentName = agent ? `${agent.first_name} ${agent.last_name}`.trim() : 'Agent'
+  const agent = (agentRowForNotify as { users?: { first_name?: string; last_name?: string } | null } | null)?.users ?? null
+  const agentName = agent ? `${agent.first_name ?? ''} ${agent.last_name ?? ''}`.trim() || 'Agent' : 'Agent'
 
   // 7. Create notification for brokerage admins
   const { data: admins } = await supabase
     .from('users')
     .select('id')
     .eq('brokerage_id', brokerageId)
-    .in('user_type', ['admin', 'broker'])
+    .in('user_type', [...BROKERAGE_FINANCE_ADMIN_USER_TYPES])
 
   for (const admin of admins || []) {
-    await supabase.from('notifications').insert({
+    await sentinelWrite(supabase, supabase.from('notifications').insert({
       user_id: admin.id,
       brokerage_id: brokerageId,
       type: 'onboarding_completed',
@@ -482,7 +560,7 @@ export async function completeOnboarding(
       title: 'Agent Onboarding Complete',
       body: `${agentName} has completed onboarding and is ready to start.`,
       is_read: false,
-    })
+    }), { table: "notifications", flow: "certification_engine_notify", brokerageId: brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
   }
 
   console.log(`[CertificationEngine] Onboarding completed for agent ${agentId}`)
@@ -505,9 +583,17 @@ export async function getCertificationStatus(
 }> {
   const supabase = createServiceClient()
 
+  // `brokerageId` was accepted and never read. The caller
+  // (app/actions/onboarding/progress.ts:255) resolves `targetBrokerageId` from
+  // the SESSION and hands it here, and the client below is
+  // `createServiceClient()` — RLS off — so the tenant it resolved was the one
+  // thing NOT applied to the read. agent_certifications.brokerage_id is live
+  // (scripts/schema-snapshot.ts) and the awarding path in this same file stamps
+  // it, so the predicate matches the rows this engine writes.
   const { data: certs } = await supabase
     .from('agent_certifications')
     .select('id, certification_name, issued_at, certificate_url')
+    .eq('brokerage_id', brokerageId)
     .eq('agent_id', agentId)
     .eq('cert_type', 'onboarding')
 
@@ -520,11 +606,57 @@ export async function getCertificationStatus(
       awarded: !!cert,
       issuedAt: cert?.issued_at,
       certId: cert?.id,
-      certificateUrl: cert?.certificate_url,
+      certificateUrl: documentOpenHref(cert?.certificate_url) ?? undefined,
     }
   })
 
   const allRequiredAwarded = certifications.every(c => c.awarded)
 
   return { certifications, allRequiredAwarded }
+}
+
+// ─── WAVE 156 (lane 156K) — WATCH CREDIT: the 90% a certification reads is the SERVER's, never the browser's ───────────
+//
+// The three certifications above read video_completion_tracking.percent_watched >= 90, and Lead Management Essentials reads
+// NOTHING else — so whatever wrote that column decided a CERTIFICATION_EARNED award (lib/gamification/award-points.ts). The
+// one writer, app/api/onboarding/training/progress/route.ts, stored the percentWatched the browser POSTed: one request with
+// percentWatched 100 completed a required video, and a handful of them earned the certificate and its points. A plain video
+// with no quiz attached IS legitimately complete at 90% watched (a training_videos row carries no quiz; a course with a quiz is
+// a learning_modules row, completed only by the persisted graded pass in lib/academy/course-completion.ts) — what was wrong is
+// WHO measured the 90%.
+//
+// The rule: watch time is credited only as wall-clock time passes between the server's own recorded writes. Each write may add
+// at most (seconds since the previous write, capped at MAX_CREDITED_GAP_SECONDS) × MAX_PLAYBACK_RATE seconds of the video, never
+// more than the browser claims, never less than what was already credited. So 90% of a video cannot be credited in less than
+// 0.9 × duration ÷ MAX_PLAYBACK_RATE seconds of real playback pings, and a long idle gap buys at most one capped step. A video
+// whose duration is unknown cannot be measured, so nothing beyond what was already credited is (fail closed).
+// @proofSeam PURE — scripts/wave156-k-guard.ts drives it through the route and directly.
+
+/** The completion bar every reader of percent_watched uses (the literals above say the same number). */
+export const VIDEO_WATCH_COMPLETE_PERCENT = 90
+/** The fastest playback the player offers. Credit never outruns real time at this speed. */
+export const MAX_PLAYBACK_RATE = 2
+/** A gap between two writes longer than this (a closed tab, a paused video) earns no more than this. */
+export const MAX_CREDITED_GAP_SECONDS = 30
+
+export interface WatchCreditInput {
+  /** training_videos.duration_seconds, read by the server — never a client value. */
+  durationSeconds: number | null | undefined
+  /** What the browser claims (0–100). */
+  claimedPercent: number
+  /** The server's own last write for this agent + video, or null when this is the first. */
+  prior: { percentWatched: number | null | undefined; lastWriteAt: string | null | undefined } | null
+  now: Date
+}
+
+export function creditWatchProgress(input: WatchCreditInput): { creditedPercent: number; measurable: boolean } {
+  const priorPct = Math.max(0, Math.min(100, Number(input.prior?.percentWatched ?? 0) || 0))
+  const duration = Number(input.durationSeconds)
+  if (!Number.isFinite(duration) || duration <= 0) return { creditedPercent: priorPct, measurable: false }
+  if (!input.prior) return { creditedPercent: 0, measurable: true }
+  const last = Date.parse(String(input.prior.lastWriteAt ?? ""))
+  const gapSeconds = Number.isNaN(last) ? 0 : Math.max(0, Math.min(MAX_CREDITED_GAP_SECONDS, (input.now.getTime() - last) / 1000))
+  const ceiling = priorPct + (gapSeconds * MAX_PLAYBACK_RATE * 100) / duration
+  const claimed = Math.max(0, Math.min(100, Number(input.claimedPercent) || 0))
+  return { creditedPercent: Math.max(priorPct, Math.min(claimed, ceiling, 100)), measurable: true }
 }

@@ -9,6 +9,12 @@
  */
 
 import type { ParsedBuyerIntent } from './intent-parser'
+// RENDER BOUNDARY (§6) — `emphasisOn[0]` is rendered VERBATIM to the client on
+// the portal: "Focus: {emphasis}" (app/portal/[contactId]/buyer-home.tsx:503)
+// and "Focus area: {emphasis}" (app/portal/[contactId]/learn/page.tsx:131). So
+// the bargain_hunter list is consumer copy, and its price entry takes the
+// public word.
+import { priceImprovementLabel } from '@/lib/listings/price-improvement-label'
 
 export type BuyerPersona = 
   | 'first_time_buyer'
@@ -294,7 +300,7 @@ export function getPersonaMessagingGuidelines(persona: BuyerPersona): {
     case 'bargain_hunter':
       return {
         greetingStyle: 'Direct and value-focused',
-        emphasisOn: ['price reductions', 'below-market value', 'potential', 'comparables', 'negotiation opportunity'],
+        emphasisOn: [`${priceImprovementLabel('sentence')}s`, 'below-market value', 'potential', 'comparables', 'negotiation opportunity'],
         avoidMentioning: ['premium positioning', 'luxury language'],
         examplePhrases: [
           'Priced below market comps',

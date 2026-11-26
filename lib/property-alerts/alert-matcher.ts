@@ -1,8 +1,22 @@
 // Property alert scoring engine — exact spec weights
 // Price+location must match for minimum qualifying score of 40
 
+import { canonicalPropertyType } from "@/lib/constants"
+// RENDER BOUNDARY (§6) — `reasons` is BUYER-FACING copy: it renders as the
+// match chips on the client portal (app/portal/[contactId]/alerts/[alertId]/
+// alert-match-list.tsx) and inside the alert email (lib/property-alerts/
+// alert-notifier.ts). The criteria column names below stay internal.
+import { priceImprovementLabel } from "@/lib/listings/price-improvement-label"
+
 export interface AlertProperty {
   mls_number: string
+  /** listings.id when the match is one of OUR OWN listings (the internal-board
+   *  tier in idx-alert-search.ts). External IDX/RentCast matches have none.
+   *  Stamped into property_alert_results.listing_id so the "ours" branch of
+   *  the per-result actions (alert-actions.ts resultPropertyId) is reachable —
+   *  before this, every in-house listing saved from an alert was filed as an
+   *  external property. */
+  listing_id?: string
   property_address: string
   city?: string
   state?: string
@@ -21,7 +35,29 @@ export interface AlertProperty {
   listed_at?: string
 }
 
+/**
+ * property_alerts.listing_type — the CHECK vocabulary m657 declares
+ * (supabase/migrations/m657-property-alerts-listing-type.sql: sale|rent,
+ * default sale). ONE spelling for the code side (§6): the AI qualification
+ * writer (lib/ai-isa/customer-context-tools.ts) and the sweep's source router
+ * (lib/property-alerts/idx-alert-search.ts) both read it from here, and the
+ * integrator's regenerated scripts/check-vocabularies.ts must list exactly
+ * these two values under property_alerts.listing_type (sorted, as the
+ * generator writes them) once m657 is applied.
+ */
+export const PROPERTY_ALERT_LISTING_TYPES = ["rent", "sale"] as const
+type PropertyAlertListingType = (typeof PROPERTY_ALERT_LISTING_TYPES)[number]
+
+/** A saved search's market. Anything not spelled 'rent' — including a row
+ *  written before m657 — is a FOR-SALE search: the column defaults to 'sale'. */
+export function alertListingType(criteria: Pick<AlertCriteria, "listing_type">): PropertyAlertListingType {
+  return criteria.listing_type === "rent" ? "rent" : "sale"
+}
+
 export interface AlertCriteria {
+  /** m657 — 'rent' means min/max_price are a MONTHLY budget and only the
+   *  rental listing source is swept. Absent/'sale' = the for-sale market. */
+  listing_type?: PropertyAlertListingType | string | null
   min_price?: number | null
   max_price?: number | null
   bedrooms_min?: number | null
@@ -132,9 +168,16 @@ export function scorePropertyForAlert(
 
   // ── Property type: 10pts ──────────────────────────────────────────────────
   if (criteria.property_types && criteria.property_types.length > 0 && property.property_type) {
-    const typeMatch = criteria.property_types.some(
-      t => t.toLowerCase() === property.property_type!.toLowerCase()
-    )
+    // Compare CANONICAL values on both sides. The previous `.toLowerCase()` on each side
+    // looked defensive but only normalised case — saved criteria hold display strings
+    // ("Single Family", "Multi-Family") while listings hold canonical values
+    // ("single_family"), so the separator still differed. Condo/Townhouse/Land/Commercial
+    // matched because they are single words; Single Family and Multi-Family — the two most
+    // common residential types — silently scored zero on every listing. Normalising both
+    // sides also keeps ALREADY-SAVED rows working without a data migration.
+    const wanted = criteria.property_types.map(canonicalPropertyType).filter(Boolean)
+    const actual = canonicalPropertyType(property.property_type)
+    const typeMatch = actual !== null && wanted.includes(actual)
     if (typeMatch) {
       score += 10
       reasons.push(`${property.property_type} matches type preference`)
@@ -177,7 +220,7 @@ export function scorePropertyForAlert(
     if (pct < minPct) {
       return { score: 0, reasons: [], qualifies: false, priceMatched, locationMatched }
     }
-    reasons.push(`Price reduced ${pct.toFixed(1)}%`)
+    reasons.push(`${priceImprovementLabel("badge")} ${pct.toFixed(1)}%`)
   }
 
   // Minimum qualifying: price AND location must match (score >= 40)

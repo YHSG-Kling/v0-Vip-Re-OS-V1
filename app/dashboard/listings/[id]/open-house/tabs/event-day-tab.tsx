@@ -17,8 +17,11 @@ import {
   AlertTriangle,
   CheckCircle2,
   Sparkles,
+  FileText,
 } from "lucide-react"
-import { endOpenHouseEvent, createQrCodeForEvent, checkInAttendee, convertAttendeeToContact } from "@/app/actions/seller-open-house"
+import { endOpenHouseEvent, createQrCodeForEvent, checkInAttendee, convertAttendeeToContact, getCheckInConsentBrand } from "@/app/actions/seller-open-house"
+// C15 (wave 148, lane 148B): the visitor ticks the ONE consent component on the agent's device — never a hardcoded consent.
+import { ConsentBoxes, useConsentBoxes } from "@/app/components/forms/ConsentBoxes"
 import {
   getOpenHouseVisitors,
   fetchWeatherForEvent,
@@ -60,6 +63,9 @@ export function EventDayTab({ listingId, data, onRefresh, agentId, userId }: Pro
   const [competing, setCompeting] = useState<any>(null)
   const [walkInName, setWalkInName] = useState("")
   const [walkInPhone, setWalkInPhone] = useState("")
+  const [walkInEmail, setWalkInEmail] = useState("")
+  const [consentBrand, setConsentBrand] = useState("our brokerage")
+  const walkInConsent = useConsentBoxes("open_house_kiosk", consentBrand)
   const [checkingIn, setCheckingIn] = useState(false)
   const [refreshingVisitors, setRefreshingVisitors] = useState(false)
 
@@ -73,6 +79,7 @@ export function EventDayTab({ listingId, data, onRefresh, agentId, userId }: Pro
 
     // Load visitors, weather, and competing in parallel
     loadVisitors(activeEventId)
+    getCheckInConsentBrand(activeEventId).then((b) => setConsentBrand(b.brandName)).catch(() => null)
 
     fetchWeatherForEvent(activeEventId)
       .then((w) => setWeather(w))
@@ -89,22 +96,28 @@ export function EventDayTab({ listingId, data, onRefresh, agentId, userId }: Pro
       toast({ title: "Enter visitor name", variant: "destructive" })
       return
     }
+    if (!walkInConsent.serviceGiven) {
+      toast({ title: "The visitor ticks the first box", description: "Hand the device to the visitor — only they can give consent.", variant: "destructive" })
+      return
+    }
     setCheckingIn(true)
     try {
       const res = await checkInAttendee({
         eventId: activeEventId,
         name: walkInName.trim(),
-        email: walkInPhone
-          ? `${walkInPhone.replace(/\D/g, "")}@walkin.open`
-          : undefined,
+        // TOMBSTONE (wave 148): a fabricated "<digits>@walkin.open" email and a hardcoded `tcpaConsent: true` stood here —
+        // an identity and a consent nobody gave. Only what the visitor typed and ticked is sent.
+        email: walkInEmail.trim() || undefined,
         phone: walkInPhone.trim() || undefined,
         workingWithAgent: false,
-        tcpaConsent: true,
+        consent: walkInConsent.submission,
       })
       if (res.success) {
         toast({ title: "Visitor checked in", description: walkInName })
         setWalkInName("")
         setWalkInPhone("")
+        setWalkInEmail("")
+        walkInConsent.setValue({ serviceDelivery: false, marketing: { email: false, sms: false, voice: false, direct_mail: false } })
         await loadVisitors(activeEventId)
       } else {
         toast({ title: "Check-in failed", description: res.error, variant: "destructive" })
@@ -293,7 +306,17 @@ export function EventDayTab({ listingId, data, onRefresh, agentId, userId }: Pro
                     type="tel"
                   />
                 </div>
-                <Button onClick={handleCheckIn} disabled={checkingIn || !walkInName.trim()} className="shrink-0">
+                <div className="flex flex-col gap-1.5 flex-1 min-w-32">
+                  <label className="text-xs font-medium text-muted-foreground">Email</label>
+                  <Input
+                    placeholder="Email (optional)"
+                    value={walkInEmail}
+                    onChange={(e) => setWalkInEmail(e.target.value)}
+                    type="email"
+                  />
+                </div>
+                <ConsentBoxes {...walkInConsent.boxProps} idPrefix="walkin-consent" compact className="basis-full" />
+                <Button onClick={handleCheckIn} disabled={checkingIn || !walkInName.trim() || !walkInConsent.serviceGiven} className="shrink-0">
                   {checkingIn ? (
                     <RefreshCw className="mr-1.5 h-4 w-4 animate-spin" />
                   ) : (
@@ -389,7 +412,7 @@ export function EventDayTab({ listingId, data, onRefresh, agentId, userId }: Pro
                   <span className="text-muted-foreground">attendees</span>
                 </div>
                 <div className="flex items-center gap-1.5 text-sm">
-                  <Flame className="h-4 w-4 text-amber-500" />
+                  <Flame className="h-4 w-4 text-amber-600" />
                   <span className="font-medium">{hotLeads.length}</span>
                   <span className="text-muted-foreground">hot leads</span>
                 </div>
@@ -426,7 +449,7 @@ export function EventDayTab({ listingId, data, onRefresh, agentId, userId }: Pro
                     Generate QR Code
                   </Button>
                 )}
-                {packetJob?.output_url && (
+                {packetJob?.output_url ? (
                   <a
                     href={packetJob.output_url}
                     target="_blank"
@@ -436,7 +459,19 @@ export function EventDayTab({ listingId, data, onRefresh, agentId, userId }: Pro
                     <Download className="h-3.5 w-3.5" />
                     Listing Packet
                   </a>
-                )}
+                ) : packetJob?.status === "completed" ? (
+                  // The packet is content in listing_packet_jobs.config, not a
+                  // hosted file — output_url has no writer today. Link to the
+                  // panel that renders it instead of hiding the packet behind
+                  // a download that can never exist.
+                  <a
+                    href={`/dashboard/listings/${listingId}/lifecycle`}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-1.5 text-sm font-medium hover:bg-muted/50 transition-colors"
+                  >
+                    <FileText className="h-3.5 w-3.5" />
+                    View Listing Packet
+                  </a>
+                ) : null}
               </div>
 
               {/* Attendee list */}

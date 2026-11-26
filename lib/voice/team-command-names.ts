@@ -32,7 +32,10 @@ export const BUYER_COMMANDS = new Set<string>(["find_properties"])
  *  pipeline — owner round 37); convert_lead converts an already-QUALIFIED lead
  *  to a contact via Engine 2, whose gate refuses unqualified leads. Broker-only,
  *  never agent-speakable. Broadcast is in-app only. */
-export const BROKER_COMMANDS = new Set<string>(["convert_lead", "reassign_contact", "broadcast_announcement"])
+export const BROKER_COMMANDS = new Set<string>(["convert_lead", "reassign_contact", "broadcast_announcement",
+  // Wave 138E — the whole team, 24/7 (lib/voice-admin/assistant-reach.ts): ask any manager what it is working on
+  // and why, give the OS a brokerage objective, request a skill. Tenant-admin roster, re-checked in the backend.
+  "manager_status", "broker_objective", "run_skill"])
 
 /** All team-coordination commands the dispatcher routes (read-only + acting + buyer + broker). */
 export const TEAM_COMMANDS = new Set<string>([...TEAM_QUERY_COMMANDS, ...TEAM_ACTION_COMMANDS, ...BUYER_COMMANDS, ...BROKER_COMMANDS])

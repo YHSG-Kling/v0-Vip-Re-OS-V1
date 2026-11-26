@@ -21,11 +21,24 @@ const PROVIDERS: Array<{ key: CrmProvider; label: string; needsUrl?: boolean; hi
 export function CrmConnectForm({
   active,
   connected,
+  lastError = null,
+  lastSyncedAt = null,
+  verified = false,
 }: {
   active: string | null
   connected: CrmProvider[]
+  /** The provider's own refusal on the last push to the ACTIVE CRM (wave 141, lane 141D) —
+   *  shown with the fix next to the key the tenant controls. Null = no failure recorded. */
+  lastError?: string | null
+  lastSyncedAt?: string | null
+  /** The provider accepted the active credential on its last successful push (the outcome stamp's verdict). */
+  verified?: boolean
 }) {
   const [keys, setKeys] = useState<Record<string, string>>({})
+  // The SECOND HALF of a key+secret pair. Optional, and separate from `keys`
+  // because a blank one must arrive as absent rather than as "" — the server
+  // treats "" as no secret for exactly that reason (crm-connect.ts).
+  const [secrets, setSecrets] = useState<Record<string, string>>({})
   const [urls, setUrls] = useState<Record<string, string>>({})
   const [msg, setMsg] = useState<string | null>(null)
   const [pending, start] = useTransition()
@@ -36,7 +49,12 @@ export function CrmConnectForm({
   function connect(p: CrmProvider) {
     setMsg(null)
     start(async () => {
-      const res = await connectCrmAction({ provider: p, apiKey: keys[p] ?? "", apiUrl: urls[p] })
+      const res = await connectCrmAction({
+        provider: p,
+        apiKey: keys[p] ?? "",
+        apiSecret: secrets[p] ?? undefined,
+        apiUrl: urls[p],
+      })
       setMsg(res.ok ? `Connected ${p} ✓` : `Error: ${res.error}`)
     })
   }
@@ -70,15 +88,39 @@ export function CrmConnectForm({
             </CardHeader>
             <CardContent className="space-y-2">
               <p className="text-xs text-muted-foreground">{p.hint}. Sync-out only — pushes contact updates.</p>
+              {/* THE TENANT'S OWN INTEGRATION, THE TENANT'S OWN ERROR (141D): the last push's
+                  refusal lands here, actionable — update the key below, or disconnect. */}
+              {active === p.key && lastError && (
+                <div className="rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900">
+                  <span className="font-medium">Last sync to {p.label} failed:</span> {lastError}
+                  <div className="text-amber-800">Contacts are still being queued. Fix: paste a current API key below and click
+                  &ldquo;Update + set active&rdquo;, or disconnect this CRM.</div>
+                </div>
+              )}
+              {active === p.key && !lastError && lastSyncedAt && (
+                <p className="text-xs text-muted-foreground">Last successful sync: {new Date(lastSyncedAt).toLocaleString()}{verified ? " · credential verified by the provider" : ""}</p>
+              )}
               <Input
                 type="password"
                 placeholder="API key"
                 value={keys[p.key] ?? ""}
                 onChange={(e) => setKeys((s) => ({ ...s, [p.key]: e.target.value }))}
               />
+              {/* The pair's SECOND half. Optional — most CRMs issue a single key, and
+                  the column it fills (agent_api_credentials.api_secret /
+                  integration_credentials.api_secret) had no writer at all until this
+                  box existed, so any provider that DOES issue a secret resolved as
+                  key-only and could not authenticate. Stored encrypted; never echoed
+                  back into this form. */}
+              <Input
+                type="password"
+                placeholder="API secret (only if your provider issues one)"
+                value={secrets[p.key] ?? ""}
+                onChange={(e) => setSecrets((s) => ({ ...s, [p.key]: e.target.value }))}
+              />
               {p.needsUrl && (
                 <Input
-                  placeholder="API host (optional, e.g. https://api.lofty.com/v1)"
+                  placeholder="API host (optional, e.g. https://api.lofty.com/v1.0)"
                   value={urls[p.key] ?? ""}
                   onChange={(e) => setUrls((s) => ({ ...s, [p.key]: e.target.value }))}
                 />

@@ -37,6 +37,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted } from "@/lib/ai/models"
 import { loadBuyerCriteria } from "@/lib/buyer-search/buyer-criteria"
+import { VIEW_SIGNALS, SAVE_SIGNALS, DISMISS_SIGNALS } from "@/lib/behavior-learning/signal-mapping"
 
 export interface MatchupRow {
   criterion:   string
@@ -151,7 +152,7 @@ export async function buildShowingBriefing(showingId: string): Promise<ShowingBr
     pref,
     { data: finance },
     { data: prediction },
-    { data: behavior },
+    behaviorRes,
     { data: coaching },
     { data: savedRow },
   ] = await Promise.all([
@@ -170,9 +171,13 @@ export async function buildShowingBriefing(showingId: string): Promise<ShowingBr
     showing.contact_id
       ? svc.from("buyer_behavior_predictions").select("predicted_next_action, predicted_ready_to_offer, predicted_price_max, predicted_timeline_days, engagement_score, ai_reasoning").eq("contact_id", showing.contact_id).order("generated_at", { ascending: false }).limit(1).maybeSingle()
       : Promise.resolve({ data: null }),
+    // listing_id + mls_number let the brief match log rows against THIS
+    // showing's property ("they already saved this one"); source separates
+    // portal self-serve signals from agent-dashboard ones; agent_id (FK →
+    // agents.id, same target as showings.agent_id) says who was with them.
     showing.contact_id
-      ? svc.from("buyer_behavior_log").select("signal_type, signal_value, property_address, bedrooms, bathrooms, list_price, created_at").eq("contact_id", showing.contact_id).gte("created_at", new Date(Date.now() - 14 * 86_400_000).toISOString()).order("created_at", { ascending: false }).limit(30)
-      : Promise.resolve({ data: [] }),
+      ? svc.from("buyer_behavior_log").select("signal_type, signal_value, property_address, bedrooms, bathrooms, sqft, list_price, created_at, listing_id, mls_number, source, agent_id").eq("contact_id", showing.contact_id).gte("created_at", new Date(Date.now() - 14 * 86_400_000).toISOString()).order("created_at", { ascending: false }).limit(30)
+      : Promise.resolve({ data: [], error: null }),
     svc.from("buyer_stage_coaching").select("buyer_stage, suggested_talking_points, common_objections, success_signals, risk_signals").eq("is_active", true).limit(5),
     // Buyer-side property cache lookup. Match strategy (any one):
     //   - showings.listing_id matches saved_properties.listing_id
@@ -369,19 +374,83 @@ export async function buildShowingBriefing(showingId: string): Promise<ShowingBr
 
   // Recent buyer signals — humanised one-liners
   const signals: string[] = []
-  const beh = (behavior ?? []) as any[]
+  if (behaviorRes.error) {
+    // §3: a swallowed refusal here would render as "no recent signals" —
+    // log it so a broken read never masquerades as a quiet buyer.
+    console.error("[showing-brief] buyer_behavior_log read refused:", behaviorRes.error.message)
+  }
+  const beh = (behaviorRes.data ?? []) as any[]
   const last14 = beh.length
   if (last14 > 0) {
     signals.push(`${last14} signal${last14 === 1 ? "" : "s"} in last 14 days`)
   }
-  const viewCount = beh.filter(b => b.signal_type === "view").length
-  if (viewCount > 0) signals.push(`Viewed ${viewCount} listings`)
-  const saveCount = beh.filter(b => b.signal_type === "save" || b.signal_type === "favorite").length
+  // §6 one vocabulary: the live CHECK on buyer_behavior_log.signal_type
+  // (scripts/check-vocabularies.ts) admits NO "view"/"save"/"favorite" — the
+  // old filters matched zero rows structurally, so "Viewed N"/"Saved N" had
+  // never rendered. The canonical signal families were LIFTED from here into
+  // lib/behavior-learning/signal-mapping.ts (§6, 2026-09-01) — the module that
+  // owns the buyer_behavior_log vocabulary mappers — so the audience readers
+  // in app/actions/email-campaigns.ts count the same families this brief does.
+  const viewCount = beh.filter(b => VIEW_SIGNALS.has(b.signal_type)).length
+  if (viewCount > 0) signals.push(`Viewed ${viewCount} listing${viewCount === 1 ? "" : "s"}`)
+  const saveCount = beh.filter(b => SAVE_SIGNALS.has(b.signal_type)).length
   if (saveCount > 0) signals.push(`Saved ${saveCount}`)
   const recentPrices = beh.map(b => b.list_price).filter((p): p is number => typeof p === "number")
   if (recentPrices.length > 2) {
     const avg = Math.round(recentPrices.reduce((a, b) => a + b, 0) / recentPrices.length)
     signals.push(`Recent viewing avg ${dollars(avg)}`)
+  }
+  // Size trend (lane M2): buyer_behavior_log.sqft is stamped by the learner's
+  // signal writer and was read by nothing — yet "are they trending bigger or
+  // smaller than this house" is a live showing question. Same >2 floor as the
+  // price average: two data points are an anecdote, not a trend.
+  const recentSqft = beh.map(b => b.sqft).filter((s): s is number => typeof s === "number" && s > 0)
+  if (recentSqft.length > 2) {
+    const avgSqft = Math.round(recentSqft.reduce((a, b) => a + b, 0) / recentSqft.length)
+    signals.push(`Recent viewing avg ${avgSqft.toLocaleString()} sqft`)
+  }
+
+  // "This buyer already reacted to THIS property" — matches the 14-day log
+  // window against the showing's own property via listing_id (seller-side
+  // shows), mls_number (external MLS shows), or a normalised address
+  // fallback. Only computable now that the select carries listing_id +
+  // mls_number (tranche 1a). source tells the agent whether the reaction was
+  // the buyer's own (portal/alert/mobile) or logged from the agent dashboard;
+  // agent_id (same agents-table FK as showings.agent_id) tells them whether
+  // another agent was in the room.
+  const addrKey = (a: string | null | undefined) =>
+    (a ?? "").split(",")[0].trim().toLowerCase()
+  const briefAddr = addrKey(propertyView.address)
+  const thisPropertyRows = beh.filter(b =>
+    (showing.listing_id && b.listing_id === showing.listing_id) ||
+    (propertyView.mlsNumber && b.mls_number === propertyView.mlsNumber) ||
+    (briefAddr && addrKey(b.property_address) === briefAddr),
+  )
+  if (thisPropertyRows.length > 0) {
+    const PORTAL_SOURCES = new Set(["buyer_portal", "alert_email", "mobile"])
+    const describe = (rows: any[]) => {
+      const viaPortal = rows.some(r => PORTAL_SOURCES.has(r.source))
+      const withOtherAgent = rows.some(r => r.agent_id && showing.agent_id && r.agent_id !== showing.agent_id)
+      const qualifiers = [
+        viaPortal ? "on their own via portal" : null,
+        withOtherAgent ? "with another agent" : null,
+      ].filter(Boolean).join(", ")
+      return qualifiers ? ` (${qualifiers})` : ""
+    }
+    const viewedHere    = thisPropertyRows.filter(b => VIEW_SIGNALS.has(b.signal_type))
+    const savedHere     = thisPropertyRows.filter(b => SAVE_SIGNALS.has(b.signal_type))
+    const dismissedHere = thisPropertyRows.filter(b => DISMISS_SIGNALS.has(b.signal_type))
+    if (savedHere.length > 0) {
+      signals.push(`Already saved THIS property${describe(savedHere)}`)
+    }
+    if (dismissedHere.length > 0) {
+      // A prior dismissal of the very property being shown is the single most
+      // important line on the brief — the agent should know before the door.
+      signals.push(`Previously dismissed THIS property${describe(dismissedHere)} — ask what changed`)
+    }
+    if (viewedHere.length > 0 && savedHere.length === 0 && dismissedHere.length === 0) {
+      signals.push(`Already viewed THIS property ${viewedHere.length}×${describe(viewedHere)}`)
+    }
   }
 
   const predictedNextAction = prediction?.predicted_next_action ?? null

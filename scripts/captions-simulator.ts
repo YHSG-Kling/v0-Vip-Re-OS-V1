@@ -75,6 +75,50 @@ function testEvenDistribution() {
   check("longer phrase dwells ≥ shorter phrase (proportional)", longest.durationFrames >= shortest.durationFrames, `${longest.durationFrames} vs ${shortest.durationFrames}`)
 }
 
+/**
+ * LANE 74D — closes the gap named in lib/video/realism-profile.ts's own
+ * "SCRIPT AUDIO TAGS → CAPTIONS" comment: enforceExpressiveAudioTagBudget
+ * (wave 73D) KEEPS authorized ElevenLabs v3 tags ("[laughs]", …) in the
+ * script text itself, up to a budget, for the v3 TTS lane — and nothing
+ * previously stripped them back out before that SAME script reached
+ * buildCaptionPlan's even-distribution (Path B) fallback. Proves the fix
+ * (lib/video/caption-plan.ts::stripTagsFromCues) AND carries a POSITIVE
+ * CONTROL (CLAUDE.md §2): the pre-fix shape (no stripping) is asserted to
+ * actually leak the tag, so a broken/reverted strip is caught, not just a
+ * clean tree read as "nothing to find."
+ */
+function testExpressiveTagStripping() {
+  console.log("\n[Layer 1d · expressive-tag + pause-markup stripping (lane 74D)]")
+  const total = 300 // 10s @ 30fps
+
+  // Path B — even-distribution over raw script text carrying an authorized
+  // v3 tag mid-sentence, exactly the shape enforceExpressiveAudioTagBudget
+  // leaves behind on the v3 lane.
+  const tagged = "This one backs right up to the water. [laughs] Wait till you see the sunset from the deck."
+  const plan = buildCaptionPlan(tagged, total, 30, { maxWordsPerCue: 4 })
+  const joined = plan.cues.map((c) => c.text).join(" ")
+  check("even-distribution cues never render the literal tag text", !/\[laughs\]/i.test(joined), joined)
+  check("the words around the stripped tag still made it into a cue", /sunset/i.test(joined) && /water/i.test(joined), joined)
+  check("no cue is blank (a tag-only phrase never becomes an empty caption box)", plan.cues.every((c) => c.text.trim().length > 0))
+
+  // POSITIVE CONTROL — the RAW text (no stripping) DOES contain the tag, so a
+  // reverted/broken stripTagsFromCues would show up here as this control
+  // itself failing to find anything to strip.
+  check("POSITIVE CONTROL: the source text genuinely contains the tag (there is something to strip)", /\[laughs\]/i.test(tagged))
+
+  // A cue built ENTIRELY from a tag (plus pause markup) must be dropped, not
+  // rendered as an empty box.
+  const tagOnly = "[whispers]"
+  const tagOnlyPlan = buildCaptionPlan(tagOnly, total, 30)
+  check("a script that is ENTIRELY a tag produces zero cues (never a blank caption)", tagOnlyPlan.cues.length === 0)
+
+  // Pause markup (wave 57's withNaturalPauses) must never leak into a cue either.
+  const paused = "Welcome home. <break time=\"400ms\"/> This kitchen was just renovated."
+  const pausedPlan = buildCaptionPlan(paused, total, 30, { maxWordsPerCue: 4 })
+  const pausedJoined = pausedPlan.cues.map((c) => c.text).join(" ")
+  check("pause markup never renders in a caption cue", !/<break/i.test(pausedJoined), pausedJoined)
+}
+
 function testAlignment() {
   console.log("\n[Layer 1b · buildCaptionPlan — REAL alignment (word-accurate)]")
   // Build a synthetic per-character alignment for "Hi there friends now" — each
@@ -177,6 +221,7 @@ async function main() {
   console.log(" SOUND-OFF CAPTIONS SIMULATOR — caption-plan + cue selection")
   console.log("════════════════════════════════════════════════════════════")
   testEvenDistribution()
+  testExpressiveTagStripping()
   testAlignment()
   testEmptyAndEdges()
   testActiveCueBounds()

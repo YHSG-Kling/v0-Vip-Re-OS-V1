@@ -26,7 +26,10 @@ import { revalidatePath } from "next/cache"
 import { headers } from "next/headers"
 import { resolveESignProviderForActor } from "@/lib/integrations/resolve-esign-provider"
 
-const AGENT_ROLES = new Set(["broker","broker_admin","admin","superadmin","team_lead","agent"])
+// SCOPE LADDER (kept inline — admits agent/team_lead): 'superadmin' removed —
+// dead as users.user_type (0 live rows); broker_owner added — storable seat
+// that owns the brokerage.
+const AGENT_ROLES = new Set(["broker","broker_owner","broker_admin","admin","team_lead","agent"])
 
 async function requireAgentInBrokerage(): Promise<
   | { ok: true; userId: string; brokerageId: string; userType: string; agentId: string | null }
@@ -61,6 +64,22 @@ async function requireAgentInBrokerage(): Promise<
     userType: profile.user_type,
     agentId: agent?.id ?? null,
   }
+}
+
+/** WAVE 155 (lane 155R12): the session receipt helper answers `{ success, error }` only when it REFUSED the claim (the run never
+ *  started) — mapped onto this module's `{ ok: false, error }` so every caller still reads one shape. */
+function bbaReceipt<T extends { ok: boolean }>(r: T | { success: boolean; error?: string }): T | { ok: false; error: string } {
+  return "ok" in r ? r : { ok: false, error: r.error ?? "The action was not recorded, so it did not run." }
+}
+
+/** CARRY-IN (lane 155C request 1): an EXECUTED buyer agreement reaches the reactor, which pays the signed-agreement appointment
+ *  award (lib/gamification/lifecycle-awards.ts buyerAgreementEvidence re-reads the row). Award only — a failure never blocks the
+ *  signature; replay-safe (the award's once-key is the root of the agreement's correction chain). */
+async function reactToExecutedBBA(brokerageId: string, agreementId: string): Promise<void> {
+  try {
+    const [{ processKernelEvent }, { KernelEvent }] = await Promise.all([import("@/lib/kernel/notification-engine"), import("@/lib/kernel/events")])
+    await processKernelEvent({ event: KernelEvent.BUYER_BROKER_AGREEMENT_SIGNED, brokerageId, entityType: "buyer_broker_agreement", entityId: agreementId })
+  } catch (e) { console.error("[bba] reactor dispatch failed (award only):", e) }
 }
 
 // ── CREATE DRAFT ─────────────────────────────────────────────────────────────
@@ -109,6 +128,7 @@ export async function createBBADraftAction(input: CreateBBAInput): Promise<
   if (!buyer) return { ok: false, error: "Buyer contact not found" }
   if (buyer.brokerage_id !== auth.brokerageId) return { ok: false, error: "Buyer belongs to another brokerage" }
 
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); return bbaReceipt(await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "transaction.buyer_agreement.draft", actor: { type: "user", userId: auth.userId, agentId }, subject: { type: "contact", id: input.buyerContactId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { agreement_type: input.agreementType, commission_payer: input.commissionPayer } }, async (): Promise<{ ok: true; agreementId: string } | { ok: false; error: string }> => {
   const { data: inserted, error } = await svc
     .from("buyer_broker_agreements")
     .insert({
@@ -135,6 +155,7 @@ export async function createBBADraftAction(input: CreateBBAInput): Promise<
 
   revalidatePath(`/crm/contacts/${input.buyerContactId}`)
   return { ok: true, agreementId: inserted.id as string }
+  }))
 }
 
 // ── CLICK-THROUGH SIGN (most common path for modern self-serve) ──────────────
@@ -167,7 +188,7 @@ export async function clickThroughSignBBAAction(params: {
   // Verify the caller is the buyer for this agreement (contacts.user_id linkage)
   const { data: agreement } = await svc
     .from("buyer_broker_agreements")
-    .select("id, buyer_contact_id, status, effective_date, expiration_date")
+    .select("id, brokerage_id, buyer_contact_id, status, effective_date, expiration_date")
     .eq("id", params.agreementId)
     .maybeSingle()
   if (!agreement) return { ok: false, error: "Agreement not found" }
@@ -183,6 +204,8 @@ export async function clickThroughSignBBAAction(params: {
   if (buyer?.user_id !== user.id) {
     return { ok: false, error: "Only the buyer named on this agreement can sign it" }
   }
+  // The tenant is the agreement's own row, which the session user was just proven to be the named buyer on (never an argument).
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); return bbaReceipt(await ledgerSessionAction({ brokerageId: agreement.brokerage_id as string, action: "transaction.buyer_agreement.sign", actor: { type: "user", userId: user.id }, subject: { type: "buyer_broker_agreement", id: params.agreementId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { signed_method: "click_through", from_status: agreement.status } }, async (): Promise<{ ok: true } | { ok: false; error: string }> => {
 
   const today    = new Date().toISOString().slice(0, 10)
   const ninetyD  = new Date(Date.now() + 90 * 24 * 3600 * 1000).toISOString().slice(0, 10)
@@ -203,10 +226,12 @@ export async function clickThroughSignBBAAction(params: {
     .eq("id", params.agreementId)
 
   if (error) return { ok: false, error: error.message }
+  await reactToExecutedBBA(agreement.brokerage_id as string, params.agreementId)
 
   revalidatePath(`/crm/contacts/${agreement.buyer_contact_id}`)
   revalidatePath("/portal")
   return { ok: true }
+  }))
 }
 
 // ── DISPATCH TO BROKERAGE'S CONFIGURED E-SIGN PROVIDER ──────────────────────
@@ -271,7 +296,6 @@ export async function dispatchBBAToSigningProviderAction(
   const txReq = await resolved.provider.createTransaction({
     propertyAddress: "Buyer Representation Agreement",
     transactionType: "purchase",
-    agentId:         bba.agent_id as string,
     contactId:       bba.buyer_contact_id as string,
   })
   if (!txReq.success || !txReq.externalTransactionId) {
@@ -302,7 +326,7 @@ export async function dispatchBBAToSigningProviderAction(
                     : resolved.providerName === "dotloop"  ? "dotloop"
                     : "docusign" // Authentisign + SkySlope use DocuSign-style flow
 
-  await svc
+  const { error: bbaPendingErr } = await svc
     .from("buyer_broker_agreements")
     .update({
       status:               "pending_signature",
@@ -310,6 +334,7 @@ export async function dispatchBBAToSigningProviderAction(
       signature_request_id: txReq.externalTransactionId,
     })
     .eq("id", agreementId)
+  if (bbaPendingErr) console.error(`[buyer-broker-agreements] envelope dispatched but the agreement was not marked pending_signature: ${bbaPendingErr.message}`)
 
   revalidatePath(`/crm/contacts/${bba.buyer_contact_id}`)
   return {
@@ -347,6 +372,7 @@ export async function recordSignedBBAAction(params: {
   const today   = new Date().toISOString().slice(0, 10)
   const ninetyD = new Date(Date.now() + 90 * 24 * 3600 * 1000).toISOString().slice(0, 10)
 
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); return bbaReceipt(await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "transaction.buyer_agreement.record_signature", actor: { type: "user", userId: auth.userId, agentId: auth.agentId }, subject: { type: "buyer_broker_agreement", id: params.agreementId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { signed_method: params.signedMethod, from_status: agreement.status, signed_document_attached: !!params.signedDocumentUrl } }, async (): Promise<{ ok: true } | { ok: false; error: string }> => {
   const { error } = await svc
     .from("buyer_broker_agreements")
     .update({
@@ -359,7 +385,9 @@ export async function recordSignedBBAAction(params: {
     })
     .eq("id", params.agreementId)
   if (error) return { ok: false, error: error.message }
+  await reactToExecutedBBA(auth.brokerageId, params.agreementId)
   return { ok: true }
+  }))
 }
 
 // ── CANCEL / VOID ────────────────────────────────────────────────────────────
@@ -374,7 +402,13 @@ export async function cancelBBAAction(params: {
     return { ok: false, error: "Cancellation reason required (5+ chars)" }
   }
   const svc = createServiceClient()
-  const { error } = await svc
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); return bbaReceipt(await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "transaction.buyer_agreement.cancel", actor: { type: "user", userId: auth.userId, agentId: auth.agentId }, subject: { type: "buyer_broker_agreement", id: params.agreementId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ ok: true } | { ok: false; error: string }> => {
+  // WAVE 155 (lane 155S3 — CLAUDE.md §3): COUNT what the update changed. A zero-match update resolves like one that worked, so a
+  // wrong id, another tenant's agreement or an EXECUTED / expired one reported "cancelled" and the LEGAL receipt settled
+  // executed. Zero rows now re-reads the agreement IN THIS TENANT: already `cancelled` is this caller's desired outcome (ok —
+  // the first cancellation's reason and actor stand, nothing is overwritten); absent is a failure; any other status is a
+  // failure that names it.
+  const { data: cancelled, error } = await svc
     .from("buyer_broker_agreements")
     .update({
       status:              "cancelled",
@@ -385,8 +419,22 @@ export async function cancelBBAAction(params: {
     .eq("id", params.agreementId)
     .eq("brokerage_id", auth.brokerageId)
     .in("status", ["draft","pending_signature","active"])
+    .select("id")
   if (error) return { ok: false, error: error.message }
+  if ((cancelled ?? []).length === 0) {
+    const { data: current, error: readErr } = await svc
+      .from("buyer_broker_agreements")
+      .select("status")
+      .eq("id", params.agreementId)
+      .eq("brokerage_id", auth.brokerageId)
+      .maybeSingle()
+    if (readErr) return { ok: false, error: `Could not confirm the agreement: ${readErr.message}` }
+    if (!current) return { ok: false, error: "Agreement not found" }
+    const status = (current as { status?: string | null }).status ?? "unknown"
+    if (status !== "cancelled") return { ok: false, error: `This agreement cannot be cancelled (status: ${status})` }
+  }
   return { ok: true }
+  }))
 }
 
 // ── READ ─────────────────────────────────────────────────────────────────────

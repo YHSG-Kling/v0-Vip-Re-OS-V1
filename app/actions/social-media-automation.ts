@@ -5,17 +5,22 @@
 // Canonical Tables: social_posts, social_media_accounts, social_engagement_tracking, social_publish_log
 // DO NOT use social_media_posts or social_accounts
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { generateAIResponse } from "@/lib/ai"
 import { isValidUUID } from "@/lib/validations"
 import { KernelEvent } from "@/lib/kernel/events"
-import { processKernelEvent } from "@/lib/kernel/notification-engine"
-import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { mayUseFeature } from "@/lib/billing/billing-access"
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { parseAIJsonResponse } from "@/lib/ai/parse-json-response"
+// The ONE way a notifications row gets its tenant — the recipient's
+// users.brokerage_id, the exact value badge-counts compares against.
+import { resolveRecipientBrokerageId } from "@/lib/notifications/recipient-tenant"
 
 /**
  * Tenant guard — requires authenticated session with a brokerage.
@@ -23,14 +28,38 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
  * trusting caller-supplied IDs.
  */
 async function requireBrokerage(): Promise<
-  | { ok: true; brokerageId: string; userId: string; agentId: string | null }
+  | { ok: true; brokerageId: string; userId: string; agentId: string | null; userType: string }
   | { ok: false; error: string }
 > {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) {
     return { ok: false, error: "Unauthorized" }
   }
-  return { ok: true, brokerageId: ctx.brokerageId, userId: ctx.userId, agentId: ctx.agentId }
+  return {
+    ok: true,
+    brokerageId: ctx.brokerageId,
+    userId: ctx.userId,
+    agentId: ctx.agentId,
+    userType: ctx.userType ?? "agent",
+  }
+}
+
+/**
+ * Roles that see EVERY post in the brokerage. Everyone else (an ordinary agent)
+ * sees only their own. Merged in from the retired
+ * `app/actions/social-publishing.ts:getSocialAnalytics`, which was the only reader
+ * that scoped social analytics per user — this file's reader was brokerage-wide, so
+ * an individual agent could read the whole brokerage's social performance.
+ * `social_posts.user_id` is a users.id and is reliably populated (both the manual
+ * creator and the listing-promo cron resolve and set it), so the filter narrows
+ * rather than blanking the view.
+ */
+const SOCIAL_ANALYTICS_ALL_POSTS_ROLES = [
+  "ADMIN", "BROKER", "COMPLIANCE_OFFICER",
+  "admin", "broker", "broker_owner", "broker_admin", "compliance_officer", "superadmin",
+]
+function seesAllBrokeragePosts(userType: string): boolean {
+  return SOCIAL_ANALYTICS_ALL_POSTS_ROLES.includes(userType)
 }
 
 /** Verify a given agents.id row belongs to brokerageId. Uses service client. */
@@ -73,85 +102,21 @@ async function verifySocialPostInBrokerage(
   return { ok: true, row: data as any }
 }
 
-function parseAIJsonResponse(text: string) {
-  let cleanText = text.trim()
-  if (cleanText.startsWith("```json")) {
-    cleanText = cleanText.replace(/^```json\s*/, "").replace(/```\s*$/, "")
-  } else if (cleanText.startsWith("```")) {
-    cleanText = cleanText.replace(/^```\s*/, "").replace(/```\s*$/, "")
-  }
-  return JSON.parse(cleanText.trim())
-}
+// TOMBSTONE: local parseAIJsonResponse merged onto
+// lib/ai/parse-json-response.ts parseAIJsonResponse (imported above) — §1/§6
+// SAME BODY census round 3, 2026-09-09.
 
 // ============================================
 // SOCIAL MEDIA ACCOUNT MANAGEMENT
 // ============================================
 
-export async function connectSocialAccount(params: {
-  agentId?: string // optional — verified to belong to ctx.brokerageId
-  userId?: string // ignored — derived from session
-  platform: "facebook" | "instagram" | "linkedin" | "twitter" | "tiktok" | "youtube" | "pinterest"
-  accountName: string
-  accessToken: string
-  refreshToken?: string
-  expiresAt?: string
-  accountId?: string
-  brokerageId?: string // ignored — derived from session
-  scope?: "brokerage" | "agent"
-}) {
-  // SECURITY: OAuth tokens are brokerage-bound. The caller cannot pick which
-  // brokerage to attach the token to — we always use the authenticated
-  // session's brokerageId. Failing this open would let any tenant attach
-  // OAuth credentials to any other tenant's brokerage.
-  const auth = await requireBrokerage()
-  if (!auth.ok) return { success: false, error: auth.error }
-
-  // If caller supplied an agentId, verify it belongs to the caller's brokerage.
-  // Otherwise fall back to the session's agentId (if any).
-  let effectiveAgentId: string | null = null
-  if (params.agentId !== undefined) {
-    if (!isValidUUID(params.agentId)) {
-      return { success: false, error: "Invalid agent ID" }
-    }
-    const ok = await verifyAgentInBrokerage(params.agentId, auth.brokerageId)
-    if (!ok) return { success: false, error: "Forbidden" }
-    effectiveAgentId = params.agentId
-  } else {
-    effectiveAgentId = auth.agentId
-  }
-
-  const supabase = await createClient()
-
-  try {
-    const { data: account, error } = await supabase
-      .from("social_media_accounts")
-      .insert({
-        agent_id: effectiveAgentId,
-        user_id: auth.userId, // session-derived, NOT caller-supplied
-        brokerage_id: auth.brokerageId, // session-derived, NOT caller-supplied
-        platform: params.platform,
-        account_name: params.accountName,
-        account_id: params.accountId || null,
-        access_token: params.accessToken,
-        refresh_token: params.refreshToken ?? null,
-        token_expires_at: params.expiresAt ?? null,
-        scope: params.scope || "agent",
-        is_active: true,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .select()
-      .maybeSingle()
-
-    if (error) throw error
-
-    revalidatePath("/dashboard/social")
-    return { success: true, data: account }
-  } catch (error) {
-    console.error("[social-media-automation] Connect social account error:", error)
-    return { success: false, error: "Failed to connect account" }
-  }
-}
+// TOMBSTONE (wave 155, lane 155R29; CLAUDE.md §1 case 2 — the functionality lives elsewhere): connectSocialAccount DELETED here and
+// its twin in app/actions/social-publishing.ts with it. Survivor: app/api/social/oauth/[platform]/route.ts:122 GET — the OAuth connect
+// the product actually runs (app/dashboard/profile/profile-settings-client.tsx:234 and app/dashboard/onboarding/tech-stack/
+// tech-stack-client.tsx:761 send the browser to /api/social/oauth/<platform>), which receives the token FROM THE PLATFORM and upserts
+// social_media_accounts on the live (brokerage_id, platform, account_id) unique. Neither twin had an importer; both accepted a
+// CALLER-PASTED access token and stored it as the tenant's credential (a credential surface with no proof the token was ever the
+// caller's). Nothing merged: a pasted token is the defect, not a capability.
 
 export async function getConnectedAccounts(agentId?: string, _brokerageId?: string) {
   // brokerageId is IGNORED — always derived from session to prevent
@@ -161,9 +126,12 @@ export async function getConnectedAccounts(agentId?: string, _brokerageId?: stri
 
   const supabase = await createClient()
 
+  // Wave 140 (lane 140P): the NON-secret projection — this is a "use server" return value, so the
+  // rows reach a browser; the sealed access/refresh tokens stay in the store (credential-projection.ts).
+  const { publicCredentialSelect, CREDENTIAL_STORES } = await import("@/lib/security/credential-projection")
   let query = supabase
     .from("social_media_accounts")
-    .select("*")
+    .select(publicCredentialSelect("id, brokerage_id, user_id, agent_id, platform, account_id, account_name, scope, token_expires_at, is_active, created_at, updated_at", CREDENTIAL_STORES.social_media_accounts))
     .eq("brokerage_id", auth.brokerageId) // tenant-scoped at the source
     .eq("is_active", true)
     .order("platform")
@@ -187,26 +155,11 @@ export async function getConnectedAccounts(agentId?: string, _brokerageId?: stri
   return data || []
 }
 
-export async function disconnectSocialAccount(accountId: string) {
-  if (!isValidUUID(accountId)) {
-    return { success: false, error: "Invalid account ID" }
-  }
-
-  const supabase = await createClient()
-
-  const { error } = await supabase
-    .from("social_media_accounts")
-    .update({ is_active: false, updated_at: new Date().toISOString() })
-    .eq("id", accountId)
-
-  if (error) {
-    console.error("[social-media-automation] Disconnect account error:", error)
-    return { success: false, error: "Failed to disconnect account" }
-  }
-
-  revalidatePath("/dashboard/social")
-  return { success: true }
-}
+// TOMBSTONE (wave 155, lane 155R29; CLAUDE.md §1 case 1 — a DUPLICATE): disconnectSocialAccount DELETED. Survivor:
+// app/actions/social-publishing.ts:156 disconnectSocialAccount (app/dashboard/profile/profile-settings-client.tsx:13 import, :245
+// call; receipt social.account.disconnect). This twin had no importer, ran on an RLS-only client with no session gate, and reported
+// success on a zero-row update. MERGED onto the survivor first: the uuid check, the tenant pin, and the counted update (a disconnect
+// that matched nothing now refuses instead of reporting success).
 
 // ============================================
 // POST SCHEDULING — KERNEL INTEGRATED
@@ -232,7 +185,8 @@ export async function scheduleSocialPost(params: {
   socialAccountId: string
   listingId?: string
   campaignId?: string
-  /** Pass true when the brokerage requires broker approval — sets status to pending_approval */
+  /** Pass true when the brokerage requires broker approval — the post is
+   *  created as a DRAFT with approval_status "pending" (two separate axes). */
   requiresBrokerApproval?: boolean
 }) {
   // Auth gate — derive brokerage/user from session
@@ -262,7 +216,7 @@ export async function scheduleSocialPost(params: {
   const userId = auth.userId
 
   // Feature access check
-  const canAccess = await canAccessFeature(userId, "social_automation")
+  const canAccess = await mayUseFeature(userId, "social_automation")
 
   if (!canAccess.allowed) {
     return { success: false, error: "Feature not available for your subscription tier" }
@@ -304,15 +258,8 @@ export async function scheduleSocialPost(params: {
         persona: "first_time",
         messageType: "social",
         content: processedContent,
-        contact: {
-          id: "broadcast",
-          first_name: "Broadcast",
-          last_name: "Audience",
-          contact_type: "buyer",
-          tcpa_consent: true,
-          isa_reengage_allowed: false,
-          dnc_status: false,
-        },
+        // Broadcast payload — see lib/video/script-compliance.ts for why the
+        // stub contact is omitted rather than faked.
       })
 
       if (!complianceResult.allowed) {
@@ -327,8 +274,36 @@ export async function scheduleSocialPost(params: {
       // Continue if compliance service is temporarily unavailable
     }
 
-    // Determine initial status: broker-approval required → pending_approval, otherwise → scheduled
-    const initialStatus = params.requiresBrokerApproval ? "pending_approval" : "scheduled"
+    // status and approval_status are two AXES, not one. status is the
+    // publishing lifecycle (draft|scheduled|publishing|published|failed|
+    // cancelled); approval_status is the broker gate (pending|approved|
+    // rejected). This used to set status:"pending_approval", which the CHECK
+    // has never accepted, so EVERY post from a brokerage that requires broker
+    // approval failed to insert. A post awaiting approval is not scheduled —
+    // it is a draft until the broker releases it.
+    //
+    // CONTRACT C5 ON THE REQUEST SIDE (wave 146, lane 146E — owner ruling 9; lane 146H Outside-lane 3): whether the post
+    // needs someone else's approval is decided HERE, server-side, by the one authority answer (approverFor) — never by a
+    // client-supplied flag. The scheduler who is a permitted approver of their own post (the owner agent, or the team
+    // lead / brokerage as oversight) approves it by scheduling it, and that approval is RECORDED (approved_by / _at);
+    // anyone else — or anyone at all where the tenant's recorded policy or a legal requirement makes the brokerage the
+    // approver — files it as a draft awaiting the people approverFor names. `requiresBrokerApproval` can only TIGHTEN
+    // (a person may always ask for review), never loosen. No answer = no post (fail closed). The legacy
+    // `global_settings.additional_settings.social_requires_broker_approval` key is merged onto the survivor
+    // `brokerage_settings.settings.publication_approval.require_brokerage_approval.social_post` (one vocabulary, §6):
+    // it has no writer in code and 0 live rows (read 2026-10-29), so there is nothing to migrate.
+    const { approverFor } = await import("@/lib/kernel/approval-authority")
+    const approver = await approverFor({
+      brokerageId,
+      assetKind: "social_post",
+      scope: effectiveAgentId ? { agentId: effectiveAgentId } : { agentUserId: userId },
+      client: createServiceClient(),
+    })
+    if (!approver.ok) return { success: false, error: `Nobody can approve this post, so it was not created: ${approver.reason}` }
+    const selfApproved = approver.permittedUserIds.includes(userId) && params.requiresBrokerApproval !== true
+    const needsApproval = !selfApproved
+    const initialStatus = needsApproval ? "draft" : "scheduled"
+    const nowIso = new Date().toISOString()
 
     // INSERT social_posts — tenant fields are session-derived
     const { data: post, error: insertError } = await supabase
@@ -346,7 +321,8 @@ export async function scheduleSocialPost(params: {
         social_account_id: params.socialAccountId,
         listing_id: params.listingId || null,
         status: initialStatus,
-        approval_status: params.requiresBrokerApproval ? "pending" : "approved",
+        approval_status: needsApproval ? "pending" : "approved",
+        ...(needsApproval ? {} : { approved_by: userId, approved_at: nowIso }),
         brand_compliance_passed: null,
         ai_generated: false,
         created_at: new Date().toISOString(),
@@ -355,19 +331,16 @@ export async function scheduleSocialPost(params: {
       .select()
       .maybeSingle()
 
-    // If broker approval required, notify broker via notifications table
-    if (params.requiresBrokerApproval && post) {
-      const { data: brokerUsers } = await supabase
-        .from("users")
-        .select("id")
-        .eq("brokerage_id", brokerageId)
-        .in("user_type", ["broker", "admin"])
-        .is("deleted_at", null)
-        .limit(5)
+    // Approval needed → tell the people approverFor NAMES (the owner, or whoever the policy names; the oversight chain
+    // only when the primary is the scheduler themself) — not a hard-coded broker/admin list.
+    if (needsApproval && post) {
+      const primary = approver.primaryUserIds.filter((id) => id !== userId)
+      const askees = (primary.length > 0 ? primary : approver.permittedUserIds.filter((id) => id !== userId)).slice(0, 5)
+      if (askees.length === 0) console.warn("[social-media-automation.ts] post filed for approval but nobody else is permitted to approve it — it waits for the scheduler's own approval")
 
-      for (const broker of brokerUsers ?? []) {
-        await supabase.from("notifications").insert({
-          user_id: broker.id,
+      for (const askee of askees) {
+        const { error: notifyError } = await supabase.from("notifications").insert({
+          user_id: askee,
           brokerage_id: brokerageId,
           type: "social_post_pending_approval",
           title: "Social Post Awaiting Approval",
@@ -377,6 +350,7 @@ export async function scheduleSocialPost(params: {
           is_read: false,
           created_at: new Date().toISOString(),
         })
+        if (notifyError) console.warn("[social-media-automation.ts] notifications insert refused — the bell will not ring:", notifyError.message)
       }
     }
 
@@ -387,7 +361,7 @@ export async function scheduleSocialPost(params: {
 
     // Link to marketing campaign if provided
     if (params.campaignId && isValidUUID(params.campaignId)) {
-      await supabase.from("marketing_assets").insert({
+      await bestEffort(supabase.from("marketing_assets").insert({
         brokerage_id: brokerageId,
         campaign_id: params.campaignId,
         asset_type: "social_post",
@@ -396,7 +370,7 @@ export async function scheduleSocialPost(params: {
         source_id: post.id,
         approval_status: "pending",
         created_at: new Date().toISOString(),
-      })
+      }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
     }
 
     // Increment feature usage
@@ -404,11 +378,14 @@ export async function scheduleSocialPost(params: {
       .catch((err) => console.warn("[social-media-automation] Usage increment failed:", err))
 
     // Fire kernel event
-    await supabase.from("lifecycle_events").insert({
-      entity_type: "social_post",
-      entity_id: post.id,
-      brokerage_id: brokerageId,
-      event_type: KernelEvent.SOCIAL_POST_SCHEDULED,
+    // ONE EMIT (wave 101C): this row and its fan-out were two calls (an auditOnly emit, then a bare
+    // processKernelEvent). One emitKernelEvent now — the reactor gets the lifecycleEventId. Equivalent:
+    // same event/tenant/entity, and the reactor's reader for this event uses no metadata.
+    await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      entityType: "social_post",
+      entityId: post.id,
+      brokerageId: brokerageId,
+      event: KernelEvent.SOCIAL_POST_SCHEDULED,
       metadata: {
         platform: params.platform,
         post_type: params.postType,
@@ -416,14 +393,8 @@ export async function scheduleSocialPost(params: {
         listing_id: params.listingId,
         campaign_id: params.campaignId,
       },
-    })
+    }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
-    await processKernelEvent({
-      event: KernelEvent.SOCIAL_POST_SCHEDULED,
-      brokerageId,
-      entityType: "social_post",
-      entityId: post.id,
-    }).catch((err) => console.error("[social-media-automation] Kernel event failed:", err))
 
     revalidatePath("/dashboard/social")
     return { success: true, data: post }
@@ -437,6 +408,10 @@ export async function scheduleSocialPost(params: {
  * Approve a social post
  */
 export async function approveSocialPost(postId: string, _approverUserId?: string) {
+  // The result family is restored at the export's boundary (lib/kernel/action-ledger.ts resultFamily): this export's refusals come
+  // from two scopes, so its callers could no longer read the fields of its result. The body below is unchanged.
+  const { resultFamily: familyOf } = await import("@/lib/kernel/action-ledger")
+  return familyOf(await (async () => {
   if (!isValidUUID(postId)) {
     return { success: false, error: "Invalid post ID" }
   }
@@ -449,6 +424,14 @@ export async function approveSocialPost(postId: string, _approverUserId?: string
   const ownsPost = await verifySocialPostInBrokerage(postId, auth.brokerageId)
   if (!ownsPost.ok) return { success: false, error: "Forbidden" }
 
+  // CONTRACT C5 (wave 146, lane 146E — owner ruling 9: "the tenants approve their own ads/posts"): the approver is
+  // chosen from the real authority hierarchy — the post's owner, their team lead / the brokerage as oversight, and the
+  // brokerage ONLY where the tenant's policy (or a recorded legal requirement) requires it. Session user + session
+  // tenant only; a refused read refuses the approval (fail closed).
+  const { requirePublishApprover } = await import("@/lib/kernel/approval-authority")
+  const authority = await requirePublishApprover({ brokerageId: auth.brokerageId, assetKind: "social_post", assetTable: "social_posts", assetId: postId, approverUserId: auth.userId, client: createServiceClient() })
+  if (!authority.ok) return { success: false, error: authority.reason }
+
   const supabase = await createClient()
 
   try {
@@ -456,13 +439,18 @@ export async function approveSocialPost(postId: string, _approverUserId?: string
     // publishable, or the loop dead-ends: the publisher only picks up
     // status='scheduled' AND scheduled_for <= now, so approving without
     // scheduling silently strands the post forever.
-    const { data: current } = await supabase
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
+    const { data: current, error: currentError } = await supabase
       .from("social_posts")
-      .select("status, scheduled_for")
+      .select("status, scheduled_for, user_id")
       .eq("id", postId)
       .eq("brokerage_id", auth.brokerageId)
       .maybeSingle()
-    const needsScheduling = current?.status === "draft" || current?.status === "pending_approval"
+    if (currentError) throw currentError
+    // "pending_approval" was never a valid status, so this arm could never
+    // match. Approval-pending posts are drafts; the gate is approval_status.
+    const needsScheduling = current?.status === "draft"
 
     const { data: post, error } = await supabase
       .from("social_posts")
@@ -483,12 +471,47 @@ export async function approveSocialPost(postId: string, _approverUserId?: string
 
     if (error) throw error
 
+    // TELL THE AUTHOR — ported 2026-09-03 from the deleted duplicate
+    // app/actions/social-publishing.ts handleContentApproved (orphan doctrine
+    // §1.1: the survivor gets what the duplicate had first). The recipient's
+    // tenant is resolved from the RECIPIENT's users row, not copied from the
+    // post: badge-counts computes the brokerage from the session user's row, so
+    // a row stamped with any other value is filtered out as surely as an
+    // unstamped one. Best-effort — the approval already landed.
+    const recipientUserId = (current as { user_id?: string | null } | null)?.user_id ?? null
+    if (recipientUserId) {
+      const svc = createServiceClient()
+      const approvalTenant = await resolveRecipientBrokerageId(svc, recipientUserId)
+      if (!approvalTenant.ok) {
+        console.error(`[social-media-automation] approveSocialPost: ${approvalTenant.reason} — approval notification NOT written`)
+      } else if (!approvalTenant.brokerageId) {
+        console.error(`[social-media-automation] approveSocialPost: post ${postId}'s author has no brokerage — approval notification NOT written rather than written where the bell cannot count it`)
+      } else {
+        const { error: approvalNotifyError } = await svc.from("notifications").insert({
+          user_id: recipientUserId,
+          brokerage_id: approvalTenant.brokerageId,
+          type: "content_approved",
+          title: "Content Approved",
+          body: "Your social media content has been approved and is ready to publish.",
+          entity_type: "social_post",
+          entity_id: postId,
+          created_at: new Date().toISOString(),
+        })
+        if (approvalNotifyError) {
+          console.error("[social-media-automation] content_approved notification insert refused:", approvalNotifyError.message)
+        }
+      }
+    }
+
     revalidatePath("/dashboard/social")
     return { success: true, data: post }
+  }
+  return await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "social.post.approve", actor: { type: "user", userId: auth.userId, agentId: auth.agentId }, subject: { type: "social_post", id: postId }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED" }, ledgered).then(async (r) => (await import("@/lib/kernel/action-ledger")).resultFamily(r as Awaited<ReturnType<typeof ledgered>>))
   } catch (error: any) {
     console.error("[social-media-automation] Approve post error:", error)
     return { success: false, error: error.message || "Failed to approve post" }
   }
+  })())
 }
 
 /**
@@ -505,6 +528,8 @@ export async function rejectSocialPost(postId: string, _rejectorUserId?: string,
 
   const ownsPost = await verifySocialPostInBrokerage(postId, auth.brokerageId)
   if (!ownsPost.ok) return { success: false, error: "Forbidden" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
 
   const supabase = await createClient()
 
@@ -530,22 +555,73 @@ export async function rejectSocialPost(postId: string, _rejectorUserId?: string,
     console.error("[social-media-automation] Reject post error:", error)
     return { success: false, error: error.message || "Failed to reject post" }
   }
+  }
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "social.post.reject", actor: { type: "user", userId: auth.userId, agentId: auth.agentId }, subject: { type: "social_post", id: postId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>)
 }
 
+// ============================================
+// QUEUE / DELIVERY READS
+// ============================================
+//
+// LIVE VOCABULARIES (verified against project hrvaqgvukzxfskkcrwbt).
+// These are the CHECK constraints on social_posts. A filter value outside them
+// can never match a row, so a caller passing one used to get a silent empty
+// list that reads as "you have no posts". They are rejected explicitly instead.
+//   social_posts_status_check          → draft|scheduled|publishing|published|failed|cancelled
+//   social_posts_approval_status_check → pending|approved|rejected
+//   social_posts_platform_check        → facebook|instagram|linkedin|twitter|tiktok|
+//                                        youtube|pinterest|google_business|all
+// NOTE there is NO 'pending_approval' STATUS. Approval lives in its own column.
+const SOCIAL_POST_STATUSES = [
+  "draft", "scheduled", "publishing", "published", "failed", "cancelled",
+] as const
+const SOCIAL_APPROVAL_STATUSES = ["pending", "approved", "rejected"] as const
+const SOCIAL_PLATFORMS = [
+  "facebook", "instagram", "linkedin", "twitter", "tiktok",
+  "youtube", "pinterest", "google_business", "all",
+] as const
+
 /**
- * Get social queue with filters
+ * Get social queue with filters.
+ *
+ * The brokerage is resolved FROM THE SESSION. It used to be the first
+ * positional argument, which made this a "use server" action that would read
+ * whatever tenant the browser named.
+ *
+ * Returns a verdict, not a bare array: `[]` is indistinguishable from an RLS
+ * denial, and rendering a refused read as "you have nothing scheduled" is the
+ * failure mode this rail is most prone to.
  */
-export async function getSocialQueue(
-  brokerageId: string,
-  filters?: {
-    platform?: string
-    status?: string
-    agentId?: string
-    approvalStatus?: string
+export async function getSocialQueue(filters?: {
+  platform?: string
+  status?: string
+  agentId?: string
+  approvalStatus?: string
+  limit?: number
+}): Promise<
+  | { ok: true; posts: any[] }
+  | { ok: false; error: string }
+> {
+  const ctx = await requireBrokerage()
+  if (!ctx.ok) return { ok: false, error: ctx.error }
+
+  if (filters?.platform && !(SOCIAL_PLATFORMS as readonly string[]).includes(filters.platform)) {
+    return { ok: false, error: `Unsupported platform filter: ${filters.platform}` }
   }
-) {
-  if (!isValidUUID(brokerageId)) {
-    return []
+  if (filters?.status && !(SOCIAL_POST_STATUSES as readonly string[]).includes(filters.status)) {
+    return { ok: false, error: `Unsupported status filter: ${filters.status}` }
+  }
+  if (
+    filters?.approvalStatus &&
+    !(SOCIAL_APPROVAL_STATUSES as readonly string[]).includes(filters.approvalStatus)
+  ) {
+    return { ok: false, error: `Unsupported approval filter: ${filters.approvalStatus}` }
+  }
+  if (filters?.agentId) {
+    if (!isValidUUID(filters.agentId)) return { ok: false, error: "Invalid agent id" }
+    if (!(await verifyAgentInBrokerage(filters.agentId, ctx.brokerageId))) {
+      return { ok: false, error: "That agent is not in this brokerage" }
+    }
   }
 
   const supabase = await createClient()
@@ -559,39 +635,41 @@ export async function getSocialQueue(
       social_engagement_tracking (*)
     `
     )
-    .eq("brokerage_id", brokerageId)
+    .eq("brokerage_id", ctx.brokerageId)
     .order("scheduled_for", { ascending: true })
+    .limit(Math.min(Math.max(filters?.limit ?? 200, 1), 500))
 
-  if (filters?.platform) {
-    query = query.eq("platform", filters.platform)
-  }
-  if (filters?.status) {
-    query = query.eq("status", filters.status)
-  }
-  if (filters?.agentId && isValidUUID(filters.agentId)) {
-    query = query.eq("agent_id", filters.agentId)
-  }
-  if (filters?.approvalStatus) {
-    query = query.eq("approval_status", filters.approvalStatus)
-  }
+  if (filters?.platform) query = query.eq("platform", filters.platform)
+  if (filters?.status) query = query.eq("status", filters.status)
+  if (filters?.agentId) query = query.eq("agent_id", filters.agentId)
+  if (filters?.approvalStatus) query = query.eq("approval_status", filters.approvalStatus)
 
   const { data, error } = await query
 
   if (error) {
     console.error("[social-media-automation] Get social queue error:", error)
-    return []
+    return { ok: false, error: error.message }
   }
 
-  return data || []
+  return { ok: true, posts: data ?? [] }
 }
 
 /**
- * Get engagement data for a post
+ * Get the engagement measurement history for one post.
+ * The post is confirmed to belong to the caller's brokerage first — a bare
+ * postId over a user client leans on RLS, and social_engagement_tracking rows
+ * are only reachable through their post.
  */
-export async function getSocialEngagement(postId: string) {
-  if (!isValidUUID(postId)) {
-    return []
-  }
+export async function getSocialEngagement(postId: string): Promise<
+  | { ok: true; measurements: any[] }
+  | { ok: false; error: string }
+> {
+  const ctx = await requireBrokerage()
+  if (!ctx.ok) return { ok: false, error: ctx.error }
+  if (!isValidUUID(postId)) return { ok: false, error: "Invalid post id" }
+
+  const owned = await verifySocialPostInBrokerage(postId, ctx.brokerageId)
+  if (!owned.ok) return { ok: false, error: "Post not found" }
 
   const supabase = await createClient()
 
@@ -599,23 +677,34 @@ export async function getSocialEngagement(postId: string) {
     .from("social_engagement_tracking")
     .select("*")
     .eq("social_post_id", postId)
+    .eq("brokerage_id", ctx.brokerageId)
     .order("captured_at", { ascending: false })
 
   if (error) {
     console.error("[social-media-automation] Get engagement error:", error)
-    return []
+    return { ok: false, error: error.message }
   }
 
-  return data || []
+  return { ok: true, measurements: data ?? [] }
 }
 
 /**
- * Get publish logs for a post
+ * Get the full publish-attempt log for one post.
+ *
+ * The dashboard page preloads logs for FAILED posts only; this is the
+ * on-demand per-post history (every queue/publish/fail attempt, provider
+ * response and error), for any post in the caller's brokerage.
  */
-export async function getPublishLog(postId: string) {
-  if (!isValidUUID(postId)) {
-    return []
-  }
+export async function getPublishLog(postId: string): Promise<
+  | { ok: true; attempts: any[] }
+  | { ok: false; error: string }
+> {
+  const ctx = await requireBrokerage()
+  if (!ctx.ok) return { ok: false, error: ctx.error }
+  if (!isValidUUID(postId)) return { ok: false, error: "Invalid post id" }
+
+  const owned = await verifySocialPostInBrokerage(postId, ctx.brokerageId)
+  if (!owned.ok) return { ok: false, error: "Post not found" }
 
   const supabase = await createClient()
 
@@ -623,14 +712,15 @@ export async function getPublishLog(postId: string) {
     .from("social_publish_log")
     .select("*")
     .eq("social_post_id", postId)
+    .eq("brokerage_id", ctx.brokerageId)
     .order("created_at", { ascending: false })
 
   if (error) {
     console.error("[social-media-automation] Get publish log error:", error)
-    return []
+    return { ok: false, error: error.message }
   }
 
-  return data || []
+  return { ok: true, attempts: data ?? [] }
 }
 
 // ============================================
@@ -642,6 +732,13 @@ export async function createListingPosts(params: {
   agentId: string
   brokerageId: string
   platforms: string[]
+  /**
+   * Wave 142 (lane 142H): the Coming-Soon card shows the AI post as an editable textarea ("edit before
+   * publishing") and then called this action WITHOUT the edit — every platform got a fresh generation and
+   * the agent's review went nowhere. When the reviewed copy is passed it is what ships (no second LLM
+   * call); scheduleSocialPost still runs the outbound compliance gate on it, exactly as on generated text.
+   */
+  contentOverride?: string
 }) {
   if (!isValidUUID(params.agentId) || !isValidUUID(params.propertyId) || !isValidUUID(params.brokerageId)) {
     return { success: false, error: "Invalid IDs" }
@@ -653,7 +750,7 @@ export async function createListingPosts(params: {
     // Fetch listing + first photo from listing_media for media_urls
     const { data: property } = await supabase
       .from("listings")
-      .select("address, city, list_price, bedrooms, bathrooms, sqft")
+      .select("id, brokerage_id, address, city, state, zip, status, lifecycle_stage, list_price, bedrooms, bathrooms, sqft")
       .eq("id", params.propertyId)
       .maybeSingle()
 
@@ -669,6 +766,20 @@ export async function createListingPosts(params: {
     if (!property) {
       return { success: false, error: "Property not found" }
     }
+
+    // OWNER RULING 1 (wave 145, lane 145Z — lane 145B Outside-lane 3): a Coming Soon listing's public posts print only
+    // the line the address rule allows. A person's reviewed copy is checked in REFUSE mode (they are told what to
+    // change); generated copy is prompted with the public line and scrubbed in REDACT mode. Fail closed inside the rule.
+    const listingRow = property as { id: string; brokerage_id: string; address: string | null; city: string | null; state: string | null; zip: string | null; status?: string | null; lifecycle_stage?: string | null }
+    const { isPublicComingSoonListing, resolveComingSoonCreativeAddress, guardComingSoonCreativeText } = await import("@/lib/marketing/listing-public-address")
+    const comingSoon = isPublicComingSoonListing(listingRow)
+      ? await resolveComingSoonCreativeAddress({ policyClient: createServiceClient() as any, termsClient: createServiceClient() as any, listing: listingRow })
+      : null
+    if (comingSoon && params.contentOverride?.trim()) {
+      const g = guardComingSoonCreativeText(params.contentOverride, listingRow, comingSoon, "refuse")
+      if (!g.ok) return { success: false, error: g.findings.join(" ") }
+    }
+    const promptProperty = comingSoon ? { ...property, address: comingSoon.addressLine } : property
 
     const results = []
 
@@ -687,12 +798,16 @@ export async function createListingPosts(params: {
         continue
       }
 
-      // Generate platform-optimized content
-      const content = await generatePlatformContent({
-        platform,
-        property,
-        agentId: params.agentId,
-      })
+      // The agent-reviewed copy wins; otherwise generate platform-optimized content
+      const reviewed = params.contentOverride?.trim()
+      const content: { text: string; hashtags: string[] } = reviewed
+        ? { text: reviewed, hashtags: [] }
+        : await generatePlatformContent({
+            platform,
+            property: promptProperty,
+            agentId: params.agentId,
+          })
+      if (comingSoon && !reviewed) content.text = guardComingSoonCreativeText(content.text, listingRow, comingSoon, "redact").text
 
       // Schedule post for optimal time
       const optimalTime = getOptimalPostingTime(platform)
@@ -800,46 +915,208 @@ function getOptimalPostingTime(platform: string): string {
 // PERFORMANCE ANALYTICS
 // ============================================
 
-export async function trackPostPerformance(postId: string, brokerageId: string, metrics: any) {
-  if (!isValidUUID(postId) || !isValidUUID(brokerageId)) {
-    return { success: false, error: "Invalid IDs" }
-  }
+/** A measured engagement snapshot. Every field is optional: an unsupplied
+ *  metric is LEFT ALONE, never written as 0. Zeroing an unknown is how a
+ *  platform that does not expose "saves" ends up asserting there were none. */
+export interface PostEngagementMetrics {
+  impressions?: number | null
+  likes?: number | null
+  comments?: number | null
+  shares?: number | null
+  saves?: number | null
+  clicks?: number | null
+  leads?: number | null
+}
+
+const METRIC_COLUMNS: Array<[keyof PostEngagementMetrics, string]> = [
+  ["impressions", "impressions_count"],
+  ["likes", "likes_count"],
+  ["comments", "comments_count"],
+  ["shares", "shares_count"],
+  ["saves", "saves_count"],
+  ["clicks", "clicks_count"],
+  ["leads", "leads_generated"],
+]
+
+/**
+ * Record a measured engagement snapshot for one post.
+ *
+ * THREE THINGS WERE WRONG HERE AND ARE FIXED:
+ *  1. brokerageId came from the caller. social_engagement_tracking.brokerage_id
+ *     is NOT NULL and its RLS policy is a strict equality, but a "use server"
+ *     action must not take the tenant from the browser at all. Session now.
+ *  2. `.upsert(...)` with no onConflict. social_engagement_tracking's only
+ *     unique constraint is its PRIMARY KEY on `id` (verified live) and `id` is
+ *     never supplied, so every "upsert" INSERTED A NEW ROW. The dashboard reads
+ *     social_engagement_tracking[0] — an arbitrary one of those duplicates.
+ *     There is one current-state row per (post, platform) now, kept by an
+ *     explicit read-then-update-or-insert. No DDL required.
+ *  3. The write result was discarded and `{ success: true }` returned
+ *     unconditionally, so an RLS refusal reported as a save.
+ */
+export async function trackPostPerformance(
+  postId: string,
+  metrics: PostEngagementMetrics
+): Promise<{ success: boolean; error?: string; measurement?: any }> {
+  const ctx = await requireBrokerage()
+  if (!ctx.ok) return { success: false, error: ctx.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof trackPostPerformance>>>({ brokerageId: ctx.brokerageId, action: "social.post_performance.record", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId }, subject: { type: "social_post", id: postId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
+  if (!isValidUUID(postId)) return { success: false, error: "Invalid post id" }
 
   const supabase = await createClient()
 
-  try {
-    // Get post to determine platform
-    const { data: post } = await supabase
-      .from("social_posts")
-      .select("platform")
-      .eq("id", postId)
-      .maybeSingle()
+  // Resolve platform from the post, and confirm the post is this tenant's.
+  const { data: post, error: postError } = await supabase
+    .from("social_posts")
+    .select("id, platform, brokerage_id")
+    .eq("id", postId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .maybeSingle()
 
-    await supabase.from("social_engagement_tracking").upsert({
-      social_post_id: postId,
-      brokerage_id: brokerageId,
-      platform: post?.platform || "unknown",
-      impressions_count: metrics.impressions || 0,
-      likes_count: metrics.likes || 0,
-      comments_count: metrics.comments || 0,
-      shares_count: metrics.shares || 0,
-      saves_count: metrics.saves || 0,
-      clicks_count: metrics.clicks || 0,
-      leads_generated: metrics.leads || 0,
-      captured_at: new Date().toISOString(),
-    })
-
-    return { success: true }
-  } catch (error) {
-    console.error("[social-media-automation] Track performance error:", error)
-    return { success: false, error: "Failed to track performance" }
+  if (postError) {
+    console.error("[social-media-automation] Track performance post read error:", postError)
+    return { success: false, error: postError.message }
   }
+  // platform is NOT NULL on both tables; there is no honest "unknown" fallback.
+  if (!post?.platform) return { success: false, error: "Post not found" }
+
+  const patch: Record<string, unknown> = { captured_at: new Date().toISOString() }
+  for (const [key, column] of METRIC_COLUMNS) {
+    const value = metrics[key]
+    if (value === undefined || value === null) continue
+    const n = Number(value)
+    if (!Number.isFinite(n) || n < 0) {
+      return { success: false, error: `Invalid value for ${String(key)}` }
+    }
+    patch[column] = Math.round(n)
+  }
+  if (Object.keys(patch).length === 1) {
+    return { success: false, error: "No metrics supplied" }
+  }
+
+  const { data: existing, error: existingError } = await supabase
+    .from("social_engagement_tracking")
+    .select("id")
+    .eq("social_post_id", postId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .eq("platform", post.platform)
+    .order("captured_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (existingError) {
+    console.error("[social-media-automation] Track performance read error:", existingError)
+    return { success: false, error: existingError.message }
+  }
+
+  const written = existing
+    ? await supabase
+        .from("social_engagement_tracking")
+        .update(patch)
+        .eq("id", (existing as { id: string }).id)
+        .eq("brokerage_id", ctx.brokerageId)
+        .select()
+        .maybeSingle()
+    : await supabase
+        .from("social_engagement_tracking")
+        .insert({
+          social_post_id: postId,
+          brokerage_id: ctx.brokerageId,
+          platform: post.platform,
+          ...patch,
+        })
+        .select()
+        .maybeSingle()
+
+  if (written.error) {
+    console.error("[social-media-automation] Track performance write error:", written.error)
+    return { success: false, error: written.error.message }
+  }
+  // A filtered update that matched nothing is not an error to PostgREST.
+  if (!written.data) return { success: false, error: "Measurement was not saved" }
+
+  revalidatePath("/dashboard/social")
+  return { success: true, measurement: written.data }
+  })
 }
 
-export async function getSocialMediaAnalytics(brokerageId: string, dateRange?: { start: string; end: string }) {
-  if (!isValidUUID(brokerageId)) {
-    return null
+/**
+ * Pull the latest REAL platform measurement for one post into the engagement
+ * table the social dashboard renders.
+ *
+ * PROVENANCE: the numbers come from social_media_analytics, which is written
+ * ONLY by lib/social/analytics-sync.ts:syncSocialAnalytics — the nightly cron
+ * (/api/cron/social-analytics-sync, 07:45 UTC) that calls each platform's own
+ * API with the tenant's stored token. Nothing here contacts a platform, invents
+ * a number, or substitutes a zero for a metric a platform did not report.
+ *
+ * Why this exists: social_engagement_tracking is what the dashboard post cards
+ * read, and its only other writer is the publish cron's initial all-zero row —
+ * so those cards showed a permanent 0/0/0/0. This projects the measured row
+ * across. `engagements` has no column of its own here and is returned for
+ * display rather than being split into fabricated likes/comments/shares.
+ */
+export async function refreshPostEngagementFromSync(postId: string): Promise<{
+  success: boolean
+  error?: string
+  reason?: "no_measurement"
+  measuredAt?: string
+  engagements?: number | null
+  measurement?: any
+}> {
+  const ctx = await requireBrokerage()
+  if (!ctx.ok) return { success: false, error: ctx.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof refreshPostEngagementFromSync>>>({ brokerageId: ctx.brokerageId, action: "social.post_performance.refresh", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId }, subject: { type: "social_post", id: postId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
+  if (!isValidUUID(postId)) return { success: false, error: "Invalid post id" }
+
+  const supabase = await createClient()
+
+  const { data: synced, error: syncedError } = await supabase
+    .from("social_media_analytics")
+    .select("impressions, engagements, clicks, measured_at")
+    .eq("post_id", postId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .order("measured_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (syncedError) {
+    console.error("[social-media-automation] Synced metric read error:", syncedError)
+    return { success: false, error: syncedError.message }
   }
+  if (!synced) {
+    return {
+      success: false,
+      reason: "no_measurement",
+      error:
+        "No platform measurement recorded for this post yet. The analytics sync runs nightly and only covers posts published with a real platform post id.",
+    }
+  }
+
+  const result = await trackPostPerformance(postId, {
+    impressions: synced.impressions,
+    clicks: synced.clicks,
+  })
+  if (!result.success) return { success: false, error: result.error }
+
+  return {
+    success: true,
+    measuredAt: synced.measured_at as string,
+    engagements: (synced.engagements as number | null) ?? null,
+    measurement: result.measurement,
+  }
+  })
+}
+
+export async function getSocialMediaAnalytics(
+  _brokerageId?: string, // ignored — a "use server" action must not take its tenant from the browser
+  dateRange?: { start: string; end: string }
+) {
+  const ctx = await requireBrokerage()
+  if (!ctx.ok) return null
+  const brokerageId = ctx.brokerageId
 
   const supabase = await createClient()
 
@@ -849,6 +1126,13 @@ export async function getSocialMediaAnalytics(brokerageId: string, dateRange?: {
       .select("*, engagement:social_engagement_tracking(*)")
       .eq("brokerage_id", brokerageId)
       .eq("status", "published")
+
+    // Per-user scoping merged in from the retired social-publishing reader: an
+    // ordinary agent sees their own posts' performance, leadership sees the
+    // brokerage's.
+    if (!seesAllBrokeragePosts(ctx.userType)) {
+      query = query.eq("user_id", ctx.userId)
+    }
 
     if (dateRange?.start) {
       query = query.gte("published_at", dateRange.start)
@@ -960,9 +1244,15 @@ export async function getSocialMediaAnalytics(brokerageId: string, dateRange?: {
  * Increments an error_count column (added via migration) for circuit-breaker tracking.
  */
 export async function retryFailedPost(postId: string, userId: string) {
-  if (!isValidUUID(postId) || !isValidUUID(userId)) {
+  if (!isValidUUID(postId)) {
     return { success: false, error: "Invalid IDs" }
   }
+  // WAVE 155 (lane 155S3): the sibling gate (requireBrokerage, as updateSocialPost uses) FIRST. This public endpoint had none and
+  // stamped the BODY `userId` as the actor of the retry event; the actor and tenant are now the session's, and a body id naming
+  // another user is refused.
+  const auth = await requireBrokerage()
+  if (!auth.ok) return { success: false, error: auth.error }
+  if (userId && userId !== auth.userId) return { success: false, error: "Forbidden" }
 
   const supabase = await createClient()
 
@@ -976,6 +1266,7 @@ export async function retryFailedPost(postId: string, userId: string) {
         updated_at: new Date().toISOString(),
       })
       .eq("id", postId)
+      .eq("brokerage_id", auth.brokerageId)
       .eq("status", "failed") // only retry truly failed posts
       .select()
       .maybeSingle()
@@ -984,23 +1275,23 @@ export async function retryFailedPost(postId: string, userId: string) {
     if (!post) return { success: false, error: "Post not found or not in failed state" }
 
     // Log the retry attempt
-    await supabase.from("social_publish_log").insert({
+    await bestEffort(supabase.from("social_publish_log").insert({
       social_post_id: postId,
       brokerage_id: post.brokerage_id,
       platform: post.platform,
       account_id: post.social_account_id,
       publish_status: "queued",
       created_at: new Date().toISOString(),
-    })
+    }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
-    await supabase.from("lifecycle_events").insert({
-      entity_type: "social_post",
-      entity_id: postId,
-      brokerage_id: post.brokerage_id,
-      event_type: "social_post_retry_queued",
-      actor_user_id: userId,
+    await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      entityType: "social_post",
+      entityId: postId,
+      brokerageId: post.brokerage_id,
+      event: "social_post_retry_queued",
+      actorUserId: auth.userId,
       metadata: { retried_at: new Date().toISOString() },
-    })
+    }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
     revalidatePath("/dashboard/social")
     return { success: true, data: post }
@@ -1015,35 +1306,44 @@ export async function retryFailedPost(postId: string, userId: string) {
  * Does NOT hard-delete the row so publish logs are preserved.
  */
 export async function deleteSocialPost(postId: string, userId: string) {
-  if (!isValidUUID(postId) || !isValidUUID(userId)) {
+  if (!isValidUUID(postId)) {
     return { success: false, error: "Invalid IDs" }
   }
+  // WAVE 155 (lane 155S3): sibling gate first — see retryFailedPost.
+  const auth = await requireBrokerage()
+  if (!auth.ok) return { success: false, error: auth.error }
+  if (userId && userId !== auth.userId) return { success: false, error: "Forbidden" }
 
   const supabase = await createClient()
 
   try {
-    const { data: post, error } = await supabase
+    // MERGED (wave 155, lane 155R29) from the retired app/actions/social-publishing.ts deleteSocialPost twin: an ordinary agent
+    // cancels only their OWN post; leadership (seesAllBrokeragePosts) any post in the tenant. Same rule the analytics reader keeps.
+    let cancelQuery = supabase
       .from("social_posts")
       .update({
         status: "cancelled",
         updated_at: new Date().toISOString(),
       })
       .eq("id", postId)
+      .eq("brokerage_id", auth.brokerageId)
       .in("status", ["draft", "scheduled", "failed", "cancelled"])
+    if (!seesAllBrokeragePosts(auth.userType)) cancelQuery = cancelQuery.eq("user_id", auth.userId)
+    const { data: post, error } = await cancelQuery
       .select("id, brokerage_id, platform, status")
       .maybeSingle()
 
     if (error) throw error
     if (!post) return { success: false, error: "Post not found or already published — cannot delete" }
 
-    await supabase.from("lifecycle_events").insert({
-      entity_type: "social_post",
-      entity_id: postId,
-      brokerage_id: post.brokerage_id,
-      event_type: "social_post_deleted",
-      actor_user_id: userId,
+    await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      entityType: "social_post",
+      entityId: postId,
+      brokerageId: post.brokerage_id,
+      event: "social_post_deleted",
+      actorUserId: auth.userId,
       metadata: { deleted_at: new Date().toISOString() },
-    })
+    }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
     revalidatePath("/dashboard/social")
     return { success: true }
@@ -1071,7 +1371,11 @@ export async function updateSocialPost(params: {
     return { success: false, error: "Invalid IDs" }
   }
 
+  const auth = await requireBrokerage()
+  if (!auth.ok) return { success: false, error: auth.error }
   const supabase = await createClient()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
 
   try {
     const updatePayload: Record<string, any> = { updated_at: new Date().toISOString() }
@@ -1082,11 +1386,18 @@ export async function updateSocialPost(params: {
     if (params.postType   !== undefined) updatePayload.post_type    = params.postType
     if (params.scheduledFor !== undefined) updatePayload.scheduled_for = params.scheduledFor
 
-    const { data: post, error } = await supabase
+    // MERGED (wave 155, lane 155R29) from the retired app/actions/social-publishing.ts updateSocialPost twin: the edit is pinned to
+    // the SESSION tenant (it rode RLS alone), and an ordinary agent edits only their OWN post (leadership: any in the tenant). The
+    // twin's caller-supplied `status` was NOT merged — a post's status moves only through approveSocialPost / rejectSocialPost
+    // (the approver roster) and the publish cron, never through an author's edit.
+    let editQuery = supabase
       .from("social_posts")
       .update(updatePayload)
       .eq("id", params.postId)
+      .eq("brokerage_id", auth.brokerageId)
       .in("status", ["draft", "scheduled"]) // only editable statuses
+    if (!seesAllBrokeragePosts(auth.userType)) editQuery = editQuery.eq("user_id", auth.userId)
+    const { data: post, error } = await editQuery
       .select()
       .maybeSingle()
 
@@ -1099,6 +1410,8 @@ export async function updateSocialPost(params: {
     console.error("[social-media-automation] Update post error:", error)
     return { success: false, error: error.message || "Failed to update post" }
   }
+  }
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "social.post.update", actor: { type: "user", userId: auth.userId, agentId: auth.agentId }, subject: { type: "social_post", id: params.postId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { rescheduled: params.scheduledFor !== undefined } }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>)
 }
 
 /**

@@ -1,0 +1,63 @@
+-- supabase/migrations/m647-raw-scraped-leads-scrape-category.sql
+--
+-- ── APPLIED LIVE 2026-09-17 on hrvaqgvukzxfskkcrwbt via mcp apply_migration (m647_raw_scraped_leads_scrape_category) ──
+--
+-- Lane 70C (wave 70, census + coverage audit). Discovered while reading
+-- lib/kernel/scraping.ts::ingestRawSourceBatch for the Part 2 coverage audit.
+--
+-- TWO DIFFERENT IDEAS SHARE ONE COLUMN NAME. raw_scraped_leads.source_family carries a
+-- live CHECK (confirmed against $S/check-constraints.json, a real
+-- public.live_check_constraints_json() dump, and mirrored in
+-- scripts/check-vocabularies.ts:1283 — generated 2026-09-16):
+--
+--   raw_scraped_leads_source_family_check:
+--     CHECK ((source_family = ANY (ARRAY['raw'::text, 'lead'::text, 'contact_direct'::text])))
+--
+-- That is the LINEAGE vocabulary app/actions/source-analytics.ts's `SourceFamily` type
+-- (= "raw" | "lead" | "contact_direct") groups contacts/leads/raw_scraped_leads/transactions
+-- by, for the source-ROI funnel narrative ("Raw records: N", "Converted to contact: X%").
+--
+-- But lib/kernel/scraping.ts::ingestRawSourceBatch (the ONLY governed writer of
+-- raw_scraped_leads — its own header: "Raw records enter via ingestRawSourceBatch() ONLY")
+-- writes a COMPLETELY DIFFERENT vocabulary into that SAME column: the SCRAPE CATEGORY —
+-- 'property_search' | 'motivated_seller' | 'social_intent' | 'distressed_signal' |
+-- 'investor_demand' (app/api/cron/lead-scraping/route.ts, lib/kernel/listings-batchdata-feed.ts,
+-- app/actions/lead-intelligence.ts, app/api/webhooks/batchdata-smart-search/route.ts — every real
+-- production caller of ingestRawSourceBatch, confirmed by grep).
+--
+-- NONE of those five scrape-category strings is a value the live CHECK admits. Every raw lead
+-- the scraping cron has ever tried to insert through the governed path has been REFUSED by
+-- Postgres — and the refusal was invisible: ingestRawSourceBatch's insert-error handling
+-- (scraping.ts ~639-646) buckets ANY insert error, CHECK violations included, into
+-- `result.skipped_duplicate++` with no distinct log line, so the entire scraping → raw_scraped_leads
+-- → promotion pipeline has been silently producing ZERO real rows through this path for every
+-- wave that shipped a scraping capability, and reading as "duplicates" — a false all-clear
+-- (CLAUDE.md §2: "a broken regex and a clean tree both report zero").
+--
+-- WHY THIS WAS NEVER CAUGHT. scripts/check-vocabulary-guard.ts only flags LITERAL comparisons in
+-- the SAME file as a `.from().insert()`/`.eq()` call ("ignores an interpolation (only literals are
+-- checkable)") — the cron's `sourceFamily: "property_search"` literal is several function calls
+-- and one file away from the actual `.insert({source_family: params.sourceFamily})` write site in
+-- scraping.ts, which is a variable read, invisible to that guard by design. The one script that
+-- DOES insert into the LIVE raw_scraped_leads table and prove promotion end-to-end
+-- (scripts/production-smoke-drill.ts step 3) bypasses ingestRawSourceBatch entirely (a hand-rolled
+-- insert that never sets source_family at all, so it never hits the CHECK) — so the one live-DB
+-- proof that exists never exercised the governed writer's actual insert shape.
+--
+-- THE FIX. Give the scrape-category concept its OWN column (`scrape_category`, free text — its
+-- vocabulary is already governed IN CODE by lib/lead-pipeline/source-intent-map.ts's SourceKey
+-- union + GATE_TOKEN, the same pattern batchdata_smart_search_subscriptions.pool_key and other
+-- code-governed free-text columns already use in this repo, no CHECK needed here). The code half
+-- (this same lane) repoints ingestRawSourceBatch to write the CORRECT lineage constant 'raw' into
+-- source_family (satisfying the live CHECK for the first time, and giving source-analytics.ts's
+-- funnel grouping real rows to count) and the scrape-category value into this new column;
+-- lib/lead-intelligence/person-timeline.ts's per-lead scrape-source event now reads
+-- scrape_category for the human-facing "how was this person sourced" detail.
+--
+-- Safe to apply: additive column, no backfill needed (the table has structurally held zero rows
+-- from the governed writer, per the CHECK-violation analysis above — nothing to migrate forward).
+alter table raw_scraped_leads
+  add column if not exists scrape_category text;
+
+comment on column raw_scraped_leads.scrape_category is
+  'Scrape-category classification the ingest pipeline assigns (property_search | motivated_seller | social_intent | distressed_signal | investor_demand | site_behavior | ...), vocabulary governed by lib/lead-pipeline/source-intent-map.ts SourceKey — NOT the source_family lineage tag (raw/lead/contact_direct), which that column''s own CHECK enforces. m647.';

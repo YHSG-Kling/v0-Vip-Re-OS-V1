@@ -1,11 +1,16 @@
 "use server"
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
-import { generateObject } from "@/lib/ai/generate"
+import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
+import { bookedGenerateObject } from "@/lib/ai/generate"
 import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { revalidatePath } from "next/cache"
+
+// Wave 98 (98C): every model call in this file is BOOKED to the SESSION tenant (lib/ai/generate.ts::bookedGenerateObject).
+const generateObject = bookedGenerateObject("ai_closing_workflow")
 
 /**
  * AI Closing Workflow
@@ -31,23 +36,84 @@ export async function aiGenerateClosingChecklist(params: {
     return { success: false, error: "Invalid IDs" }
   }
 
-  const supabase = await createClient()
+  // WAVE 155 (lane 155S2): the sibling gate (aiTrackClosingMilestones below) FIRST — this export spent on a model and wrote
+  // checklist rows stamped with the BODY's brokerageId, with no session at all. The tenant is the session's; a body
+  // brokerageId naming another tenant is refused (decideClaimedTenant inside resolveWriteContextForTenant); the deal must be
+  // the session tenant's BEFORE a token is spent. `params.agentId` is validated for shape and no longer trusted for anything.
+  const ctx = await resolveWriteContextForTenant(params.brokerageId)
+  if (!ctx.ok || !ctx.brokerageId || !ctx.userId) return { success: false, error: "Unauthorized" }
+  const desk = await (await import("@/lib/transactions/role-guard")).decideDealDesk({ userId: ctx.userId, role: ctx.userType ?? "", brokerageId: ctx.brokerageId, transactionId: params.transactionId })
+  if (!desk.allowed) return { success: false, error: desk.reason } // THE DEAL DESK — before the receipt is claimed, a token is spent or a row is written
+  const sessionBrokerageId = ctx.brokerageId
+  const supabase = ctx.db
+  return ledgered({ userId: ctx.actorUserId, brokerageId: sessionBrokerageId, agentId: ctx.agentId }, { action: "transaction.closing_checklist.generate", subject: { type: "transaction", id: params.transactionId }, riskClass: "LOW_RISK_WRITE" }, async () => {
 
   try {
-    const { data: transaction } = await supabase
+    // AMBIGUOUS EMBED — the `!constraint` hint is load-bearing, DO NOT remove it.
+    // `transactions` has THREE foreign keys to `contacts` (transactions_contact_id_fkey,
+    // transactions_buyer_contact_id_fkey, transactions_seller_contact_id_fkey). With a
+    // bare `contacts(...)` embed PostgREST cannot pick one and refuses the ENTIRE
+    // request with PGRST201 — which means `transaction` came back null and this
+    // function reported "Transaction not found" for a transaction that plainly exists.
+    // Every closing checklist generated from this path was dead for that reason.
+    //
+    // `contact_id` is the party WE represent on the deal (documented on the canonical
+    // writer, lib/transactions/offer-bridge.ts:302). The checklist is the agent's own
+    // closing runbook, so the client it names is our client — not the counterparty in
+    // buyer_contact_id / seller_contact_id, either of which is null on the other side
+    // of a one-sided deal.
+    const { data: transaction, error: transactionError } = await supabase
       .from("transactions")
       .select(`
-        *,
-        contacts(first_name, last_name),
+        deal_type, purchase_price, contract_date, close_date,
+        contacts!transactions_contact_id_fkey(first_name, last_name),
         transaction_lenders(loan_type, lender_name, clear_to_close_date),
         transaction_title_escrow(title_company_name, closing_scheduled_date)
       `)
       .eq("id", params.transactionId)
-      .single()
+      .eq("brokerage_id", sessionBrokerageId)
+      .maybeSingle()
 
+    // A refused read RESOLVES in supabase-js. Without this the refusal above was
+    // reported as "Transaction not found" — an absence, not the hard error it was.
+    if (transactionError) {
+      return { success: false, error: `Could not read the transaction: ${transactionError.message}` }
+    }
     if (!transaction) {
       return { success: false, error: "Transaction not found" }
     }
+
+    // The client embed is now actually consumed. It was selected and never read,
+    // which is how the ambiguity survived unnoticed for so long.
+    //
+    // SHAPE: transactions.contact_id -> contacts is MANY-TO-ONE, so PostgREST
+    // returns an OBJECT here, not an array. supabase-js's inference widens a
+    // hinted embed to an array regardless of direction, so this normalizes both
+    // rather than asserting one — an assertion would be a lie in whichever
+    // direction it turned out to be wrong.
+    const clientEmbed = transaction.contacts as unknown
+    const client = (Array.isArray(clientEmbed) ? clientEmbed[0] : clientEmbed) as
+      { first_name: string | null; last_name: string | null } | null | undefined
+    const clientName = [client?.first_name, client?.last_name].filter(Boolean).join(" ") || "Unknown"
+
+    // MERGED FROM prepareForClosing (wave 155, lane 155R25 — CLAUDE.md §1.1: what the survivor lacked goes onto the survivor
+    // BEFORE the duplicate is retired; tombstone at app/actions/ai-transaction-coordinator.ts). The retired door read the deal's
+    // documents and parties so the plan knew what was already received and who is on the deal, and it asked for the potential
+    // issues with their resolutions and the day-of-closing items. Both reads are tenant-pinned to the SESSION tenant and READ:
+    // a refused read refuses (a checklist built blind would list received documents as missing). Parties are sent as role +
+    // company only — never a name, email or phone (the retired door sent the whole participant rows to the model).
+    const [docsRead, partiesRead] = await Promise.all([
+      supabase.from("transaction_documents").select("doc_label, doc_type, status, signature_status")
+        .eq("transaction_id", params.transactionId).eq("brokerage_id", sessionBrokerageId).limit(200),
+      supabase.from("transaction_participants").select("role, company")
+        .eq("transaction_id", params.transactionId).eq("brokerage_id", sessionBrokerageId).limit(50),
+    ])
+    if (docsRead.error) return { success: false, error: `Could not read the deal's documents: ${docsRead.error.message}` }
+    if (partiesRead.error) return { success: false, error: `Could not read the deal's parties: ${partiesRead.error.message}` }
+    const docsOnFile = ((docsRead.data ?? []) as Array<{ doc_label: string | null; doc_type: string | null; status: string | null; signature_status: string | null }>)
+      .map((d) => `- ${d.doc_label || d.doc_type || "document"} (${[d.status, d.signature_status].filter(Boolean).join(", ") || "status unknown"})`)
+    const partiesOnDeal = ((partiesRead.data ?? []) as Array<{ role: string | null; company: string | null }>)
+      .map((p) => `- ${p.role || "party"}${p.company ? ` (${p.company})` : ""}`)
 
     const { object: checklist } = await generateObject({
       model: "openai/gpt-4o",
@@ -63,10 +129,13 @@ export async function aiGenerateClosingChecklist(params: {
         })),
         closing_risk: z.enum(["low", "medium", "high"]),
         critical_path: z.array(z.string()).describe("Items that will block closing if incomplete"),
+        potential_issues: z.array(z.object({ issue: z.string(), resolution: z.string() })).describe("Likely problems before closing and how to resolve each"),
+        day_of_closing: z.array(z.object({ item: z.string(), timing: z.string(), responsible: z.string() })).describe("What happens on closing day, when, and who does it"),
         ai_summary: z.string(),
       }),
       prompt: `Generate a complete closing checklist for this transaction:
 
+Client we represent: ${clientName}
 Deal type: ${transaction.deal_type}
 Purchase price: $${transaction.purchase_price?.toLocaleString() ?? "Unknown"}
 Contract date: ${transaction.contract_date}
@@ -76,6 +145,12 @@ Title company: ${transaction.transaction_title_escrow?.[0]?.title_company_name ?
 Closing scheduled: ${transaction.transaction_title_escrow?.[0]?.closing_scheduled_date ?? "TBD"}
 CTC date: ${transaction.transaction_lenders?.[0]?.clear_to_close_date ?? "TBD"}
 
+Documents already on file (never list one of these as missing; flag only what its status says is outstanding):
+${docsOnFile.length ? docsOnFile.join("\n") : "- none on file"}
+
+Parties on the deal (role / company):
+${partiesOnDeal.length ? partiesOnDeal.join("\n") : "- none recorded"}
+
 Generate a comprehensive, ordered closing checklist covering:
 - Lender requirements (appraisal, CTC, funding)
 - Title requirements (title search, commitment, insurance)
@@ -84,7 +159,8 @@ Generate a comprehensive, ordered closing checklist covering:
 - Financial items (wire instructions, closing disclosure)
 - Agent tasks (walk-through, final utilities)
 - Client tasks
-- Compliance items`,
+- Compliance items
+Also list the potential issues before closing with a resolution for each, and the day-of-closing items with timing and who is responsible.`,
     })
 
     // Map AI output to the LIVE closing_checklist_items schema (pass 13: the old
@@ -108,7 +184,7 @@ Generate a comprehensive, ordered closing checklist covering:
       ].filter(Boolean)
       return {
         transaction_id:  params.transactionId,
-        brokerage_id:    params.brokerageId,
+        brokerage_id:    sessionBrokerageId,
         item_name:       item.item_name,
         category:        item.category,
         sequence:        Number.isFinite(item.sequence) ? item.sequence : idx,
@@ -125,18 +201,18 @@ Generate a comprehensive, ordered closing checklist covering:
     if (insertError) throw insertError
 
     // Upsert closing prep score
-    await supabase
+    await bestEffort(supabase
       .from("transaction_closing_prep")
       .upsert(
         {
           transaction_id:   params.transactionId,
-          brokerage_id:     params.brokerageId,
+          brokerage_id:     sessionBrokerageId,
           closing_date:     transaction.close_date,
           readiness_score:  checklist.closing_risk === "low" ? 85 : checklist.closing_risk === "medium" ? 55 : 25,
-          checklist:        { critical_path: checklist.critical_path, ai_summary: checklist.ai_summary },
+          checklist:        { critical_path: checklist.critical_path, potential_issues: checklist.potential_issues, day_of_closing: checklist.day_of_closing, ai_summary: checklist.ai_summary },
         },
         { onConflict: "transaction_id" }
-      )
+      ), "closing-readiness score cache; the checklist itself was written (and checked) above")
 
     revalidatePath(`/dashboard/transactions/${params.transactionId}`)
     return {
@@ -147,6 +223,7 @@ Generate a comprehensive, ordered closing checklist covering:
   } catch (error) {
     return handleError(error, "aiGenerateClosingChecklist")
   }
+  })
 }
 
 // ============================================================================
@@ -200,11 +277,24 @@ export async function completeChecklistItem(params: {
   completedBy: string
   notes?: string
 }) {
-  if (!isValidUUID(params.itemId) || !isValidUUID(params.completedBy)) {
+  if (!isValidUUID(params.itemId)) {
     return { success: false, error: "Invalid IDs" }
   }
 
-  const supabase = await createClient()
+  // WAVE 155 (lane 155S2): the sibling gate FIRST. `completed_by` is a LEGAL attestation ("who completed this closing
+  // step") and it came from the body — any caller could sign a step in anyone's name, keyed on an item id alone. It is
+  // the SESSION user now, and the item must be the session tenant's. It is also a users.id column
+  // (scripts/schema-fk-map.ts: closing_checklist_items.completed_by → users) while the only caller
+  // (app/crm/components/closing-workflow-tab.tsx) passes an agents.id — disjoint ids (CLAUDE.md §3), so that write was
+  // refused by the foreign key. `params.completedBy` is accepted for signature compatibility and not trusted.
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId || !ctx.userId) {
+    return { success: false, error: "Unauthorized" }
+  }
+  const sessionBrokerageId = ctx.brokerageId
+  const completedBy = ctx.actorUserId ?? ctx.userId
+  const supabase = ctx.db
+  return ledgered({ userId: ctx.actorUserId, brokerageId: sessionBrokerageId, agentId: ctx.agentId }, { action: "transaction.closing_checklist.complete_item", subject: { type: "closing_checklist_item", id: params.itemId }, riskClass: "LEGAL" }, async () => {
 
   try {
     const { data, error } = await supabase
@@ -212,43 +302,80 @@ export async function completeChecklistItem(params: {
       .update({
         completed:    true,
         completed_at: new Date().toISOString(),
-        completed_by: params.completedBy,
+        completed_by: completedBy,
         notes:        params.notes ?? null,
       })
       .eq("id", params.itemId)
+      .eq("brokerage_id", sessionBrokerageId)
       .select()
-      .single()
+      .maybeSingle()
 
     if (error) throw error
+    // CLAUDE.md §3: an update that matched nothing resolves too — another tenant's item (or a stale id) is not a success.
+    if (!data) return { success: false, error: "Checklist item not found" }
 
     revalidatePath(`/dashboard/transactions`)
     return { success: true, data }
   } catch (error) {
     return handleError(error, "completeChecklistItem")
   }
+  })
 }
 
 // ============================================================================
 // AI MILESTONE TRACKING
 // ============================================================================
 
+/**
+ * AI deal-health read on a transaction's closing progress.
+ *
+ * The `resolveWriteContext()` gate is NEW. This is a `"use server"` export and
+ * it had no authentication: it accepted `transactionId`, `agentId` AND
+ * `brokerageId` from the caller, UUID-shape-checked them, ran a `generateObject`
+ * model call, and then INSERTed a `transaction_timeline` row stamped with the
+ * caller's own `brokerage_id` and `performed_by`. So it was, in one endpoint:
+ *   · unauthenticated, unmetered AI spend anyone could loop; and
+ *   · a way to write a forged audit line into another tenant's deal timeline,
+ *     attributed to any user id the caller chose.
+ *
+ * Both identity inputs now come from the session, and the transaction must
+ * belong to the caller's brokerage before a single token is spent — the tenant
+ * check is deliberately BEFORE the model call, not after.
+ *
+ * NOTE FOR THE OWNER: the other exports in this file
+ * (`aiGenerateClosingChecklist`, `getClosingChecklist`, `completeChecklistItem`,
+ * `getClosingPrepSummary`) have the SAME shape — caller-supplied
+ * agentId/brokerageId, no session check — and `aiGenerateClosingChecklist` also
+ * spends on a model. They are wired, so hardening them is a change with real
+ * callers behind it and is left as a deliberate, separate decision rather than
+ * smuggled in here.
+ */
 export async function aiTrackClosingMilestones(params: {
   transactionId: string
-  agentId: string
-  brokerageId: string
+  /** ignored — the actor is the authenticated caller */
+  agentId?: string
+  /** ignored — the tenant is the authenticated caller's */
+  brokerageId?: string
 }) {
-  if (
-    !isValidUUID(params.transactionId) ||
-    !isValidUUID(params.agentId) ||
-    !isValidUUID(params.brokerageId)
-  ) {
+  if (!isValidUUID(params.transactionId)) {
     return { success: false, error: "Invalid IDs" }
   }
 
-  const supabase = await createClient()
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId || !ctx.userId) return { success: false, error: "Unauthorized" }
+  const desk = await (await import("@/lib/transactions/role-guard")).decideDealDesk({ userId: ctx.userId, role: ctx.userType ?? "", brokerageId: ctx.brokerageId, transactionId: params.transactionId })
+  if (!desk.allowed) return { success: false, error: desk.reason } // THE DEAL DESK — who may WORK this deal; it was "whoever can read it", a vendor seat included
+  const brokerageId = ctx.brokerageId
+  const actorUserId = ctx.userId
+  return ledgered({ userId: ctx.actorUserId, brokerageId, agentId: ctx.agentId }, { action: "transaction.closing_milestones.track", subject: { type: "transaction", id: params.transactionId }, riskClass: "LOW_RISK_WRITE" }, async () => {
+
+  const supabase = ctx.db
 
   try {
-    const { data: transaction } = await supabase
+    // Tenant-anchored, and the error is destructured: a refused read must not
+    // fall through to "Transaction not found" and it must certainly not fall
+    // through to a paid model call.
+    const { data: transaction, error: txErr } = await supabase
       .from("transactions")
       .select(`
         *,
@@ -256,7 +383,12 @@ export async function aiTrackClosingMilestones(params: {
         closing_checklist_items(completed, required)
       `)
       .eq("id", params.transactionId)
-      .single()
+      .eq("brokerage_id", brokerageId)
+      .maybeSingle()
+
+    if (txErr) {
+      return { success: false, error: "Could not load that transaction." }
+    }
 
     if (!transaction) {
       return { success: false, error: "Transaction not found" }
@@ -296,22 +428,39 @@ Assess:
 4. Is there a delay risk?`,
     })
 
-    // Record a timeline entry for the analysis
-    await supabase
-      .from("transaction_timeline")
-      .insert({
-        transaction_id: params.transactionId,
-        brokerage_id:   params.brokerageId,
-        activity_type:  "ai_closing_analysis",
-        description:    analysis.summary,
-        performed_by:   params.agentId,
-        metadata:       { riskLevel: analysis.riskLevel, onTrack: analysis.onTrack },
-      })
+    // Record a timeline entry for the analysis.
+    //
+    // performed_by is a users.id, not an agents.id — every other writer in the
+    // repo puts `user.id` / `ctx.userId` there (transaction-compliance.ts:79,
+    // dotloop-integration.ts:343, and see the explicit note at
+    // dotloop-integration.ts:1447 about a contacts id having once landed in this
+    // column). This used to write `params.agentId`. agents.id and users.id are
+    // disjoint id spaces, so that stamped a meaningless actor on every row.
+    // ctx.userId is the resolved authenticated user — the right space, resolved
+    // rather than substituted.
+    // The line goes through the ONE timeline writer: the deal desk decides, then the service client writes it in the session's
+    // tenant (lib/application/transactions.ts addTimelineEntry). It was an insert on the caller's row-security client.
+    const { addTimelineEntry } = await import("@/lib/application/transactions")
+    const line = await addTimelineEntry(
+      params.transactionId,
+      "ai_closing_analysis",
+      analysis.summary,
+      actorUserId,
+      { riskLevel: analysis.riskLevel, onTrack: analysis.onTrack },
+    ); const timelineErr = line.ok ? null : { message: line.error }
+
+    // The analysis is still returned — the model call already happened and the
+    // caller should get what it paid for — but a dropped audit line is logged
+    // rather than swallowed, which is what an undestructured insert did before.
+    if (timelineErr) {
+      console.error("[aiTrackClosingMilestones] timeline insert failed:", timelineErr.message)
+    }
 
     return { success: true, data: analysis }
   } catch (error) {
     return handleError(error, "aiTrackClosingMilestones")
   }
+  })
 }
 
 // ============================================================================
@@ -360,4 +509,29 @@ export async function getClosingPrepSummary(params: {
   } catch (error) {
     return handleError(error, "getClosingPrepSummary")
   }
+}
+
+/**
+ * WAVE 155 (lane 155R9, G12): ONE agent_action_ledger receipt per session write — ledgerSessionAction
+ * (lib/kernel/action-ledger.ts) does the claim → run → settle. Who and which tenant come from the SESSION (CLAUDE.md §4);
+ * "session" resolves them through getAgentContext. NO idempotency key: a person's second save runs again and leaves a
+ * second receipt. The export's value comes back unchanged; a refused claim (only a malformed action name, caught by
+ * test:action-ledger §14) throws instead of returning a value of another shape. No session tenant → the write runs exactly
+ * as before, unrecorded (agent_action_ledger.brokerage_id is NOT NULL — there is no valid row to write).
+ * @proofSeam scripts/ledger-receipts-transaction2-guard.ts
+ */
+async function ledgered<T>(
+  who: { userId?: string | null; brokerageId?: string | null; agentId?: string | null } | null | undefined | "session",
+  what: { action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> },
+  run: () => Promise<T>,
+): Promise<T> {
+  const seat = who === "session" ? await (await import("@/lib/identity/get-agent-context")).getAgentContext() : who
+  if (!seat?.userId || !seat.brokerageId) return run()
+  const id = what.subject.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(what.subject.id) ? what.subject.id : null
+  const subject = { type: what.subject.type, id, ref: id ? what.subject.ref ?? null : what.subject.ref ?? what.subject.id ?? null }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const r = await ledgerSessionAction({ brokerageId: seat.brokerageId, action: what.action, actor: { type: "user", userId: seat.userId, agentId: seat.agentId ?? null }, subject, riskClass: what.riskClass, reasonCode: "HUMAN_REQUESTED", detail: what.detail ?? null }, async () => { ran = true; return run() })
+  if (!ran) throw new Error((r as { error?: string }).error ?? "action ledger refused the claim")
+  return r as T
 }

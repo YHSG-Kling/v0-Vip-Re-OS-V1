@@ -23,9 +23,14 @@ import {
   isValidCouponCode,
   validateCouponForRedemption,
   describeCoupon,
+  isMockStripeCouponId,
+  normalizeStripeDiscount,
+  evaluateStripeDiscount,
   type PlatformCoupon,
   type RedemptionFailReason,
+  type StripeDiscountFailReason,
 } from "@/lib/platform/coupons"
+import { isStripeConfigured, stripeLookupDiscount, type StripeDiscountLookup } from "@/lib/billing/stripe-subscription-ops"
 import type { SnapshotPayload } from "@/lib/platform/config-snapshots"
 
 type Svc = ReturnType<typeof createServiceClient>
@@ -136,7 +141,7 @@ export type FunnelCouponCheck =
       summary: string
       coupon: PlatformCoupon & { id: string }
     }
-  | { ok: false; reason: RedemptionFailReason | "invalid_code" | "not_found"; message: string }
+  | { ok: false; reason: RedemptionFailReason | StripeDiscountFailReason | "invalid_code" | "not_found" | "not_published"; message: string }
 
 /**
  * Validate a coupon code for a prospective signup on `tier` against the live
@@ -144,7 +149,13 @@ export type FunnelCouponCheck =
  * the same ones the superadmin redemption path enforces. Read-only: nothing
  * is redeemed here (the signup action records the redemption).
  */
-export async function validateFunnelCoupon(code: string, tier: string, client?: Svc): Promise<FunnelCouponCheck> {
+export async function validateFunnelCoupon(
+  code: string,
+  tier: string,
+  client?: Svc,
+  /** wave 141H seams: the Stripe lookup + configured flag (proofs stub them). */
+  deps: { lookup?: (q: { stripeCouponId?: string | null }) => Promise<StripeDiscountLookup>; configured?: () => boolean; now?: Date } = {},
+): Promise<FunnelCouponCheck> {
   const normalized = normalizeCouponCode(code)
   if (!isValidCouponCode(normalized)) {
     return { ok: false, reason: "invalid_code", message: "Codes are 3-32 characters: letters, numbers, '-' or '_'" }
@@ -161,8 +172,31 @@ export async function validateFunnelCoupon(code: string, tier: string, client?: 
 
   // A prospect has no brokerage yet, so existingRedemption is always false —
   // the UNIQUE(coupon_id, brokerage_id) constraint still guards the real insert.
-  const check = validateCouponForRedemption(coupon, { tier, now: new Date(), existingRedemption: false })
+  const now = deps.now ?? new Date()
+  const check = validateCouponForRedemption(coupon, { tier, now, existingRedemption: false })
   if (!check.ok) return { ok: false, reason: check.reason, message: check.message }
+
+  // STRIPE VALIDATION (wave 141H, owner: "code → Stripe validation → eligibility"). When payments
+  // are configured, the code the funnel promises ("applied when you add billing at checkout") must
+  // be a coupon Stripe will actually apply: live on Stripe (not mock-published), still valid there,
+  // not exhausted, not product-restricted. Refused IMMEDIATELY with the tenant's sentence, and the
+  // unpublished case is logged for staff by name. Unconfigured → the platform rules above stand.
+  const configured = deps.configured ?? isStripeConfigured
+  if (configured()) {
+    if (!coupon.stripe_coupon_id || isMockStripeCouponId(coupon.stripe_coupon_id)) {
+      console.error(`[trial-funnel] platform coupon ${normalized} (${coupon.id}) has no LIVE Stripe coupon — publish it from /dashboard/superadmin/coupons`)
+      return { ok: false, reason: "not_published", message: `${normalized} isn't ready to use yet — contact support` }
+    }
+    const lookup = deps.lookup ?? stripeLookupDiscount
+    const looked = await lookup({ stripeCouponId: coupon.stripe_coupon_id })
+    if (!looked.ok) {
+      if (looked.notFound) return { ok: false, reason: "not_found", message: `${normalized} isn't a current offer code` }
+      if (!looked.skipped) return { ok: false, reason: "not_found", message: `Couldn't check code ${normalized} right now — try again` }
+    } else {
+      const verdict = evaluateStripeDiscount(normalizeStripeDiscount(looked.coupon, null), { now, productIds: [] }, normalized)
+      if (!verdict.ok) return { ok: false, reason: verdict.reason, message: verdict.message }
+    }
+  }
 
   return { ok: true, couponId: coupon.id, code: normalized, summary: describeCoupon(coupon), coupon }
 }

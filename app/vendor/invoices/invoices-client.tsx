@@ -40,7 +40,7 @@ const STATUS_COLOR: Record<string, string> = {
   viewed: "bg-indigo-100 text-indigo-700",
   paid: "bg-green-100 text-green-700",
   overdue: "bg-red-100 text-red-700",
-  cancelled: "bg-gray-100 text-gray-500",
+  cancelled: "bg-gray-100 text-gray-600",
   disputed: "bg-amber-100 text-amber-700",
 }
 

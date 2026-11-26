@@ -1,14 +1,27 @@
-"use server"
+// NOT a server-action module (2026-09-03, lane R3-A; template
+// lib/behavior-learning/preference-updater.ts:1-9). The module-level "use server"
+// that stood here published scanEntityForPatterns(entityType, entityId,
+// brokerageId, agentId?) and recordPredictionOutcome(…, agentId, brokerageId) as
+// public HTTP doors with no gate: a service client and a caller-supplied
+// brokerageId — section 4's named IDOR shape. Every caller is in-process server
+// code (re-verified 2026-09-03):
+//   · app/actions/pattern-actions.ts:5      — a "use server" action, gated there
+//   · app/api/cron/pattern-scan/route.ts:3  — the cron route
+// so the directive published nothing anyone needed. `server-only` makes a future
+// client import fail at build time instead of bundling the service credential.
+// brokerageId / agentId are now an IN-PROCESS CONTRACT: with the door closed,
+// the server caller that supplies them is the gate.
+import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { generateText } from "ai"
-import { resolveModel } from "@/lib/ai/resolve-model"
+import { generateTextRouted } from "@/lib/ai/models"
 import { KernelEvent } from "@/lib/kernel/events"
 import { emitKernelEvent } from "@/lib/kernel/emit"
 import { computeDaysOnMarketOrZero } from "@/lib/listings/compute-dom"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
-export interface BehavioralPattern {
+interface BehavioralPattern {
   id: string
   pattern_slug: string
   pattern_name: string
@@ -189,7 +202,7 @@ export async function scanEntityForPatterns(
     }
 
     // Evaluate pattern
-    const evaluation = await evaluatePattern(pattern, signals, entityType)
+    const evaluation = await evaluatePattern(pattern, signals, entityType, brokerageId)
 
     if (
       evaluation.matches &&
@@ -222,7 +235,7 @@ export async function scanEntityForPatterns(
       }
 
       // Insert pattern_predictions
-      const { data: prediction } = await supabase
+      const { data: prediction, error: predictionInsErr } = await supabase
         .from("pattern_predictions")
         .insert({
           detection_id: detection.id,
@@ -237,9 +250,10 @@ export async function scanEntityForPatterns(
         })
         .select()
         .single()
+      if (predictionInsErr) console.error(`[pattern-detector] prediction NOT saved: ${predictionInsErr.message}`)
 
       // Insert smart_assistant_suggestions
-      await supabase.from("smart_assistant_suggestions").insert({
+      await sentinelWrite(supabase, supabase.from("smart_assistant_suggestions").insert({
         agent_id: resolvedAgentId,
         brokerage_id: brokerageId,
         title: pattern.recommended_action,
@@ -249,7 +263,7 @@ export async function scanEntityForPatterns(
         context_type: "behavioral_pattern",
         action_type: pattern.recommended_action, // real column (was phantom suggested_action)
         metadata: { detection_id: detection.id, pattern_id: pattern.id, pattern_slug: pattern.pattern_slug }, // context_id has no column
-      })
+      }), { table: "smart_assistant_suggestions", flow: "smart_assistant_suggestions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
       // emitKernelEvent does INSERT + reactor fan-out (notifications + sequences + portal) in one
       // call. Bare lifecycle_events inserts dropped agent notifications for new pattern detections.
@@ -438,7 +452,8 @@ async function fetchEntitySignals(
 async function evaluatePattern(
   pattern: BehavioralPattern,
   signals: EntitySignals,
-  entityType: "contact" | "listing"
+  entityType: "contact" | "listing",
+  brokerageId: string,
 ): Promise<{
   matches: boolean
   confidence: number
@@ -577,7 +592,7 @@ async function evaluatePattern(
     default:
       // For complex patterns, use AI evaluation
       if (COMPLEX_PATTERNS.includes(pattern.pattern_slug)) {
-        return evaluateWithAI(pattern, signals, entityType)
+        return evaluateWithAI(pattern, signals, entityType, brokerageId)
       }
 
       // Default rule-based fallback
@@ -589,7 +604,8 @@ async function evaluatePattern(
 async function evaluateWithAI(
   pattern: BehavioralPattern,
   signals: EntitySignals,
-  entityType: "contact" | "listing"
+  entityType: "contact" | "listing",
+  brokerageId: string,
 ): Promise<{
   matches: boolean
   confidence: number
@@ -597,8 +613,12 @@ async function evaluateWithAI(
   triggerSignals: Record<string, unknown>
 }> {
   try {
-    const { text } = await generateText({
-      model: resolveModel("anthropic/claude-sonnet-4-20250514"),
+    // Wave 97 (lane 97C): the ROUTED lane (lib/ai/models.ts::generateTextRouted) — books ai_tool_usage
+    // under the scanned entity's tenant, runs the fair-use pre-flight + Data Guard, and routes by task
+    // (behavioral_pattern_detect) instead of a hardcoded Sonnet call that booked nothing.
+    const { text } = await generateTextRouted({
+      feature: "behavioral_pattern_detect",
+      brokerageId,
       system: `You are a real estate behavioral pattern analyzer. Evaluate if the given pattern matches the entity signals.
 Return ONLY valid JSON: {"matches": boolean, "confidence": number (0-1), "reasoning": string}`,
       prompt: `Pattern to detect: ${pattern.pattern_name}
@@ -609,7 +629,7 @@ Entity type: ${entityType}
 Entity signals: ${JSON.stringify(signals, null, 2)}
 
 Does this pattern match? Evaluate and return JSON.`,
-      maxOutputTokens: 200,
+      maxTokens: 200,
     })
 
     // Parse AI response
@@ -639,16 +659,16 @@ export async function recordPredictionOutcome(
 ): Promise<void> {
   const supabase = createServiceClient()
 
-  await supabase
+  await sentinelWrite(supabase, supabase
     .from("pattern_predictions")
     .update({
       outcome,
       outcome_recorded_at: new Date().toISOString(),
     })
-    .eq("id", predictionId)
+    .eq("id", predictionId), { table: "pattern_predictions", flow: "pattern_predictions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
   // Log to ai_feedback_log
-  await supabase.from("ai_feedback_log").insert({
+  await sentinelWrite(supabase, supabase.from("ai_feedback_log").insert({
     agent_id: agentId,
     brokerage_id: brokerageId,
     source_system: "behavioral_pattern",
@@ -656,7 +676,7 @@ export async function recordPredictionOutcome(
     source_record_id: predictionId,
     rating: outcome === "correct" ? 1 : -1,
     context_snapshot: { prediction_id: predictionId, outcome }, // real jsonb col (was phantom context)
-  })
+  }), { table: "ai_feedback_log", flow: "ai_feedback_log_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
   // Emit outcome event through the canonical emitter — INSERT + reactor fan-out.
   await emitKernelEvent({

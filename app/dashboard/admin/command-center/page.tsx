@@ -1,13 +1,17 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { loadCommandCenter } from "@/lib/kernel/command-center"
-import { resolveEgressScope, describeScope } from "@/lib/kernel/egress-scope"
+import { isTenantScopeRefusal } from "@/lib/kernel/tenant-scope"
+import { resolveEgressScope, resolveEgressScopeForViewer, describeScope } from "@/lib/kernel/egress-scope"
+import Link from "next/link"
 import { computeManagerTrust } from "@/lib/kernel/outcome-learning"
 import { loadDealPlayLift } from "@/lib/kernel/deal-play-outcomes"
 import { createServiceClient } from "@/lib/supabase/service"
 import { CommandCenterClient } from "./command-center-client"
 import { TrustMeter } from "./trust-meter"
 import { EarnedAutonomyPanel } from "./earned-autonomy-panel"
+import { AutonomyAccuracyCard } from "./autonomy-accuracy-card"
 import { QuarterlyReviewCard } from "./quarterly-review-card"
 import { ActingAsLog } from "./acting-as-log"
 import { CoverageCard } from "./coverage-card"
@@ -16,9 +20,19 @@ import { TeamAnnouncementComposer } from "./team-announcement-composer"
 import { AutonomyHaltBanner } from "./autonomy-halt-banner"
 import { CriticalSetupMeter } from "@/app/components/onboarding/critical-setup-meter"
 import { loadTenantAutonomyHalt } from "@/lib/managers/autonomy-gate"
-import { listEarnedAutonomyAction } from "@/app/actions/document-kernel-review"
+import { listEarnedAutonomyAction, listPolicyDecisionsAction } from "@/app/actions/document-kernel-review"
+import { PolicyDecisionsPanel } from "./policy-decisions-panel"
 import { getQuarterlyReviewAction } from "@/app/actions/quarterly-review"
 import { listAiTeammatesAction } from "@/app/actions/ai-teammates"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
+import { listMissionsAction } from "@/app/actions/missions"
+import { MissionsCard } from "./missions-card"
+import { ExceptionsFirstPanel } from "./exceptions-first-panel"
+import { AllocationCard } from "./allocation-card"
+import { MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
+import { MISSION_TYPES } from "@/lib/kernel/missions"
 
 export const metadata = {
   title:       "Agent Command Center | Kernel OS Admin",
@@ -33,22 +47,43 @@ export const metadata = {
 export default async function CommandCenterPage({ searchParams }: { searchParams: Promise<{ view?: string }> }) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect("/auth/login")
+  if (!user) redirect("/login")
   const { view } = await searchParams
 
   const { data: userData } = await supabase
     .from("users")
-    .select("user_type, brokerage_id")
+    .select("user_type, platform_role, brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
 
   const userType    = userData?.user_type ?? "agent"
   const brokerageId = userData?.brokerage_id ?? undefined
+  // PLATFORM SCOPE — resolved from BOTH identity columns, and this page has ~13
+  // decisions hanging off it. Every one of them used to read
+  // `userType === "superadmin"`, which is FALSE for the platform's only
+  // superadmin (user_type='admin', platform_role='superadmin'). The consequence
+  // was not a refusal — it was a SILENT DOWNGRADE: the owner passed the
+  // admin/broker entry gate, then got the brokerage slice of the Command Center
+  // (their own brokerage's queue, Trust Meter, QBR) and the header said "Your
+  // brokerage". Platform-wide scope was never once granted on this surface.
+  // Same shape as public.is_platform_admin() in RLS and requireSuperadmin() in
+  // lib/auth/platform-guard.ts — see app/actions/vendor-budget.ts:136-147.
+  // ONE DEFINITION (owner ruling 1, 2026-08-24): the both-columns test was spelled
+  // out here. Survivor: lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity.
+  const isSuperadmin = isPlatformSuperadminIdentity(userType, userData?.platform_role)
   // TIER PARITY (owner rule): the Command Center — the feed, the Trust Meter,
   // Earned Autonomy — is for the tenancy's PRINCIPAL, whatever shape the
   // tenancy has. A solo agent IS their own broker; a team lead governs a team
   // signup. Only brokerage/multi_location tiers require the broker/admin seat.
-  let mayEnter = ["admin", "broker", "superadmin"].includes(userType)
+  let mayEnter = isAdminOrBroker({ user_type: userType })
+  // WAVE 150 (lane 150DAC, C34): on a multi-location tenant the OFFICE head / team lead enters by the hierarchy
+  // (a leadership grant or the managing-broker / team-lead fact), whatever their user_type — resolved once here and
+  // reused below as the base scope.
+  let viewerScope: Awaited<ReturnType<typeof resolveEgressScopeForViewer>> | null = null
+  if (!isSuperadmin && brokerageId) {
+    viewerScope = await resolveEgressScopeForViewer(createServiceClient(), { userType, userId: user.id, brokerageId })
+    if (!mayEnter && viewerScope.multiLocation && viewerScope.scope.kind !== "agent") mayEnter = true
+  }
   if (!mayEnter && brokerageId) {
     const svcGate = createServiceClient()
     const { data: brk } = await svcGate.from("brokerages").select("plan_tier").eq("id", brokerageId).maybeSingle()
@@ -64,36 +99,65 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
       if (lead) mayEnter = true
     }
   }
-  if (!mayEnter) redirect("/dashboard")
+  if (!mayEnter) return <RoleGateNotice surface="The Command Center" audience="brokerage admins and team leads" />
 
   // Resolve the egress scope so the surface shows the right slice. superadmin = platform-wide (no
   // scope). For everyone else, resolve their office (agents.location_id) + team so a multi-location
   // admin is scoped to their location while broker/broker_admin see all locations.
   let locationId: string | null = null
   let teamId: string | null = null
-  if (userType !== "superadmin" && brokerageId) {
+  if (!isSuperadmin && brokerageId) {
     const { data: agentRow } = await supabase
       .from("agents").select("location_id, team_id").eq("user_id", user.id).eq("brokerage_id", brokerageId).maybeSingle()
     locationId = (agentRow as any)?.location_id ?? null
     teamId = (agentRow as any)?.team_id ?? null
   }
-  const baseScope = userType !== "superadmin" && brokerageId
-    ? resolveEgressScope({ userType, userId: user.id, brokerageId, locationId, teamId })
-    : undefined
+  // WAVE 150 (lane 150DAC — lane 150C Outside-lane #4): on a MULTI-LOCATION tenant the scope is the C34 hierarchy
+  // (resolveViewerHierarchy: seesAllLocations = scope.aggregate, otherwise the offices / teams the viewer leads) —
+  // users.user_type never widens a multi-location row. A single-office tenant keeps the ladder. The ids are the
+  // SESSION's (gate passed above); the reader fails closed to own work and says why.
+  let scopeRefusal: string | null = null
+  let multiLocation = false
+  let baseScope: ReturnType<typeof resolveEgressScope> | undefined
+  if (viewerScope && brokerageId) {
+    // Single-office tenant: the ladder with the agent row's office / team (byte-identical to before). Multi-location
+    // or a refused read: the reader's own answer (hierarchy, or own work with the reason).
+    baseScope = viewerScope.multiLocation || viewerScope.refusal
+      ? viewerScope.scope
+      : resolveEgressScope({ userType, userId: user.id, brokerageId, locationId, teamId })
+    scopeRefusal = viewerScope.refusal
+    multiLocation = viewerScope.multiLocation
+  }
 
   // A brokerage-wide viewer may DRILL DOWN to one office/team/agent via ?view=. A narrower viewer
   // (location admin / team lead / agent) cannot widen scope — their base scope caps what they see.
-  const canSwitch = !!brokerageId && (!baseScope || baseScope.kind === "brokerage")
+  // WAVE 150 (lane 150DAC, C34): a hierarchy head of SEVERAL offices / teams may drill into ONE of their own
+  // (the options are only their own ids, so a URL can never widen past the base scope).
+  const ownOffices = baseScope?.kind === "location" ? (baseScope.locationIds ?? []) : []
+  const ownTeams = baseScope?.kind === "location" || baseScope?.kind === "team" ? (baseScope.teamIds ?? []) : []
+  const narrowSwitch = ownOffices.length + ownTeams.length > 1
+  const canSwitch = !!brokerageId && (!baseScope || baseScope.kind === "brokerage" || narrowSwitch)
   let effectiveScope = baseScope
   let currentView = "all"
-  const scopeOptions: import("./scope-switcher").ScopeOption[] = [{ value: "all", label: "Whole brokerage" }]
+  const scopeOptions: import("./scope-switcher").ScopeOption[] = [{ value: "all", label: narrowSwitch ? `All of ${baseScope ? describeScope(baseScope).toLowerCase() : "my scope"}` : "Whole brokerage" }]
 
   if (canSwitch && brokerageId) {
-    const [{ data: locs }, { data: teams }, { data: agentsList }] = await Promise.all([
-      supabase.from("locations").select("id, name").eq("brokerage_id", brokerageId).order("name").limit(100),
-      supabase.from("teams").select("id, name").eq("brokerage_id", brokerageId).order("name").limit(100),
-      supabase.from("agents").select("user_id, users(first_name, last_name)").eq("brokerage_id", brokerageId).not("user_id", "is", null).limit(200),
+    const NONE = "00000000-0000-0000-0000-000000000000"
+    const [{ data: locs, error: locErr }, { data: teams, error: teamErr }, { data: agentsList, error: agentErr }] = await Promise.all([
+      narrowSwitch && ownOffices.length === 0
+        ? Promise.resolve({ data: [] as any[], error: null })
+        : (narrowSwitch
+            ? supabase.from("locations").select("id, name").eq("brokerage_id", brokerageId).in("id", ownOffices.length ? ownOffices : [NONE])
+            : supabase.from("locations").select("id, name").eq("brokerage_id", brokerageId)).order("name").limit(100),
+      narrowSwitch
+        ? supabase.from("teams").select("id, name").eq("brokerage_id", brokerageId).in("id", ownTeams.length ? ownTeams : [NONE]).order("name").limit(100)
+        : supabase.from("teams").select("id, name").eq("brokerage_id", brokerageId).order("name").limit(100),
+      narrowSwitch
+        ? Promise.resolve({ data: [] as any[], error: null })
+        : supabase.from("agents").select("user_id, users(first_name, last_name)").eq("brokerage_id", brokerageId).not("user_id", "is", null).limit(200),
     ])
+    const optErr = locErr ?? teamErr ?? agentErr
+    if (optErr) console.error(`[command-center] drill-down options read refused — fewer options shown: ${optErr.message}`)
     for (const l of (locs ?? []) as any[]) scopeOptions.push({ value: `location:${l.id}`, label: `Office — ${l.name}` })
     for (const t of (teams ?? []) as any[]) scopeOptions.push({ value: `team:${t.id}`, label: `Team — ${t.name}` })
     for (const a of (agentsList ?? []) as any[]) {
@@ -113,55 +177,119 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
       // subordinate's view is legitimate (troubleshooting, coaching) but
       // NEVER silent: every assumed view lands on the ledger. Best-effort.
       if (kind === "agent" || kind === "team") {
-        await createServiceClient().from("lifecycle_events").insert({
-          brokerage_id: brokerageId,
-          entity_type: kind,
-          entity_id: id,
-          event_type: "acting_as_view",
-          actor_user_id: user.id,
+        const actingAsSvc = createServiceClient()
+        await sentinelWrite(actingAsSvc, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+          brokerageId: brokerageId,
+          entityType: kind,
+          entityId: id,
+          event: "acting_as_view",
+          actorUserId: user.id,
           metadata: { surface: "command_center", viewer_role: userType },
-        }).then(() => {}, () => {})
+        }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "acting_as_view_audit", brokerageId, reason: "acting-as audit is best-effort by design (never blocks the view); a loss is ledgered, never silent" })
       }
     }
   }
 
   const scopeLabel = effectiveScope
     ? describeScope(effectiveScope)
-    : (userType === "superadmin" ? "Platform — all brokerages" : "Your brokerage")
+    : (isSuperadmin ? "Platform — all brokerages" : "Your brokerage")
 
-  const data = await loadCommandCenter({
-    brokerageId: userType === "superadmin" ? undefined : brokerageId,
-    scope: effectiveScope,
-    limit:       100,
-  })
+  // PLATFORM IS ASKED FOR, NOT INFERRED FROM AN ABSENT ID. This used to read
+  // `brokerageId: isSuperadmin ? undefined : brokerageId`, and loadCommandCenter
+  // applied every one of its seven tenant predicates only `if (brokerageId)` on a
+  // SERVICE client. The entry gate above is isAdminOrBroker(user_type), which never
+  // consults brokerage_id — so a NON-superadmin broker/admin whose
+  // users.brokerage_id is NULL produced the SAME undefined the superadmin does and
+  // would have read every brokerage's approval queue, proposed client messages and
+  // ad-spend proposals. CLAUDE.md §4: the gate that cannot run must refuse.
+  //
+  // Identity semantics on public.users are UNCHANGED — the platform discriminator
+  // is still `platform_role`, resolved above. Only the meaning of an absent
+  // brokerage_id changes, from "all tenants" to "refuse".
+  let data: Awaited<ReturnType<typeof loadCommandCenter>>
+  try {
+    data = await loadCommandCenter({
+      ...(isSuperadmin
+        ? { platform: { reason: "platform_role='superadmin' — the platform-wide Command Center" } }
+        : { brokerageId }),
+      scope: effectiveScope,
+      limit: 100,
+      viewerUserId: user.id,
+    })
+  } catch (e) {
+    if (!isTenantScopeRefusal(e)) throw e
+    // Honest refusal rather than a fabricated empty queue: "nothing is waiting on
+    // a human" is a claim, and an unscoped viewer has not earned it.
+    return (
+      <div className="mx-auto max-w-6xl space-y-4 p-6">
+        <h1 className="text-2xl font-semibold">Command Center</h1>
+        <p className="text-sm text-red-700">
+          Your account has no brokerage assigned and no platform role, so this queue cannot be
+          scoped. Nothing is shown rather than showing another brokerage&apos;s work. Ask an
+          administrator to set your brokerage.
+        </p>
+      </div>
+    )
+  }
+
+  // THE LAST-VISIT WRITER (wave 137, m741): AFTER the loader read the previous visit for "since your last
+  // visit", stamp this one — the SESSION user only, tenant-pinned. A refused write is logged, never fatal.
+  if (brokerageId && !isSuperadmin) {
+    const { recordDashboardVisit } = await import("@/lib/kernel/exceptions-first")
+    const visit = await recordDashboardVisit(createServiceClient(), { userId: user.id, brokerageId })
+    if (!visit.ok) console.error(`[command-center] last-visit not recorded: ${visit.error}`)
+  }
 
   // THE TRUST METER — per-manager human-approval rates + the broker's own rejection
   // reasons (outcome learning made visible; brokerage scope only).
-  const trust = brokerageId && userType !== "superadmin"
+  const trust = brokerageId && !isSuperadmin
     ? await computeManagerTrust(brokerageId).catch(() => null)
     : null
 
   // DEAL PLAY LIFT — did the AI-team play move listings? Honest by construction:
   // "still learning" until both cohorts clear the sample gate (never a thin-data claim).
-  const lift = brokerageId && userType !== "superadmin"
+  const lift = brokerageId && !isSuperadmin
     ? await loadDealPlayLift(createServiceClient(), brokerageId).catch(() => null)
     : null
 
   // EARNED AUTONOMY — the grant ledger beside the Trust Meter (broker/admin
   // only; the action enforces the role — a non-granting viewer sees nothing).
-  const earned = brokerageId && userType !== "superadmin"
+  const earned = brokerageId && !isSuperadmin
     ? await listEarnedAutonomyAction().catch(() => null)
     : null
 
+  // POLICY DECISIONS — the amber/red verdict ledger beside the earned block
+  // (REVIEW_ROLES inside the action — the TC named as approver sees their own
+  // queue). Read-only: resolution lives on the signals feed (manager_signals).
+  const policyDecisions = brokerageId && !isSuperadmin
+    ? await listPolicyDecisionsAction().catch(() => null)
+    : null
+
+  // AUTONOMY-ACCURACY GLANCE — the governance mirror: autonomy is EARNED by
+  // measured prediction accuracy, not toggled. The full per-domain report lives
+  // on Manager Trust; this compact glance puts it on the operator's one screen.
+  let autonomyAccuracy: import("@/lib/managers/accuracy-gate").AutonomyAccuracySummary | null = null
+  if (brokerageId && !isSuperadmin) {
+    try {
+      const { loadAccuracyGateReport, loadAccuracyHoldRollup, summarizeAutonomyAccuracy } =
+        await import("@/lib/managers/accuracy-gate")
+      const [verdicts, holds] = await Promise.all([
+        loadAccuracyGateReport(brokerageId),
+        loadAccuracyHoldRollup(brokerageId, 30),
+      ])
+      autonomyAccuracy = summarizeAutonomyAccuracy(verdicts, holds)
+    } catch { /* the glance is additive — never blocks the Command Center */ }
+  }
+
   // YOUR AI TEAMMATES — the tenant's own chartered identities on the manager
   // bench (the action enforces tier-parity principal access; others see nothing).
-  const teammates = brokerageId && userType !== "superadmin"
+  const teammates = brokerageId && !isSuperadmin
     ? await listAiTeammatesAction().catch(() => null)
     : null
 
   // QUARTERLY BUSINESS REVIEW + adoption pulse — the principal's 90-day read
   // (the action enforces tier-parity principal access; others see nothing).
-  const qbr = brokerageId && userType !== "superadmin"
+  const qbr = brokerageId && !isSuperadmin
     ? await getQuarterlyReviewAction().catch(() => null)
     : null
 
@@ -213,9 +341,19 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
     } catch { /* visibility is additive */ }
   }
 
+  // MISSIONS (wave 104, lane 104F) — the durable objectives the OS owns, with the attention set
+  // (BLOCKED / APPROVAL_REQUIRED / ESCALATED) up front and the decide / block / create doors
+  // (app/actions/missions.ts, tenant from the session). TENANT-ADMIN ROSTER ONLY (isAdminOrBroker ⇔
+  // TENANT_ADMIN_USER_TYPES): a solo agent or a team lead entering through tier parity does not
+  // get it, and agents never see it. A refused read is rendered as a refusal, never as "no missions".
+  const missions = brokerageId && !isSuperadmin && isAdminOrBroker({ user_type: userType })
+    ? await listMissionsAction().catch(() => null)
+    : null
+  const missionManagers = (Object.keys(MANAGERS) as ManagerKey[]).map((key) => ({ key, label: MANAGERS[key].label }))
+
   // PER-TENANT AUTONOMY HALT — if platform staff paused this brokerage's autonomous AI, say so
   // honestly, up top, with the staff-entered reason (the same state the dispatch gate enforces).
-  const tenantHalt = brokerageId && userType !== "superadmin"
+  const tenantHalt = brokerageId && !isSuperadmin
     ? await loadTenantAutonomyHalt(brokerageId).catch(() => null)
     : null
 
@@ -224,7 +362,7 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
   // without (markets → scrape pipeline, assignment rules → Engine 2, providers
   // → egress, …). Server-composed from real tables; dismissals are UI-only.
   let setupReadiness: import("@/lib/onboarding/critical-setup").CriticalSetupReadiness | null = null
-  if (brokerageId && userType !== "superadmin") {
+  if (brokerageId && !isSuperadmin) {
     try {
       const { loadCriticalSetupFacts, composeSetupReadiness } = await import("@/lib/onboarding/critical-setup")
       const facts = await loadCriticalSetupFacts(createServiceClient(), { brokerageId })
@@ -234,6 +372,12 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
 
   return (
     <>
+      {/* EXCEPTIONS FIRST (wave 108D) — the page LEADS with the sentence and the ranked list. */}
+      {data.exceptionsFirst && (
+        <div className="mx-6 mt-4">
+          <ExceptionsFirstPanel view={data.exceptionsFirst} />
+        </div>
+      )}
       {tenantHalt?.halted && (
         <div className="mx-6 mt-4">
           <AutonomyHaltBanner reason={tenantHalt.reason} haltedAt={tenantHalt.haltedAt} />
@@ -248,14 +392,38 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
       {/* ANNOUNCE TO MY TEAM — the principal's internal broadcast composer.
           Page entry is already principal-gated (mayEnter above, the same
           tier-parity rule); the server action re-enforces it. In-app only. */}
-      {brokerageId && userType !== "superadmin" && (
+      {brokerageId && !isSuperadmin && (
         <div className="mx-6 mt-4">
-          <TeamAnnouncementComposer canChooseScope={["admin", "broker"].includes(userType)} />
+          <TeamAnnouncementComposer canChooseScope={isAdminOrBroker({ user_type: userType })} />
         </div>
+      )}
+      {/* RESOURCE ALLOCATION (wave 106A) — the open recommendations a human decides; admin roster only. */}
+      {data.allocationBoard && brokerageId && !isSuperadmin && isAdminOrBroker({ user_type: userType }) && (
+        <div className="mx-6 mt-4">
+          <AllocationCard board={data.allocationBoard} />
+        </div>
+      )}
+      {missions?.ok && (
+        <div id="missions" className="mx-6 mt-4">
+          <MissionsCard active={missions.data.active} attention={missions.data.attention} readRefused={missions.data.readRefused} delegations={missions.data.delegations} delegationsRefused={missions.data.delegationsRefused} verdicts={missions.data.verdicts} managers={missionManagers} missionTypes={MISSION_TYPES} />
+        </div>
+      )}
+      {missions && !missions.ok && (
+        <div className="mx-6 mt-4 rounded-lg border p-3 text-sm text-red-700">Missions could not be listed: {missions.error}</div>
       )}
       {earned?.ok && earned.grants && (
         <div className="mx-6 mt-4">
           <EarnedAutonomyPanel grants={earned.grants} />
+        </div>
+      )}
+      {policyDecisions?.ok && policyDecisions.groups && (
+        <div className="mx-6 mt-4">
+          <PolicyDecisionsPanel groups={policyDecisions.groups} />
+        </div>
+      )}
+      {autonomyAccuracy && (
+        <div className="mx-6 mt-4">
+          <AutonomyAccuracyCard summary={autonomyAccuracy} />
         </div>
       )}
       {teammates?.ok && (
@@ -286,9 +454,26 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
           <span className="text-muted-foreground"> · {lift.why}</span>
         </div>
       )}
+      {/* OFFICES (wave 150, lane 150DAC — C34). A multi-location viewer sees WHICH offices this view covers and why
+          (the hierarchy's own basis), and the door to Settings → Offices (lane 150C's surface — linked, never copied).
+          A scope the reader could not resolve is said in words, never shown as brokerage-wide. */}
+      {brokerageId && !isSuperadmin && (multiLocation || scopeRefusal || scopeOptions.some((o) => o.value.startsWith("location:"))) && (
+        <section aria-label="Offices in this view" className="mx-6 mt-4 rounded-lg border p-3 text-sm">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p>
+              <span className="font-medium">Showing: {scopeLabel}</span>
+              {baseScope?.basis?.length ? <span className="text-muted-foreground"> — {baseScope.basis.slice(0, 2).join("; ")}</span> : null}
+            </p>
+            <Link href="/dashboard/settings/offices" className="inline-flex min-h-9 items-center rounded-md border px-3 font-medium underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2">
+              Offices and access
+            </Link>
+          </div>
+          {scopeRefusal && <p role="status" className="mt-1 text-red-700">{scopeRefusal}</p>}
+        </section>
+      )}
       <CommandCenterClient
         data={data}
-        scope={userType === "superadmin" ? "platform" : "brokerage"}
+        scope={isSuperadmin ? "platform" : "brokerage"}
         scopeLabel={scopeLabel}
         canSwitch={canSwitch}
         scopeOptions={scopeOptions}

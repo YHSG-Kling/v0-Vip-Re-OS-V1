@@ -25,7 +25,7 @@ export function AgentCareerTierCard({ agentId }: { agentId: string }) {
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="flex items-center gap-2 text-base">
-          <Trophy className="h-5 w-5 text-amber-500" /> Career Tier
+          <Trophy className="h-5 w-5 text-amber-600" /> Career Tier
           <Badge className="capitalize">{data.currentLabel}</Badge>
         </CardTitle>
       </CardHeader>

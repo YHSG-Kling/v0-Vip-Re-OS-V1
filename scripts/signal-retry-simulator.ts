@@ -45,8 +45,14 @@ function sourceLayer() {
   check("a failed republish falls through to escalate+expire (a stall is never lost)",
     /republish failed → fall through/.test(reaper))
   const reg = src("lib/kernel/manager-registry.ts")
-  check("burn domain owned by data_steward with a runnable proof",
-    /signal_dead_letter_retry:\s*\{\s*manager:\s*"data_steward",\s*proof:\s*"test:signal-retry"/.test(reg))
+  // Owner is cron_manager, not data_steward. This assertion and the registry
+  // entry it checks were authored in the SAME commit disagreeing with each
+  // other, and because the simulator was never wired nobody saw it. The
+  // registry is the one that is right: cron_manager owns "schedules,
+  // heartbeat & loop health (operations)", which is exactly this domain;
+  // data_steward owns "data integrity, identity & field stewardship".
+  check("burn domain owned by cron_manager with a runnable proof",
+    /signal_dead_letter_retry:\s*\{\s*manager:\s*"cron_manager",\s*proof:\s*"test:signal-retry"/.test(reg))
   check("package.json wires the proof", /"test:signal-retry":\s*"tsx scripts\/signal-retry-simulator\.ts"/.test(src("package.json")))
 }
 

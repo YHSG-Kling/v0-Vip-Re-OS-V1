@@ -15,8 +15,10 @@
  * live near them, generating built-in viral distribution.
  */
 
-import { createClient } from "@/lib/supabase/server"
+import { bestEffort } from "@/lib/db/best-effort"
 import { revalidatePath } from "next/cache"
+import { requireCallerTenant } from "@/lib/auth/require-caller"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 interface Input {
   listingId: string
@@ -28,19 +30,39 @@ interface Input {
 export async function pushListingToSellerPortal(
   input: Input
 ): Promise<{ success: boolean; publicUrl?: string; error?: string }> {
-  const supabase = await createClient()
+  // WAVE 155 (lane 155S2): THE GATE. This public endpoint resolved no session: the tenant was `input.brokerageId`, the
+  // pusher was `input.userId`, and a seller notification was written for any listing whose brokerage matched the BODY.
+  // Now: the SESSION's tenant (a body brokerageId naming another tenant is refused — requireCallerTenant →
+  // decideClaimedTenant); the pusher is the SESSION user (a body userId naming someone else is refused); the listing is
+  // read INSIDE the session tenant and must be the caller's own listing or the caller must hold the tenant roster.
+  const caller = await requireCallerTenant(input.brokerageId)
+  if (!caller.ok) return { success: false, error: caller.error }
+  if (input.userId && input.userId !== caller.userId) return { success: false, error: "Forbidden: you push listings as yourself" }
+  const brokerageId = caller.brokerageId
+  const supabase = caller.supabase
 
-  // 1. Fetch listing + slug
-  const { data: listing } = await supabase
+  // 1. Fetch listing + slug — inside the session's tenant
+  const { data: listing, error: listingError } = await supabase
     .from("listings")
-    .select("id, brokerage_id, address, city, state, list_price, slug, contact_id")
+    .select("id, brokerage_id, agent_id, address, city, state, list_price, slug, contact_id")
     .eq("id", input.listingId)
+    .eq("brokerage_id", brokerageId)
     .maybeSingle()
 
+  if (listingError) return { success: false, error: "Could not read that listing" }
   if (!listing) return { success: false, error: "Listing not found" }
-  if ((listing as { brokerage_id: string }).brokerage_id !== input.brokerageId) {
-    return { success: false, error: "Listing does not belong to this brokerage" }
+  if (!isAdminOrBroker({ user_type: caller.userType })) {
+    const { data: own, error: ownError } = await supabase.from("agents").select("id").eq("user_id", caller.userId).maybeSingle()
+    if (ownError) return { success: false, error: "Could not resolve your agent record" }
+    if (!own || (own as { id: string }).id !== (listing as { agent_id?: string | null }).agent_id) {
+      return { success: false, error: "Only the listing's agent or brokerage staff can push it to the seller" }
+    }
   }
+
+  // G12 receipt (agent_action_ledger): who pushed which listing to its seller's portal. No idempotency key — a second push
+  // is a second, real push (fresh copy + a fresh bell).
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const pushed = await ledgerSessionAction<{ success: boolean; publicUrl?: string; error?: string }>({ brokerageId, action: "listing.seller_share.push", actor: { type: "user", userId: caller.userId }, subject: { type: "listing", id: input.listingId }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const l = listing as {
     id: string
@@ -73,16 +95,16 @@ export async function pushListingToSellerPortal(
 
   // 3. Insert into seller_share_feed (best-effort — table may not exist yet)
   try {
-    await supabase.from("seller_share_feed").insert({
+    await bestEffort(supabase.from("seller_share_feed").insert({
       listing_id: l.id,
       contact_id: l.contact_id,
-      brokerage_id: input.brokerageId,
-      pushed_by_user_id: input.userId,
+      brokerage_id: brokerageId,
+      pushed_by_user_id: caller.userId,
       public_url: publicUrl,
       share_messages: messages,
       agent_note: input.message ?? null,
       pushed_at: new Date().toISOString(),
-    })
+    }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
   } catch {
     // Table doesn't exist yet — fall through and just notify the seller
   }
@@ -93,11 +115,12 @@ export async function pushListingToSellerPortal(
       .from("contacts")
       .select("contact_user_id")
       .eq("id", l.contact_id)
+      .eq("brokerage_id", brokerageId)
       .maybeSingle()
     if (contactUser?.contact_user_id) {
-      await supabase.from("notifications").insert({
+      const { error: notifyError } = await supabase.from("notifications").insert({
         user_id: contactUser.contact_user_id,
-        brokerage_id: input.brokerageId,
+        brokerage_id: brokerageId,
         type: "share_my_home",
         title: "Share Your Home",
         body: `Your agent pushed shareable copy + a link for ${l.address ?? "your listing"}. Open your portal to share with friends and family.`,
@@ -107,9 +130,12 @@ export async function pushListingToSellerPortal(
         is_read: false,
         created_at: new Date().toISOString(),
       })
+      if (notifyError) console.warn("[push-listing-to-seller-portal.ts] notifications insert refused — the bell will not ring:", notifyError.message)
     }
   }
 
   revalidatePath(`/dashboard/listings/${l.id}`)
   return { success: true, publicUrl }
+  })
+  return pushed
 }

@@ -148,11 +148,17 @@ async function agentIdToUser(supabase: Svc, agentId: string | null | undefined):
 }
 
 /** Resolve a deal's Transaction Coordinator user + agent user + buyer contact. Best-effort. */
-export async function resolveTransactionTeamUsers(supabase: Svc, transactionId: string): Promise<DealTeam> {
+export async function resolveTransactionTeamUsers(supabase: Svc, transactionId: string, brokerageId: string): Promise<DealTeam> {
+  // Tenant pin (wave 152, lane 152E Outside-lane 7 → made UNCONDITIONAL by lane 152K): the integrated `if (brokerageId)` pin let a
+  // missing tenant id decay into "any tenant's deal" (test:conditional-tenant-predicate). Every caller holds its tenant — the
+  // compliance runner and the huddle (verified), the manager-signal handlers (ctx.brokerageId, the signal's own tenant), the
+  // appraisal-negotiation door (args.brokerageId) — so the pin is required, and a missing one reads as no deal team.
+  if (!brokerageId) return { agentUserId: null, coordinatorUserId: null, buyerContactId: null, dealName: null }
   const { data: t } = await supabase
     .from("transactions")
     .select("agent_id, coordinator_id, buyer_contact_id, contact_id, deal_name")
     .eq("id", transactionId)
+    .eq("brokerage_id", brokerageId)
     .maybeSingle()
   if (!t) return { agentUserId: null, coordinatorUserId: null, buyerContactId: null, dealName: null }
   const row = t as Record<string, unknown>
@@ -236,7 +242,7 @@ export async function runDealSaveHuddle(
   const empty = { convened: false, coordinatorTaskCreated: false, delegatedTo: [] as ManagerKey[], notifiedUsers: 0, clientWarningProposed: false, vendorsNotified: [] as string[] }
   if (buckets.length === 0) return { ...empty, reason: "no failing components" }
 
-  const team = await resolveTransactionTeamUsers(supabase, params.transactionId)
+  const team = await resolveTransactionTeamUsers(supabase, params.transactionId, params.brokerageId)
   const deal = params.dealName?.trim() || team.dealName?.trim() || "this deal"
   const priority: "high" | "medium" = params.riskLevel === "critical" ? "high" : "medium"
   const delegatedTo: ManagerKey[] = []
@@ -346,7 +352,7 @@ export async function standDownDealSaveHuddle(
   client?: Svc,
 ): Promise<DealSaveStandDownResult> {
   const supabase: Svc = client ?? createServiceClient()
-  const { data: expired } = await supabase
+  const { data: expired, error: standDownErr } = await supabase
     .from("manager_signals")
     .update({ status: "expired", consumed_at: new Date().toISOString(), consumed_action: `stood down — deal recovered to ${params.newRiskLevel}` })
     .eq("brokerage_id", params.brokerageId)
@@ -354,10 +360,11 @@ export async function standDownDealSaveHuddle(
     .eq("entity_id", params.transactionId)
     .eq("status", "open")
     .select("id")
+  if (standDownErr) console.error(`[deal-save-huddle] stand-down refused (huddle signals stay open): ${standDownErr.message}`)
   const stoodDown = (expired ?? []).length
   if (stoodDown === 0) return { stoodDown: 0, notifiedUsers: 0 }
 
-  const team = await resolveTransactionTeamUsers(supabase, params.transactionId)
+  const team = await resolveTransactionTeamUsers(supabase, params.transactionId, params.brokerageId)
   const deal = params.dealName?.trim() || team.dealName?.trim() || "the deal"
   const notifiedUsers = await notifyDealTeam(supabase, {
     team, brokerageId: params.brokerageId, transactionId: params.transactionId,

@@ -14,9 +14,15 @@ import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { KernelEvent } from "@/lib/kernel/events"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
-import { resolveActingContext, READ_ONLY_ACTING_ERROR } from "@/lib/platform/acting-context"
+import { resolveActingContext, READ_ONLY_ACTING_ERROR, decideClaimedTenant } from "@/lib/platform/acting-context"
+import { sanitizeCssColor } from "@/lib/format/style"
 
-const BROKERAGE_ADMIN_ROLES = ["admin", "broker", "broker_owner", "superadmin", "super_admin"]
+// TRUE ADMIN GATE (operational: branding/onboarding) — repointed to the ONE
+// tenant roster (isAdminOrBroker below). 'superadmin'/'super_admin' were dead:
+// 0 live rows store either users.user_type spelling.
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { checkUpload } from "@/lib/storage/file-limits"
+import { normalizeFormalityLevel } from "@/lib/branding/formality"
 
 /**
  * Brand config is brokerage-wide + admin-gated. Now IMPERSONATION-AWARE: when a platform
@@ -32,7 +38,7 @@ async function requireBrandAdmin(): Promise<
   const ctx = await resolveActingContext()
   if (!ctx.ok || !ctx.userId) return { ok: false, error: "Unauthorized" }
   if (!ctx.brokerageId) return { ok: false, error: "Brokerage not found" }
-  if (!BROKERAGE_ADMIN_ROLES.includes(ctx.userType)) {
+  if (!isAdminOrBroker({ user_type: ctx.userType })) {
     return { ok: false, error: "Forbidden: brokerage admin only" }
   }
   return { ok: true, userId: ctx.userId, brokerageId: ctx.brokerageId, db: ctx.db, readOnly: ctx.readOnly, isImpersonating: ctx.isImpersonating }
@@ -100,7 +106,12 @@ export interface SaveVoiceData {
   tone: string
   formalityLevel: string
   prohibitedWords: string[]
-  signaturePhrases: string[]
+  /** Written to preferred_words when given. Omitted = leave the stored phrases as they are (the admin brand screen does not edit them). */
+  signaturePhrases?: string[]
+  /** Written to key_brand_messages when given (the admin brand screen edits these; the wizard does not). */
+  keyBrandMessages?: string[]
+  /** The onboarding wizard advances its step marker on save; the admin brand screen passes false so a finished wizard is not moved back. */
+  advanceWizard?: boolean
 }
 
 export interface SaveTemplateData {
@@ -120,7 +131,7 @@ export async function getBrandSetupStatus(
     // client that isn't blocked by the target's RLS).
     const ctx = await resolveActingContext()
     if (!ctx.ok || !ctx.userId) return { data: null, error: "Unauthorized" }
-    if (ctx.brokerageId !== brokerageId) return { data: null, error: "Unauthorized: Brokerage mismatch" }
+    if (!brokerageId || !decideClaimedTenant({ actingBrokerageId: ctx.brokerageId, claimedBrokerageId: brokerageId }).ok) return { data: null, error: "Unauthorized: Brokerage mismatch" } // The claimed-tenant rule is the ONE decision table (lane 93A, §6) — not a hand-rolled copy.
     const supabase = ctx.db
 
     // Get global settings
@@ -198,16 +209,24 @@ export async function saveBrandColors(
     if (!auth.ok) return { success: false, error: auth.error }
     if (auth.readOnly) return { success: false, error: READ_ONLY_ACTING_ERROR }
     const brokerageId = auth.brokerageId
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return ledgerSessionAction({ brokerageId: brokerageId, action: "brand.colors.update", actor: { type: "user", userId: auth.userId }, subject: { type: "brokerage", id: brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ success: boolean; error?: string }> => {
 
     const supabase = auth.db
+
+    // MOUNTED (§1 orphan doctrine, wave 58 carried item): sanitizeCssColor —
+    // an unvalidated color string here is a CSS-injection surface on every
+    // brand-facing render, not merely a cosmetic risk.
+    const primaryColor = sanitizeCssColor(data.primaryColor)
+    const secondaryColor = sanitizeCssColor(data.secondaryColor)
 
     // Upsert global_settings
     const { error: settingsError } = await supabase
       .from("global_settings")
       .upsert({
         brokerage_id: brokerageId,
-        primary_color: data.primaryColor,
-        secondary_color: data.secondaryColor,
+        primary_color: primaryColor,
+        secondary_color: secondaryColor,
         app_logo_url: data.logoUrl || null,
         updated_at: new Date().toISOString(),
       }, {
@@ -238,6 +257,7 @@ export async function saveBrandColors(
     }
 
     return { success: true }
+    })
   } catch (error) {
     console.error("[L11-Brand] saveBrandColors error:", error)
     return { success: false, error: "Failed to save brand colors" }
@@ -255,6 +275,8 @@ export async function saveBrandTypography(
     if (adminAuth.readOnly) return { success: false, error: READ_ONLY_ACTING_ERROR }
     const supabase = adminAuth.db
     const brokerageId = adminAuth.brokerageId
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return ledgerSessionAction({ brokerageId: brokerageId, action: "brand.typography.update", actor: { type: "user", userId: adminAuth.userId }, subject: { type: "brokerage", id: brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ success: boolean; error?: string }> => {
 
     // Update global_settings font
     const { error: settingsError } = await supabase
@@ -291,6 +313,7 @@ export async function saveBrandTypography(
     }
 
     return { success: true }
+    })
   } catch (error) {
     console.error("[L11-Brand] saveBrandTypography error:", error)
     return { success: false, error: "Failed to save typography" }
@@ -308,15 +331,33 @@ export async function saveBrandVoice(
     if (adminAuth.readOnly) return { success: false, error: READ_ONLY_ACTING_ERROR }
     const supabase = adminAuth.db
     const brokerageId = adminAuth.brokerageId
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return ledgerSessionAction({ brokerageId: brokerageId, action: "brand.voice.update", actor: { type: "user", userId: adminAuth.userId }, subject: { type: "brokerage", id: brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ success: boolean; error?: string }> => {
+
+    // ONE formality vocabulary (lib/branding/formality.ts). The wizard used to send "semi-formal",
+    // which the live CHECK refuses (23514) — every default save failed. Normalize; refuse unknown.
+    const formalityLevel = normalizeFormalityLevel(data.formalityLevel)
+    if (!formalityLevel) return { success: false, error: `Unknown formality level "${data.formalityLevel}" — use formal, semi-formal or casual.` }
 
     // Check for existing brand voice profile
-    const { data: existing } = await supabase
+    const { data: existing, error: existingErr } = await supabase
       .from("brand_voice_profile")
       .select("id")
       .eq("brokerage_id", brokerageId)
       .is("agent_id", null)
       .is("team_id", null)
       .maybeSingle()
+    if (existingErr) {
+      // A refused read is NOT "no profile yet": inserting here would be refused by the brokerage-level unique index or, worse, duplicate.
+      console.error("[L11-Brand] brand voice read refused:", existingErr.message)
+      return { success: false, error: "Failed to save voice settings" }
+    }
+
+    // Only the fields the caller actually edits are written — a screen that does not show a field never blanks it.
+    const optional: Record<string, unknown> = {
+      ...(Array.isArray(data.signaturePhrases) ? { preferred_words: data.signaturePhrases } : {}),
+      ...(Array.isArray(data.keyBrandMessages) ? { key_brand_messages: data.keyBrandMessages } : {}),
+    }
 
     if (existing) {
       // Update existing
@@ -324,12 +365,14 @@ export async function saveBrandVoice(
         .from("brand_voice_profile")
         .update({
           tone: data.tone,
-          formality_level: data.formalityLevel,
+          formality_level: formalityLevel,
           prohibited_words: data.prohibitedWords,
-          preferred_words: data.signaturePhrases,
+          ...optional,
+          is_active: true,
           updated_at: new Date().toISOString(),
         })
         .eq("id", existing.id)
+        .eq("brokerage_id", brokerageId)
 
       if (updateError) {
         console.error("[L11-Brand] Failed to update brand voice:", updateError)
@@ -342,9 +385,9 @@ export async function saveBrandVoice(
         .insert({
           brokerage_id: brokerageId,
           tone: data.tone,
-          formality_level: data.formalityLevel,
+          formality_level: formalityLevel,
           prohibited_words: data.prohibitedWords,
-          preferred_words: data.signaturePhrases,
+          ...optional,
           is_active: true,
         })
 
@@ -354,18 +397,22 @@ export async function saveBrandVoice(
       }
     }
 
-    // Update wizard step
-    await supabase
-      .from("brokerage_brand_settings")
-      .upsert({
-        brokerage_id: brokerageId,
-        wizard_step_reached: 3,
-        updated_at: new Date().toISOString(),
-      }, {
-        onConflict: "brokerage_id",
-      })
+    // Update wizard step (the wizard's own saves only — see SaveVoiceData.advanceWizard)
+    if (data.advanceWizard !== false) {
+      const { error: wizardStepErr } = await supabase
+        .from("brokerage_brand_settings")
+        .upsert({
+          brokerage_id: brokerageId,
+          wizard_step_reached: 3,
+          updated_at: new Date().toISOString(),
+        }, {
+          onConflict: "brokerage_id",
+        })
+      if (wizardStepErr) console.error(`[onboarding/brand] wizard step NOT saved: ${wizardStepErr.message}`)
+    }
 
     return { success: true }
+    })
   } catch (error) {
     console.error("[L11-Brand] saveBrandVoice error:", error)
     return { success: false, error: "Failed to save brand voice" }
@@ -383,13 +430,16 @@ export async function saveTemplate(
     if (adminAuth.readOnly) return { success: false, error: READ_ONLY_ACTING_ERROR }
     const supabase = adminAuth.db
     const brokerageId = adminAuth.brokerageId
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return ledgerSessionAction({ brokerageId: brokerageId, action: "brand.template.save", actor: { type: "user", userId: adminAuth.userId }, subject: { type: "brokerage", id: brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ success: boolean; templateId?: string; error?: string }> => {
 
     // Deactivate existing templates of the same type
-    await supabase
+    const { error: templatesDeactivateErr } = await supabase
       .from("brand_templates")
       .update({ is_active: false })
       .eq("brokerage_id", brokerageId)
       .eq("template_type", data.templateType)
+    if (templatesDeactivateErr) console.error(`[onboarding/brand] prior templates NOT deactivated: ${templatesDeactivateErr.message}`)
 
     // Insert new template
     const { data: template, error: templateError } = await supabase
@@ -411,7 +461,7 @@ export async function saveTemplate(
 
     // Update brand settings with signature/letterhead
     if (data.templateType === "email_signature") {
-      await supabase
+      const { error: signatureErr } = await supabase
         .from("brokerage_brand_settings")
         .upsert({
           brokerage_id: brokerageId,
@@ -421,8 +471,9 @@ export async function saveTemplate(
         }, {
           onConflict: "brokerage_id",
         })
+      if (signatureErr) return { success: false, error: `Could not save the email signature: ${signatureErr.message}` }
     } else if (data.templateType === "letterhead") {
-      await supabase
+      const { error: letterheadErr } = await supabase
         .from("brokerage_brand_settings")
         .upsert({
           brokerage_id: brokerageId,
@@ -432,9 +483,11 @@ export async function saveTemplate(
         }, {
           onConflict: "brokerage_id",
         })
+      if (letterheadErr) return { success: false, error: `Could not save the letterhead: ${letterheadErr.message}` }
     }
 
     return { success: true, templateId: template.id }
+    })
   } catch (error) {
     console.error("[L11-Brand] saveTemplate error:", error)
     return { success: false, error: "Failed to save template" }
@@ -497,13 +550,19 @@ export async function publishBrand(
     }
 
     // Get agent's onboarding record
+    // A self-serve broker-owner seat has NO agents row (agentId null). `.eq("agent_id", null)` is not
+    // "IS NULL": PostgREST sends agent_id=eq.null, the uuid cast refuses it, and the refusal was
+    // swallowed (wave 93 live walk, lane 93D). No agent → no agent onboarding record to advance.
     const agentId = await resolveAgentId(supabase, adminAuth.userId)
-    const { data: onboarding } = await supabase
-      .from("agent_onboarding")
-      .select("id, status")
-      .eq("agent_id", agentId)
-      .eq("brokerage_id", brokerageId)
-      .maybeSingle()
+    const { data: onboarding, error: onboardingErr } = agentId
+      ? await supabase
+          .from("agent_onboarding")
+          .select("id, status")
+          .eq("agent_id", agentId)
+          .eq("brokerage_id", brokerageId)
+          .maybeSingle()
+      : { data: null, error: null }
+    if (onboardingErr) console.error("[L11-Brand] publishBrand onboarding read refused:", onboardingErr.message)
 
     // Fire kernel event
     await processKernelEvent({
@@ -545,21 +604,30 @@ export async function uploadLogo(
     if (adminAuth.readOnly) return { success: false, error: READ_ONLY_ACTING_ERROR }
     const supabase = adminAuth.db
     const brokerageId = adminAuth.brokerageId
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return ledgerSessionAction({ brokerageId: brokerageId, action: "brand.logo.upload", actor: { type: "user", userId: adminAuth.userId }, subject: { type: "brokerage", id: brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ success: boolean; logoUrl?: string; error?: string }> => {
 
     const file = formData.get("file") as File
     if (!file) {
       return { success: false, error: "No file provided" }
     }
 
-    // Validate file type
-    const allowedTypes = ["image/png", "image/svg+xml", "image/jpeg"]
-    if (!allowedTypes.includes(file.type)) {
-      return { success: false, error: "File must be PNG, SVG, or JPEG" }
-    }
-
-    // Validate file size (5MB)
-    if (file.size > 5 * 1024 * 1024) {
-      return { success: false, error: "File size must be less than 5MB" }
+    // TYPE AND SIZE, from the bucket's own live configuration rather than from
+    // two literals kept here. `brokerage-assets` declares
+    // allowed_mime_types = [image/png, image/svg+xml, image/jpeg] and
+    // file_size_limit = 5,242,880 — the hand-kept pair below happened to agree
+    // with it today, which is precisely why they were worth removing: nothing
+    // would have said so if the bucket changed. The transport ceiling is folded
+    // in too (this is a Server Action, so 4.5 MB is the real cap and 5 MB was
+    // already unreachable).
+    const gate = checkUpload({
+      bucket: "brokerage-assets",
+      transport: "server_action",
+      bytes: file.size,
+      contentType: file.type,
+    })
+    if (!gate.ok) {
+      return { success: false, error: gate.reason }
     }
 
     const fileExt = file.name.split(".").pop()
@@ -584,7 +652,7 @@ export async function uploadLogo(
       .getPublicUrl(fileName)
 
     // Update global_settings with logo URL
-    await supabase
+    const { error: logoSaveErr } = await supabase
       .from("global_settings")
       .upsert({
         brokerage_id: brokerageId,
@@ -593,8 +661,10 @@ export async function uploadLogo(
       }, {
         onConflict: "brokerage_id",
       })
+    if (logoSaveErr) return { success: false, error: `Logo uploaded, but it was not saved to your brand settings: ${logoSaveErr.message}` }
 
     return { success: true, logoUrl: urlData.publicUrl }
+    })
   } catch (error) {
     console.error("[L11-Brand] uploadLogo error:", error)
     return { success: false, error: "Failed to upload logo" }

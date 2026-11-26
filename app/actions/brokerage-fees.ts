@@ -14,7 +14,8 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveActingContext, resolveWriteContextForTenant } from "@/lib/platform/acting-context"
+import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -48,10 +49,18 @@ export interface AgentFeeCharge {
   periodStart: string
   periodEnd: string | null
   amount: number
+  /** ISO currency of `amount` (generatePeriodicCharges stamps it from the fee
+   *  type). Was written on every charge and read by nobody, so both fee UIs
+   *  hardcoded USD — a wrong number the moment a fee type carries anything else. */
+  currency: string
   status: ChargeStatus
   dueDate: string | null
   paidAt: string | null
   paymentMethod: string | null
+  /** Broker's waive reason (waiveCharge writes it). Written since the fee system
+   *  shipped, displayed nowhere — a waived charge showed WITH NO WHY to either
+   *  side of the money. */
+  notes: string | null
 }
 
 // ---------------------------------------------------------------------------
@@ -76,13 +85,14 @@ export async function createFeeType(input: CreateFeeTypeInput): Promise<{
   feeTypeId?: string
   error?: string
 }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
   if (!isBrokerRole(ctx.userType)) {
     return { success: false, error: "Only broker / admin / superadmin can create fees" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async (): ReturnType<typeof createFeeType> => {
   if (input.amount <= 0) return { success: false, error: "Amount must be positive" }
 
   const svc = createServiceClient()
@@ -117,20 +127,28 @@ export async function createFeeType(input: CreateFeeTypeInput): Promise<{
       brokerage_id: ctx.brokerageId,
       is_active: true,
     }))
-    await svc.from("agent_fee_assignments").insert(rows)
+    // The fee type landed; a refused assignment means the named agents are NOT
+    // charged while this used to report success. Say so — the fee type exists and
+    // the assignment can be retried from the fee's edit screen.
+    const { error: assignErr } = await svc.from("agent_fee_assignments").insert(rows)
+    if (assignErr) {
+      return { success: false, feeTypeId: feeType.id, error: `Fee created, but assigning it to the selected agents was refused: ${assignErr.message}` }
+    }
   }
 
   return { success: true, feeTypeId: feeType.id }
+  }; return (await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "finance.fee_type.create", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "brokerage", id: ctx.brokerageId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>>
 }
 
 export async function toggleFeeType(params: {
   feeTypeId: string
   isActive: boolean
 }): Promise<{ success: boolean; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !isBrokerRole(ctx.userType)) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !isBrokerRole(ctx.userType)) {
     return { success: false, error: "Unauthorized" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async (): ReturnType<typeof toggleFeeType> => {
   const svc = createServiceClient()
   const { error } = await svc
     .from("brokerage_fee_types")
@@ -138,6 +156,7 @@ export async function toggleFeeType(params: {
     .eq("id", params.feeTypeId)
     .eq("brokerage_id", ctx.brokerageId!)
   return error ? { success: false, error: error.message } : { success: true }
+  }; return (await ledgerSessionAction({ brokerageId: ctx.brokerageId!, action: "finance.fee_type.toggle", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "brokerage_fee_type", id: params.feeTypeId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>>
 }
 
 // ---------------------------------------------------------------------------
@@ -145,8 +164,13 @@ export async function toggleFeeType(params: {
 // ---------------------------------------------------------------------------
 
 export async function listFeeTypes(): Promise<FeeType[]> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) return []
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.brokerageId) return []
+  // The fee schedule is broker-level financial config — gate the read to the
+  // same roles that create/toggle fees (createFeeType / setFeeTypeActive). This
+  // uses the service client (RLS-bypassing), so a brokerage_id check alone let
+  // any plain agent enumerate the whole fee structure.
+  if (!isBrokerRole(ctx.userType)) return []
 
   const svc = createServiceClient()
   const { data } = await svc
@@ -172,15 +196,15 @@ export async function listFeeTypes(): Promise<FeeType[]> {
 }
 
 export async function getMyOpenCharges(): Promise<AgentFeeCharge[]> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.agentId) return []
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.agentId) return []
 
   const svc = createServiceClient()
   const { data: charges } = await svc
     .from("agent_fee_charges")
     .select(`
       id, agent_id, fee_type_id, period_start, period_end,
-      amount, status, due_date, paid_at, payment_method,
+      amount, currency, status, due_date, paid_at, payment_method, notes,
       brokerage_fee_types(name)
     `)
     .eq("agent_id", ctx.agentId)
@@ -196,10 +220,12 @@ export async function getMyOpenCharges(): Promise<AgentFeeCharge[]> {
     periodStart: c.period_start,
     periodEnd: c.period_end,
     amount: c.amount,
+    currency: c.currency ?? "USD",
     status: c.status,
     dueDate: c.due_date,
     paidAt: c.paid_at,
     paymentMethod: c.payment_method,
+    notes: c.notes ?? null,
   }))
 }
 
@@ -207,15 +233,15 @@ export async function listBrokerageCharges(filter?: {
   status?: ChargeStatus
   agentId?: string
 }): Promise<AgentFeeCharge[]> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId || !isBrokerRole(ctx.userType)) return []
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.brokerageId || !isBrokerRole(ctx.userType)) return []
 
   const svc = createServiceClient()
   let q = svc
     .from("agent_fee_charges")
     .select(`
       id, agent_id, fee_type_id, period_start, period_end,
-      amount, status, due_date, paid_at, payment_method,
+      amount, currency, status, due_date, paid_at, payment_method, notes,
       brokerage_fee_types(name)
     `)
     .eq("brokerage_id", ctx.brokerageId)
@@ -254,10 +280,12 @@ export async function listBrokerageCharges(filter?: {
     periodStart: c.period_start,
     periodEnd: c.period_end,
     amount: c.amount,
+    currency: c.currency ?? "USD",
     status: c.status,
     dueDate: c.due_date,
     paidAt: c.paid_at,
     paymentMethod: c.payment_method,
+    notes: c.notes ?? null,
   }))
 }
 
@@ -269,10 +297,11 @@ export async function markChargePaid(params: {
   chargeId: string
   paymentMethod?: string
 }): Promise<{ success: boolean; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !isBrokerRole(ctx.userType)) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !isBrokerRole(ctx.userType)) {
     return { success: false, error: "Unauthorized" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async (): ReturnType<typeof markChargePaid> => {
   const svc = createServiceClient()
   const { error } = await svc
     .from("agent_fee_charges")
@@ -284,16 +313,18 @@ export async function markChargePaid(params: {
     .eq("id", params.chargeId)
     .eq("brokerage_id", ctx.brokerageId!)
   return error ? { success: false, error: error.message } : { success: true }
+  }; return (await ledgerSessionAction({ brokerageId: ctx.brokerageId!, action: "finance.fee_charge.mark_paid", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "agent_fee_charge", id: params.chargeId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>>
 }
 
 export async function waiveCharge(params: {
   chargeId: string
   reason?: string
 }): Promise<{ success: boolean; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !isBrokerRole(ctx.userType)) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !isBrokerRole(ctx.userType)) {
     return { success: false, error: "Unauthorized" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async (): ReturnType<typeof waiveCharge> => {
   const svc = createServiceClient()
   const { error } = await svc
     .from("agent_fee_charges")
@@ -304,162 +335,37 @@ export async function waiveCharge(params: {
     .eq("id", params.chargeId)
     .eq("brokerage_id", ctx.brokerageId!)
   return error ? { success: false, error: error.message } : { success: true }
+  }; return (await ledgerSessionAction({ brokerageId: ctx.brokerageId!, action: "finance.fee_charge.waive", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "agent_fee_charge", id: params.chargeId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>>
 }
 
 // ---------------------------------------------------------------------------
 // GENERATE CHARGES — called by a cron each cadence period
 // ---------------------------------------------------------------------------
 
-/**
- * Generate this period's charges for all active fee types.
- * Idempotent via the (agent_id, fee_type_id, period_start) UNIQUE constraint.
- * Designed to run from a Vercel cron / Supabase scheduled function monthly.
- */
-export async function generatePeriodicCharges(): Promise<{
-  success: boolean
-  generated: number
-  error?: string
-}> {
-  const svc = createServiceClient()
-  const today = new Date().toISOString().slice(0, 10)
-
-  // Pull all active fee types (across all brokerages — system run)
-  const { data: feeTypes } = await svc
-    .from("brokerage_fee_types")
-    .select("*")
-    .eq("is_active", true)
-
-  if (!feeTypes?.length) return { success: true, generated: 0 }
-
-  let inserted = 0
-  for (const ft of feeTypes) {
-    // Determine period_start for this cadence
-    const periodStart = computePeriodStart(ft.cadence, today)
-    if (!periodStart) continue
-    // one_time fee — skip if already charged
-    if (ft.cadence === "one_time") {
-      const { data: existing } = await svc
-        .from("agent_fee_charges")
-        .select("id")
-        .eq("fee_type_id", ft.id)
-        .limit(1)
-      if (existing?.length) continue
-    }
-
-    // Determine which agents this applies to
-    const agentIds = await resolveAgentsForFeeType(ft, svc)
-
-    for (const agentId of agentIds) {
-      const { error } = await svc
-        .from("agent_fee_charges")
-        .insert({
-          brokerage_id: ft.brokerage_id,
-          agent_id: agentId,
-          fee_type_id: ft.id,
-          period_start: periodStart,
-          period_end: computePeriodEnd(ft.cadence, periodStart),
-          amount: ft.amount,
-          currency: ft.currency,
-          status: "open",
-          due_date: computeDueDate(periodStart),
-        })
-      if (!error) inserted++
-      // ON CONFLICT (UNIQUE) silently skips dupes — no error to surface
-    }
-  }
-
-  return { success: true, generated: inserted }
-}
+// TOMBSTONE (wave 154 — security, coverage-ledger finding 154A3 request 4): generatePeriodicCharges lived HERE, exported from a
+// "use server" file. Every export of such a file is a public HTTP endpoint (CLAUDE.md §4), and this one took no session, ran a
+// SERVICE client and wrote fee charges for EVERY tenant — anyone could post to it. Its body, with the four helpers only it
+// used (computePeriodStart, computePeriodEnd, computeDueDate, resolveAgentsForFeeType), moved unchanged to the server-only
+// module. SURVIVOR: lib/billing/brokerage-fee-charges.ts generatePeriodicCharges — its ONE caller is the cron route
+// app/api/cron/generate-brokerage-fee-charges/route.ts, behind verifyCronAuth.
 
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
 
+// BROKERAGE-WIDE MONEY (m472). The fee schedule IS the brokerage charging its
+// agents, and brokerage_fee_types / agent_fee_assignments / agent_fee_charges are
+// all FINANCE tables under public.is_brokerage_finance_admin(). This function is
+// kept as the local NAME its six call sites already read, but its ANSWER now
+// comes from the ONE shared roster instead of a literal written here — so the app
+// and RLS cannot disagree, which matters because these paths write through the
+// SERVICE client and have no RLS backstop.
+//
+// The old literal refused broker_owner — the person who owns the brokerage could
+// not set their own brokerage's fees. The shared roster admits them. It carries
+// 'broker_admin' forward as an input spelling and drops 'superadmin', which is
+// MEASURED dead as a user_type (zero live rows; the platform's one superadmin is
+// user_type='admin' with platform_role='superadmin', admitted through 'admin').
 function isBrokerRole(t?: string | null) {
-  return ["admin", "broker", "broker_admin", "superadmin"].includes(t ?? "")
-}
-
-function computePeriodStart(cadence: FeeCadence, today: string): string | null {
-  const d = new Date(today + "T00:00:00Z")
-  switch (cadence) {
-    case "monthly":
-      return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1))
-        .toISOString().slice(0, 10)
-    case "quarterly":
-      return new Date(Date.UTC(d.getUTCFullYear(), Math.floor(d.getUTCMonth() / 3) * 3, 1))
-        .toISOString().slice(0, 10)
-    case "annual":
-      return new Date(Date.UTC(d.getUTCFullYear(), 0, 1)).toISOString().slice(0, 10)
-    case "one_time":
-      return today
-    case "per_transaction":
-      return null  // generated per-transaction event, not by cron
-  }
-  return null
-}
-
-function computePeriodEnd(cadence: FeeCadence, periodStart: string): string | null {
-  const d = new Date(periodStart + "T00:00:00Z")
-  switch (cadence) {
-    case "monthly":
-      return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0))
-        .toISOString().slice(0, 10)
-    case "quarterly":
-      return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 3, 0))
-        .toISOString().slice(0, 10)
-    case "annual":
-      return new Date(Date.UTC(d.getUTCFullYear(), 11, 31)).toISOString().slice(0, 10)
-    default:
-      return null
-  }
-}
-
-function computeDueDate(periodStart: string): string {
-  const d = new Date(periodStart + "T00:00:00Z")
-  d.setUTCDate(d.getUTCDate() + 14)
-  return d.toISOString().slice(0, 10)
-}
-
-async function resolveAgentsForFeeType(ft: any, svc: ReturnType<typeof createServiceClient>): Promise<string[]> {
-  if (ft.applies_to === "all_agents") {
-    const { data } = await svc
-      .from("agents")
-      .select("id")
-      .eq("brokerage_id", ft.brokerage_id)
-    return (data ?? []).map((r: any) => r.id)
-  }
-  if (ft.applies_to === "specific_agents") {
-    const { data } = await svc
-      .from("agent_fee_assignments")
-      .select("agent_id")
-      .eq("fee_type_id", ft.id)
-      .eq("is_active", true)
-    return (data ?? []).map((r: any) => r.agent_id)
-  }
-  if (ft.applies_to === "team" && ft.applies_to_team) {
-    const { data } = await svc
-      .from("agents")
-      .select("id")
-      .eq("brokerage_id", ft.brokerage_id)
-      .eq("team_id", ft.applies_to_team)
-    return (data ?? []).map((r: any) => r.id)
-  }
-  if (ft.applies_to === "role" && ft.applies_to_role) {
-    const { data: users } = await svc
-      .from("users")
-      .select("id")
-      .eq("brokerage_id", ft.brokerage_id)
-      .eq("user_type", ft.applies_to_role)
-    const userIds = (users ?? []).map((u: any) => u.id)
-    if (!userIds.length) return []
-    const { data: agents } = await svc
-      .from("agents")
-      .select("id")
-      // tenant anchor (scope burn-down): userIds already came from this brokerage's
-      // users, but the agents rows themselves must also belong to the fee's brokerage.
-      .eq("brokerage_id", ft.brokerage_id)
-      .in("user_id", userIds)
-    return (agents ?? []).map((a: any) => a.id)
-  }
-  return []
+  return isBrokerageFinanceAdmin({ user_type: t })
 }

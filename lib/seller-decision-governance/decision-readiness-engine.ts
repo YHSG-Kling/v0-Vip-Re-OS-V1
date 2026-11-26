@@ -20,13 +20,16 @@ import {
 } from "./presentation-readiness"
 import { checkPrerequisites, type SellerDecisionState } from "./decision-state-definitions"
 import { isValidUUID } from "@/lib/validations"
+import type { UserRole } from "@/lib/auth/resolve-user-role"
 
 export interface DecisionReadinessInput {
   listingId: string
   targetState: SellerDecisionState
-  
+
   // Optional overrides
-  overrideByRole?: "agent" | "team_lead" | "broker" | "admin"
+  // ONE VOCABULARY — this is forwarded verbatim to the CMA and net-sheet
+  // evaluators, whose override judge keys on `users.user_type`.
+  overrideByRole?: UserRole
   overrideReason?: string
   
   // Current listing stage (for reversal validation)

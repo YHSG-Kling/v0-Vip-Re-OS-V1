@@ -6,7 +6,7 @@
 // Auth-gated, rate limited to 1 write per 5 seconds per agent per video
 
 import { NextRequest, NextResponse } from "next/server"
-import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { KernelEvent, processKernelEvent } from "@/lib/kernel"
 
@@ -47,6 +47,17 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    // WAVE 155 (lane 155S3): getAgentContext() NEVER throws — an anonymous caller gets the safe default (isAuthenticated false,
+    // agentId / brokerageId null), so the catch above never fired and this route wrote a completion row with agent_id NULL and
+    // fired TRAINING_VIDEO_COMPLETED / TRAINING_COURSE_COMPLETED with an empty tenant for anyone who POSTed. The guard is
+    // opt-in (lib/identity/get-agent-context.ts:57): it is now applied.
+    if (!context.isAuthenticated || !context.agentId || !context.brokerageId) {
+      return NextResponse.json(
+        { success: false, error: "Unauthorized" },
+        { status: 401 }
+      )
+    }
+
     const { agentId, brokerageId } = context
 
     // Rate limiting check
@@ -74,20 +85,44 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const supabase = await createClient()
+    // WAVE 156 (lane 156K): the gate above ran first; the writes ride the SERVICE client with the SESSION's agent and tenant
+    // pinned on every statement (CLAUDE.md §4), so the row-security write policies on video_completion_tracking can be closed to
+    // the browser (owner SQL in the lane report) without breaking this door. The percentWatched the browser sends is a CLAIM: the
+    // credited figure is lib/onboarding/certification-engine.ts creditWatchProgress — real time between this server's own writes,
+    // against the video's own duration — because the certifications read percent_watched as their evidence.
+    const supabase = createServiceClient()
+    const { creditWatchProgress, VIDEO_WATCH_COMPLETE_PERCENT } = await import("@/lib/onboarding/certification-engine")
+    const isUuidVideo = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(videoId))
+    const { data: video, error: videoErr } = isUuidVideo
+      ? await supabase.from("training_videos").select("id, duration_seconds").eq("id", videoId).or(`brokerage_id.is.null,brokerage_id.eq.${brokerageId}`).maybeSingle()
+      : { data: null, error: null }
+    if (videoErr) return NextResponse.json({ success: false, error: "The training video could not be read" }, { status: 500 })
+    if (!video) return NextResponse.json({ success: false, error: "Training video not found" }, { status: 404 })
 
-    // Check if completion record exists
-    const { data: existing } = await supabase
+    // Check if completion record exists — a refused read is not "no record" (it would re-credit from zero), so it refuses.
+    const { data: existing, error: existingErr } = await supabase
       .from("video_completion_tracking")
-      .select("id, percent_watched, completed")
+      .select("id, percent_watched, completed, updated_at, created_at")
       .eq("agent_id", agentId)
       .eq("training_video_id", videoId)
       .maybeSingle()
+    if (existingErr) return NextResponse.json({ success: false, error: "Your progress could not be read, so it was not recorded" }, { status: 500 })
 
+    const credit = creditWatchProgress({
+      durationSeconds: (video as { duration_seconds?: number | null }).duration_seconds,
+      claimedPercent: percentWatched,
+      prior: existing ? { percentWatched: existing.percent_watched, lastWriteAt: existing.updated_at ?? existing.created_at } : null,
+      now: new Date(),
+    })
     const wasCompleted = existing?.completed === true
-    const shouldComplete = percentWatched >= 90 && !wasCompleted
-    const newPercentWatched = Math.max(existing?.percent_watched || 0, percentWatched)
+    const shouldComplete = credit.creditedPercent >= VIDEO_WATCH_COMPLETE_PERCENT && !wasCompleted
+    const newPercentWatched = credit.creditedPercent
 
+    // WAVE 155 (lane 155R21, LAW 5): ONE receipt per COMPLETION — the call that flips `completed` and fires TRAINING_VIDEO_COMPLETED
+    // (and TRAINING_COURSE_COMPLETED) is the consequential act; the 10-second position saves before it are playback telemetry and
+    // stay unreceipted (a receipt per poll would double the round trips of a hot poll and bury the ledger). Session user and tenant
+    // (CLAUDE.md §4); no key — `wasCompleted` above is the act's own at-most-once. A refusing ledger changes nothing.
+    const record = async (): Promise<{ success: boolean; error?: string; allRequiredComplete: boolean }> => {
     if (existing) {
       // Update existing record
       const updateData: Record<string, unknown> = {
@@ -105,13 +140,11 @@ export async function POST(request: NextRequest) {
         .from("video_completion_tracking")
         .update(updateData)
         .eq("id", existing.id)
+        .eq("agent_id", agentId)
 
       if (updateError) {
         console.error("[TrainingAPI] Error updating progress:", updateError)
-        return NextResponse.json(
-          { success: false, error: "Failed to update progress" },
-          { status: 500 }
-        )
+        return { success: false, error: "Failed to update progress", allRequiredComplete: false }
       }
     } else {
       // Insert new record
@@ -122,17 +155,15 @@ export async function POST(request: NextRequest) {
           brokerage_id: brokerageId,
           training_video_id: videoId,
           last_position_seconds: positionSeconds,
-          percent_watched: percentWatched,
+          percent_watched: newPercentWatched,
+          updated_at: new Date().toISOString(),
           completed: shouldComplete,
           completed_at: shouldComplete ? new Date().toISOString() : null,
         })
 
       if (insertError) {
         console.error("[TrainingAPI] Error inserting progress:", insertError)
-        return NextResponse.json(
-          { success: false, error: "Failed to record progress" },
-          { status: 500 }
-        )
+        return { success: false, error: "Failed to record progress", allRequiredComplete: false }
       }
     }
 
@@ -179,6 +210,19 @@ export async function POST(request: NextRequest) {
         })
       }
     }
+    return { success: true, allRequiredComplete }
+    }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const recorded = shouldComplete && context.userId
+      ? await ledgerSessionAction({ brokerageId, action: "training.video.complete", actor: { type: "user", userId: context.userId, agentId }, subject: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(videoId)) ? { type: "training_video", id: String(videoId) } : { type: "training_video", ref: String(videoId) }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { percent_watched: newPercentWatched } }, record)
+      : await record()
+    if (!recorded.success) {
+      return NextResponse.json(
+        { success: false, error: recorded.error ?? "Failed to record progress" },
+        { status: 500 }
+      )
+    }
+    const allRequiredComplete = "allRequiredComplete" in recorded && recorded.allRequiredComplete === true
 
     return NextResponse.json({
       success: true,

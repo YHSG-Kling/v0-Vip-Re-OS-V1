@@ -1,11 +1,11 @@
 'use client'
 
-import React, { useState } from 'react'
+import { useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { cn } from '@/lib/utils'
-import { NavigationConfig, NavItem, BadgeCounts } from '@/app/types/navigation'
-import { UserContext } from '@/app/types/roles'
+import type { NavigationConfig, NavItem, BadgeCounts } from '@/app/types/navigation'
+import type { UserContext } from '@/app/types/roles'
 import { ChevronDown } from 'lucide-react'
 import * as Icons from 'lucide-react'
 

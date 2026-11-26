@@ -8,6 +8,7 @@
 import {
   getVendorCapability,
   selectProvider,
+  requiredScope,
   CAPABILITY_AGIS,
   type VendorCapability,
   type ProviderSelection,
@@ -73,12 +74,15 @@ export function planInvocation(
 ): InvocationPlan {
   const def = getVendorCapability(capability)
   const agis = CAPABILITY_AGIS[capability]
+  // The scope an agent must hold — read through the registry's ONE accessor so the
+  // invoke-time gate and the DISCOVER manifest can never disagree about it.
+  const scope = requiredScope(capability)
   const selection = selectProvider(capability, { overBudget: args.overBudget })
-  const base = { capability, missingInputs: [] as string[], selection, intentWeight: agis.intentWeight, scope: agis.scope }
+  const base = { capability, missingInputs: [] as string[], selection, intentWeight: agis.intentWeight, scope }
 
-  // 1. Scope gate
-  if (!hasScope(args.grantedScopes, agis.scope)) {
-    return { ...base, decision: "unauthorized", reason: `Missing required scope: ${agis.scope}` }
+  // 1. Scope gate — DEFAULT-DENY: hasScope refuses empty/null grants (agent-scopes.ts).
+  if (!hasScope(args.grantedScopes, scope)) {
+    return { ...base, decision: "unauthorized", reason: `Missing required scope: ${scope}` }
   }
   // 2. Required-input gate
   const missing = parseInputSpec(def.inputs)

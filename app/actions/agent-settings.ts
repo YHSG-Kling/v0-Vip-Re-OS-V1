@@ -1,7 +1,6 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { isValidUUID } from "@/lib/validations"
 
 // Both exports previously trusted a caller-supplied userId, so any
 // signed-in caller could read another user's HeyGen avatar/voice IDs
@@ -83,6 +82,7 @@ export async function updateAgentSettings(_userId: string, settings: {
     const { data: { user: authUser } } = await supabase.auth.getUser()
     if (!authUser) return { success: false, error: "Not authenticated" }
     const userId = authUser.id
+    const run = async (): Promise<{ success: boolean; error?: string }> => {
 
     // Wake name → users (real column). Avatar/voice → the canonical agent_voice_profiles
     // (D-ID + ElevenLabs), NOT phantom users.heygen_* columns.
@@ -135,6 +135,12 @@ export async function updateAgentSettings(_userId: string, settings: {
     }
 
     return { success: true }
+    }
+    // Receipt against the SESSION user's tenant; a user with no brokerage has no valid ledger row and saves unrecorded.
+    const { data: settingsUser } = await supabase.from("users").select("brokerage_id").eq("id", userId).maybeSingle()
+    if (!settingsUser?.brokerage_id) return await run()
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: settingsUser.brokerage_id as string, action: "agent.assistant_settings.update", actor: { type: "user", userId }, subject: { type: "user", id: userId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { fields: Object.keys(settings) } }, run)
   } catch (error) {
     console.error("[v0] Failed to update agent settings:", error)
     return { success: false, error: "Unable to update video settings" }

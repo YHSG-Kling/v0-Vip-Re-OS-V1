@@ -293,7 +293,7 @@ export function AiTutorPanel({ agentId, brokerageId, currentContext }: AiTutorPa
                         <ul className="text-sm text-muted-foreground space-y-1">
                           {evaluation.improvements.map((item: string, i: number) => (
                             <li key={i} className="flex items-start gap-2">
-                              <CheckCircle2 className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
+                              <CheckCircle2 className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
                               {item}
                             </li>
                           ))}

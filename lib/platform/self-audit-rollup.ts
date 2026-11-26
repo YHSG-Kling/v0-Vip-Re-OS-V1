@@ -15,7 +15,18 @@ export interface SelfAuditRollup {
   windowDays: number
   totals: Array<{ kind: string; count: number }>
   byTenant: Array<{ brokerageId: string; brokerageName: string | null; kind: string; count: number }>
+  /** A refused findings read, said — never an empty week that was really an unread one. */
+  findingsError: string | null
+  /**
+   * WAVE 153 (lane 153K — convergence row 85): the deterministic executed-contract closing-wording reader's hit rate over the
+   * signed contracts on file, with its synthetic controls (lib/transactions/contract-terms.ts measureClosingWordingReader).
+   * 0/0 stays 0/0 — `hitRate` is null until real executed contracts with text exist. Counts only; no contract text leaves here.
+   */
+  contractReader: ReturnType<typeof import("@/lib/transactions/contract-terms").measureClosingWordingReader> & { readError: string | null }
 }
+
+/** Executed contracts examined per rollup — the newest first; the denominator is said beside the rate. */
+const CONTRACT_READER_SAMPLE = 500
 
 /** PURE: recover the finding kind from a tagged notification. */
 export function parseFindingKind(type: string, body: string | null): string {
@@ -28,7 +39,7 @@ export function parseFindingKind(type: string, body: string | null): string {
 
 export async function computeSelfAuditRollup(svc: Svc, windowDays = 7, now: Date = new Date()): Promise<SelfAuditRollup> {
   const since = new Date(now.getTime() - windowDays * 86_400_000).toISOString()
-  const { data: rows } = await svc.from("notifications")
+  const { data: rows, error: findingsErr } = await svc.from("notifications")
     .select("type, body, brokerage_id, created_at")
     .in("type", ["os_self_audit", "signature_chase"])
     .gte("created_at", since)
@@ -53,8 +64,22 @@ export async function computeSelfAuditRollup(svc: Svc, windowDays = 7, now: Date
     for (const b of ((brs ?? []) as any[])) names.set(b.id, b.name ?? null)
   }
 
+  // Row 85 — the contract reader over the signed contracts on file (platform-wide; counts only).
+  const { measureClosingWordingReader } = await import("@/lib/transactions/contract-terms")
+  const { applyTenantScope, platformScope } = await import("@/lib/kernel/tenant-scope")
+  const signedContracts = svc.from("documents").select("content").eq("classification", "signed_contract")
+  const { data: contracts, error: contractsErr } = await applyTenantScope(
+    signedContracts,
+    platformScope("sentinel-gated platform data health (app/actions/self-audit-rollup.ts requirePlatformCapability) — the contract reader's hit rate counts signed contracts across tenants; counts only, no contract text leaves this rollup"),
+  )
+    .order("created_at", { ascending: false })
+    .limit(CONTRACT_READER_SAMPLE)
+  const contractReader = { ...measureClosingWordingReader(contractsErr ? [] : ((contracts ?? []) as Array<{ content?: string | null }>)), readError: contractsErr ? contractsErr.message : null }
+
   return {
     windowDays,
+    findingsError: findingsErr ? findingsErr.message : null,
+    contractReader,
     totals: [...kinds.entries()].map(([kind, count]) => ({ kind, count })).sort((a, b) => b.count - a.count),
     byTenant: [...byKey.entries()].map(([k, count]) => {
       const [brokerageId, kind] = k.split("|")
