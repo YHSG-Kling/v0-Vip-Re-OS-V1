@@ -203,6 +203,27 @@ async function main() {
       console.log("  – SKIPPED: no chromium binary resolvable here — the real-browser layer did NOT run (blind spot, not a pass)")
     } else {
       process.env.CHROMIUM_EXECUTABLE_PATH = exe
+      // THE FIRST START OF THE BROWSER IS NOT WHAT THIS LAYER PROVES. In CI this step is the first — and in practice the
+      // only — step of the chain that starts the runner's real browser (the Playwright smoke before it is opt-in and
+      // skipped there). MEASURED: the whole step took 2.9 s on an ordinary runner, 23.8 s on a slow one (run 45727453928,
+      // where every other step was about 1.5x slower and this one 8x) and went past puppeteer's 30 s launch limit on a
+      // slower one (run 45760092274: "Timed out after 30000 ms while waiting for the WS endpoint URL" — the first two
+      // checks below went red on a runner, not on the pin). One UNJUDGED start of the same binary with the same base
+      // flags, under a longer limit, pays the first-start cost. It asserts nothing and changes nothing below: the judged
+      // capture still goes through the product adapter under its own launch limit, and a browser that cannot start at
+      // all still fails there. BLIND SPOT: this assumes the cost is paid once per machine; the time is printed so a
+      // runner where the judged start is slow anyway shows as two slow numbers, not one.
+      {
+        const { chromiumLaunchArgs } = await import("../lib/remotion/chromium-executable")
+        const t0 = Date.now()
+        let warmErr = ""
+        try {
+          const warm = await (await import("puppeteer-core")).default.launch({ executablePath: exe, args: await chromiumLaunchArgs(), headless: true, timeout: 120_000 })
+          await warm.close()
+        } catch (e) { warmErr = (e as Error).message }
+        console.log(`  · first start of the browser (not judged; 120 s limit): ${((Date.now() - t0) / 1000).toFixed(1)} s${warmErr ? ` — did not start: ${warmErr}` : ""}`)
+      }
+      const judgedStart = Date.now()
       const r = rebindingResolver({ "img.rebind-proof.com": [METADATA] })
       const pin = createHostPinner(r.lookup)
       await pin("www.pin-proof.com") // the seam's check
@@ -217,6 +238,7 @@ async function main() {
           timeoutMs: 30_000, publicNetworkOnly: true, hostPin: pin, pinnedTransport: t.transport,
         })
       } catch (e) { err = (e as Error).message }
+      console.log(`  · judged capture through the product adapter: ${((Date.now() - judgedStart) / 1000).toFixed(1)} s`)
       check("the real browser rendered the page served over the pin (PNG produced)", !!out && out.png.length > 1000 && out.png.subarray(1, 4).toString() === "PNG", err)
       check("every dial the browser caused went to the ONE verified address", t.dialed.length >= 2 && t.dialed.every((d) => d.address === PUBLIC_IP), JSON.stringify(t.dialed))
       check("the rebinding subresource host and the metadata literal were NEVER dialed", !t.dialed.some((d) => d.url.includes("rebind-proof") || d.url.includes(METADATA)))
