@@ -10,7 +10,7 @@ sweep) → OUTCOME evidence (ledger / arbitration record / provider truth). The 
 Planes: A authority / tenant session · E Contact engagement (the follow-up arbiter) · D outbound dispatch · G manager coordination
 (delegation, missions, the signal bus) · P human approval · R resources (entitlement, vendor budget, spend, provider route) · C closing / money gates.
 
-Classes: `loop-complete` 715 · `read-surface` 418 · `partial` 222 · `writes-unread` 0 · `untriggered` 1 · `guard-only` 108 · `registry-only` 0 · `proof-unregistered` 0 — of 1464 rows, over 5450 source files.
+Classes: `loop-complete` 715 · `read-surface` 418 · `partial` 222 · `writes-unread` 0 · `untriggered` 1 · `guard-only` 109 · `registry-only` 0 · `proof-unregistered` 0 — of 1465 rows, over 5450 source files.
 
 ## Deal Coordinator (`deal_coordinator`) — 111 domains
 
@@ -699,7 +699,7 @@ Classes: `loop-complete` 715 · `read-surface` 418 · `partial` 222 · `writes-u
 | `lead_magnet_flow` | guard-only | — | — | — | — | — | — | — | — | `test:lead-magnet-flow` |
 | `office_chat_and_kb_recall` | guard-only | — | — | — | — | — | — | — | — | `test:knowledge-lead-wiring` |
 
-## Data Steward (`data_steward`) — 504 domains
+## Data Steward (`data_steward`) — 505 domains
 
 | Domain | Class | Trigger | Planes | Survivor | Writes (state) | Readback | Next | Recovery | Outcome | Proof |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -1152,6 +1152,7 @@ Classes: `loop-complete` 715 · `read-surface` 418 · `partial` 222 · `writes-u
 | `e2e_lifecycle` | guard-only | — | — | — | — | — | — | — | — | `test:e2e-lifecycle` |
 | `env_var_parity` | guard-only | — | — | — | — | — | — | — | — | `test:env-var-parity` |
 | `error_message_honesty` | guard-only | — | — | — | — | — | — | — | — | `test:error-message-honesty` |
+| `guard_chain_shards` | guard-only | — | — | — | — | — | — | — | — | `test:guard-chain-shards` |
 | `identity_self_heal` | guard-only | — | — | — | — | — | — | — | — | `test:identity-self-heal` |
 | `import_export_parity` | guard-only | — | — | — | — | — | — | — | — | `test:import-export-parity` |
 | `ledger_receipts_last` | guard-only | — | — | — | — | — | — | — | — | `test:ledger-receipts-last` |

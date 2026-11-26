@@ -27,8 +27,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  egress-guards:
+  # ── THE CHAIN IN TWO HALVES (2026-11-26). `npm run guard` is still ONE chain (scripts.guard in package.json) and is
+  # still what runs locally before a push. CI runs it as two jobs on two runners; scripts/guard-chain-shards.ts is the
+  # ONE definition of where the chain divides, and test:guard-chain-shards (in the chain) fails if this matrix and that
+  # definition disagree, if a step is in neither half or in both, or if the verdict below would pass a half that did
+  # not succeed. The measurement that forced the split is in the timeout note below.
+  egress-guards-half:
     runs-on: ubuntu-latest
+    strategy:
+      # One half failing must not cancel the other: both results are wanted, and the verdict job reads both.
+      fail-fast: false
+      matrix:
+        shard: [first, second]
+    name: egress-guards-half (${{ matrix.shard }})
     # 2026-09-11: 20 minutes was the cap while `npm run guard` ran ~16 min on
     # this runner (run 34548154361 at 844546ce: 16m12s, green). Waves 55-56 added
     # test:ai-callback-loop, test:dead-imports, test:anchor-census,
@@ -45,6 +56,14 @@ jobs:
     # finished at 38 and 40 minutes, so 40 was already the edge. A cancelled guards job reads as
     # "nobody checked", which §4 of CLAUDE.md says must never render as "checked and fine". If a run
     # approaches 60, split the chain into two jobs rather than raising this again.
+    # THE SPLIT — MEASURED, not guessed (wave 156 close, 2026-11-26, at 224e2bfd, 1,027 steps): run 45727441327 ran the
+    # chain in 35.1 min and was green; run 45727453928, the same job on the same commit, was CANCELLED by this timeout
+    # 58.5 min into the chain, inside its LAST step (test:wave156-canaries), with every earlier step green. Step by step
+    # the second runner was 1.52x slower over the same steps (53.6 against 35.2 minutes) and no step hung. The chain is
+    # now two halves divided at a step NAME (test:lead-magnet-creation — 52% of the measured time before it, 48% after),
+    # so a half is about 18 minutes on an ordinary runner and about 28 on one that slow. 60 is UNCHANGED and is
+    # headroom now, not a target. Each half prints how long every step took (`GUARD_SHARD_EXIT=` is its last line);
+    # when a half approaches 60, add a third shard to GUARD_SHARDS and to the matrix above — never raise this.
     timeout-minutes: 60
     env:
       # tsc + the simulators need more than Node's default ~4GB heap on this large
@@ -85,7 +104,29 @@ jobs:
       # see .github/actions/node-deps/action.yml for why the ffmpeg-static
       # postinstall no longer sits on the critical path of every check.
       - uses: ./.github/actions/node-deps
-      - name: Run egress integrity guards
-        run: npm run guard
+      - name: Run egress integrity guards — one half of the chain
+        run: npm run guard:shard -- ${{ matrix.shard }}
+      # Once, not once per half: after the LAST half's steps, where it ran before the split.
       - name: Run compliance / consent guards
+        if: ${{ matrix.shard == 'second' }}
         run: npm run guard:compliance
+
+  # ── THE ONE VERDICT, under the name the single job had. Fail closed: green only when EVERY half ran and succeeded.
+  # A half that was cancelled (the timeout), skipped or failed makes this job fail, so "nobody checked" can never
+  # render as "checked and fine" (CLAUDE.md §4).
+  egress-guards:
+    needs: [egress-guards-half]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verdict — every half of the guard chain ran and passed
+        run: |
+          HALF_RESULT="${{ needs.egress-guards-half.result }}"
+          echo "guard chain halves: ${HALF_RESULT}"
+          if [ "$HALF_RESULT" = "success" ]; then
+            echo "CERTIFIED — every step of the guard chain ran in exactly one half and passed; the compliance guards passed."
+            exit 0
+          fi
+          echo "::error::NOT CERTIFIED — halves=${HALF_RESULT}. A cancelled, skipped or failed half is never a green guard chain."
+          exit 1

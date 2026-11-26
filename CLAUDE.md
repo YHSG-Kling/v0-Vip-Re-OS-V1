@@ -238,3 +238,13 @@ timeout — the verdict job then reads `halves=cancelled`. The compile worker's 
 runner, so a half finishes only on swap, and a run where the swap thrashes never finishes. Re-run the failed jobs
 **unchanged** (the re-run of that commit was green in 13 and 19 minutes). A third matrix entry was measured and does
 not lower the peak in proportion; the lever is the runner (`BUILD_RUNNER`, the owner's), not the cap.
+
+The `guards` workflow runs the chain as TWO HALVES on two runners — `egress-guards-half (first)` and `(second)` — and one
+verdict job under the old name, `egress-guards`, that is green only when both succeeded (measured 2026-11-26 at
+`224e2bfd`: the same job on the same commit finished the chain in 35.1 minutes in one run and was cancelled by the
+60-minute timeout 58.5 minutes in, inside its last step, in the other; the second runner was 1.52x slower step by step
+and nothing hung). `npm run guard` is unchanged: still ONE chain, still what runs locally before a push, still read by
+`GUARD_EXIT`. `scripts/guard-chain-shards.ts` is the one definition of where the chain divides (a step NAME, never a
+position) and `test:guard-chain-shards` holds the halves to being the whole chain, each step once. A half's last line is
+`GUARD_SHARD_EXIT=`, and above it the half prints how long every step took. A cancelled half makes the verdict red;
+re-run the cancelled half **unchanged**. When a half approaches 60 minutes, add a third shard — never raise the timeout.
